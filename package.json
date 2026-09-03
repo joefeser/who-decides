@@ -11,7 +11,8 @@
     "start": "tsx src/console/server.ts",
     "smoke": "tsx src/smoke.ts",
     "preflight": "tsx src/preflight.ts",
-    "spike:interrupt": "tsx src/spike-interrupt.ts"
+    "spike:interrupt": "tsx src/spike-interrupt.ts",
+    "gate:bedrock": "tsx src/gate-bedrock.ts"
   },
   "repository": {
     "type": "git",

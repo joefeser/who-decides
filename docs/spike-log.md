@@ -119,6 +119,29 @@ nothing: the ruled design IS the SDK's shape.
 seeded resume as snapshot + `InterruptResponseContent` (already proven by t2);
 the consumption receipt gates replay regardless of shape (proven by t3).
 
+## Day 2b — 2026-09-03: Bedrock commit-or-pivot gate (RULING M4)
+
+Pinned: `global.anthropic.claude-sonnet-4-6`, us-east-1, credentials via
+`AWS_PROFILE=who-decides` (IAM user, AmazonBedrockFullAccess dev scope).
+
+| # | Gate item | Result |
+|---|---|---|
+| 1 | Documented-path auth | ✅ STS preflight + SDK invoke via profile |
+| 2 | Tool/interrupt reliability on Bedrock | ✅ t1 interrupt+resume clean |
+| 3 | Full M1 loop cross-process on Bedrock | ✅ save → fresh process → resume → endTurn |
+| 4 | AgentCore deployability | ⏭️ SKIP WITH DISCLOSURE — not evaluated today; per ruling, AgentCore is stretch-if-ahead and the disclosed fallback is server-side runtime calling Bedrock |
+| 5 | Five consecutive seeded runs | ✅ 5/5 identical authority semantics, 6–9s each |
+| 6 | Measured cost vs ceiling | ✅ 7,206 in / 2,152 out tokens = **$0.054** est. (rates $3/$15 per MTok) vs $5 ceiling |
+| 7 | Adapter isolation | ✅ both providers through one boundary (OpenAI-compatible proven earlier) |
+
+**Verdict: COMMIT — Bedrock confirmed as the documented default.** No pivot;
+default + video + live demo stay on Bedrock ("one technically true story").
+AgentCore remains a disclosed stretch, never load-bearing.
+
+Runner: `src/gate-bedrock.ts` (`npm run gate:bedrock`); receipts in stdout.
+The gate harness itself was designed, run, and recorded by the GLM flash-tier
+session — the gate cost $0.054 on Bedrock.
+
 ### Joe-side prerequisites for the day-1 Bedrock gate
 
 1. AWS Builder ID + claim the $50 hackathon credits (Devpost Resources tab).

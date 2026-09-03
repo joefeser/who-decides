@@ -2,6 +2,7 @@
  * one tested OpenAI-compatible escape hatch. Configuration is environment
  * only; there is no settings UI (RULING M3). */
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
+import { BedrockModel } from '@strands-agents/sdk/models/bedrock'
 
 export type ProviderKind = 'bedrock' | 'openai-compatible'
 
@@ -26,7 +27,7 @@ function required(name: string): string {
   return value
 }
 
-export function loadProvider(): ProviderConfig & { model: OpenAIModel } {
+export function loadProvider(): ProviderConfig & { model: OpenAIModel | BedrockModel } {
   const kind = (process.env.WD_PROVIDER ?? 'openai-compatible') as ProviderKind
 
   if (kind === 'openai-compatible') {
@@ -46,11 +47,14 @@ export function loadProvider(): ProviderConfig & { model: OpenAIModel } {
     }
   }
 
-  // Bedrock default path (RULING M4). Uses the SDK's default AWS credential
-  // chain; the day-1 gate proves this path before it becomes the default.
-  throw new Error(
-    'NOT_IMPLEMENTED_YET: Bedrock path is wired on spike day 1 with AWS ' +
-    'credentials; run npm run preflight first. WD_PROVIDER is currently ' +
-    'fixed to openai-compatible until the Bedrock gate passes.',
-  )
+  // Bedrock default path (RULING M4). Credentials come from the AWS default
+  // chain (e.g. AWS_PROFILE=who-decides); region/model pinned per gate.
+  const modelId = process.env.WD_BEDROCK_MODEL ?? 'global.anthropic.claude-sonnet-4-6'
+  const region = process.env.WD_AWS_REGION ?? 'us-east-1'
+  const model = new BedrockModel({ modelId, region })
+  return {
+    kind,
+    model,
+    provenance: { provider: kind, modelId, region },
+  }
 }
