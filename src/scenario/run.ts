@@ -4,6 +4,7 @@
  * report. Every HACP artifact is validated against the vendored v0.1-draft
  * schemas; the run receipt proves the whole chain. */
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -56,7 +57,10 @@ async function main(): Promise<void> {
     decisionRequestId: s.stop_id,
     permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
   }
-  const humanDecision = buildHumanDecision(s, runtimeDecision, 'invocation-a-evidence')
+  // Real digest (raw hex; the builder adds the sha256: prefix) of the
+  // invocation-A evidence the decision responds to.
+  const evidenceDigest = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
+  const humanDecision = buildHumanDecision(s, runtimeDecision, evidenceDigest)
   assertValid('human-decision', humanDecision)
   artifacts.push({ name: 'human-decision', kind: 'human-decision', artifact: humanDecision })
 

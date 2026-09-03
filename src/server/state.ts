@@ -3,7 +3,7 @@
  * polls. State machine: ready → running → decision_required → resuming →
  * completed, plus typed stops. The running phase advances on wall-clock so
  * the timeline is visible without background timers. */
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -203,21 +203,27 @@ export class ConsoleEngine {
     if (!run) return { ok: false, error: 'NO_RUN' }
     this.advancePhases(run)
     const row = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(run.id) as { decision_json: string | null, invocation_b: string | null }
+    const prior = row.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null } : null
+
+    // Idempotent recovery, matched strictly: only the SAME submission (key +
+    // choice) may return committed success. A different decision arriving
+    // after one was recorded is a conflict — the first decision was consumed.
     if (run.state !== 'decision_required') {
-      // Idempotent recovery: a retry whose first attempt committed (e.g. the
-      // HTTP response was lost) must not dead-end in WRONG_STATE.
-      if (row.decision_json) return { ok: true, duplicate: true }
+      if (prior && prior.choice === choice && prior.idempotencyKey === (idempotencyKey ?? null)) {
+        return { ok: true, duplicate: true }
+      }
+      if (prior) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
       return { ok: false, error: `WRONG_STATE:${run.state}` }
     }
     const s = loadScenario()
     if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
+    if (prior && prior.choice !== choice) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
 
     // Persist the decision intent (choice, rationale, decidedAt, successor id)
     // BEFORE claiming, so a crash between claim and state-write leaves a
     // retry that reuses the same successor and same digest → 'replayed',
     // never a competing successor. Only a first submission may set them.
-    const prior = row.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string } : null
     const invocationB = row.invocation_b ?? `inv-${randomUUID()}`
     const decidedAt = prior?.decidedAt ?? new Date().toISOString()
     const effectiveChoice = prior?.choice ?? choice
@@ -240,7 +246,7 @@ export class ConsoleEngine {
       rationale: effectiveRationale,
       decidedAt,
     }
-    const humanDecision = buildHumanDecision(s, runtimeDecision, 'invocation-a-evidence')
+    const humanDecision = buildHumanDecision(s, runtimeDecision, this.evidenceDigest(run.id))
     assertValid('human-decision', humanDecision)
     this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)
@@ -313,6 +319,14 @@ export class ConsoleEngine {
       : { attemptedBy: imposter, result: 'CLAIMED — INVARIANT BROKEN', detail: 'consume-once failed!' }
     this.db.prepare('UPDATE runs SET replay_json = ? WHERE id = ?').run(JSON.stringify(probe), run.id)
     return probe
+  }
+
+  /** Real digest (raw hex; the builder adds the sha256: prefix) of the
+   * invocation-A evidence the decision responds to — never a placeholder. */
+  private evidenceDigest(runId: string): string {
+    const row = this.db.prepare("SELECT json FROM artifacts WHERE run_id = ? AND name = 'stop-response'").get(runId) as { json: string } | undefined
+    if (!row) throw new Error('EVIDENCE_MISSING:stop-response')
+    return createHash('sha256').update(row.json).digest('hex')
   }
 
   private decisionRecord(decisionId: string, choice: string, rationale: string, decidedAt: string): DecisionRecord {

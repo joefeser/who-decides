@@ -98,6 +98,26 @@ test('retrying a committed decision returns idempotent success, not WRONG_STATE'
     const retry = engine.submitDecision('create_draft_pr', 'approved', 'key-1')
     assert.equal(retry.ok, true)
     assert.equal(retry.duplicate, true)
+    // A DIFFERENT decision after one was recorded is a conflict, not a
+    // duplicate success — the first decision was consumed.
+    const conflict = engine.submitDecision('defer', 'changed my mind', 'key-2')
+    assert.equal(conflict.ok, false)
+    assert.equal(conflict.error, 'DECISION_ALREADY_RECORDED')
+  } finally {
+    cleanup(dir, engine)
+  }
+})
+
+test('the decision artifact cites a real evidence digest, not a placeholder', () => {
+  const { engine, dir } = freshEngine()
+  try {
+    runToDecision(engine, dir)
+    engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    const decision = readArtifact(dir, 'human-decision')
+    const refs = decision.evidence_refs as string[]
+    const digestRef = refs.find(r => String(r).startsWith('sha256:'))
+    assert.ok(digestRef, 'evidence_refs carries a sha256 reference')
+    assert.match(String(digestRef), /^sha256:[0-9a-f]{64}$/, 'the digest is a real 64-hex hash of the stop-response evidence')
   } finally {
     cleanup(dir, engine)
   }
