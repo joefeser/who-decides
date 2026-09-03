@@ -142,11 +142,37 @@ Runner: `src/gate-bedrock.ts` (`npm run gate:bedrock`); receipts in stdout.
 The gate harness itself was designed, run, and recorded by the GLM flash-tier
 session — the gate cost $0.054 on Bedrock.
 
-### Joe-side prerequisites for the day-1 Bedrock gate
+## Day 3 — 2026-09-03 (bank-run block): typed artifact spine
 
-1. AWS Builder ID + claim the $50 hackathon credits (Devpost Resources tab).
-2. AWS credentials available to the default credential chain (env or profile).
-3. Bedrock model access enabled for the pinned model in the chosen region.
+Model-free deterministic build:
 
-Once provided: run the 7-item commit-or-pivot gate (RULING M4); same-day
-decision; if it fires, default + video + live demo pivot together.
+- **Schemas vendored:** five HACP v0.1-draft artifact families under
+  `schemas/hacp/v0.1-draft/` (Apache-2.0, attributed, upstream $ids intact).
+- **Artifact pipeline** (`src/artifacts/`): ajv 2020-12 validation against the
+  real schemas + builders modeled on upstream canonical examples.
+- **Fixture scenario** (`fixtures/patch-scenario.json`): kestrel-web security
+  patch with the seeded runtime-floor tradeoff (node 18→20, one compat check
+  unresolved, who-is-affected stated in human terms).
+- **Scenario runner** (`npm run scenario`): packet → findings (incl. the
+  S2 needs_human_decision tradeoff) → typed stop (HUMAN_DECISION_REQUIRED) →
+  scripted human decision → ATOMIC consumption claim → live duplicate-claim
+  fail-closed check → dry-run effect receipt (exact payload, no external
+  mutation) → agent report correlating decision→outcome. All five artifact
+  families validate; run receipt printed; artifacts written to
+  `.tmp/scenario-run/`.
+- **Tests 7/7** (`npm run test:artifacts`): upstream examples validate; our
+  artifacts validate; tampered artifacts FAIL — escalated authority, demoted
+  actor (`ai_agent` on a human_decision), missing rationale, reliability
+  boundary on a non-reliability stop, and a report claiming
+  boundaries-preserved-while-crossing all rejected by the schemas.
+
+Notable vocabulary alignments: HACP decision enum has no `create_draft_pr` —
+the human gate is `start_work` (needs_human_decision → approved); the branch
+choice lives in our extension layer (rationale + permittedAction on the
+consumption record). `reliability_boundary` is forbidden except on
+RELIABILITY_LIMIT_REACHED stops.
+
+Remaining: console (M3) wired to this spine, one real-model end-to-end pass
+(Bedrock, cents), final video.
+
+(Prerequisites section retired: the Bedrock gate ran and COMMITted — see Day 2b.)

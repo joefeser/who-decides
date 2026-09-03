@@ -1,0 +1,35 @@
+{
+  "run_id": "run-2026-09-03-001",
+  "packet_id": "packet-2026-09-03-001",
+  "decision_id": "decision-2026-09-03-001",
+  "finding_tradeoff_id": "finding-2026-09-03-002",
+  "report_id": "report-2026-09-03-001",
+  "stop_id": "stop-2026-09-03-001",
+  "package": "kestrel-web",
+  "from_version": "4.2.0",
+  "to_version": "4.3.0-security",
+  "advisory": "KESTREL-2026-0042 (fixture): request smuggling in header parsing",
+  "tradeoff": {
+    "kind": "runtime_floor_bump",
+    "from": "node 18",
+    "to": "node 20",
+    "who_is_affected": "Teams still deploying on node 18 LTS cannot take this patch without an engine upgrade",
+    "unresolved_check": "integration suite not runnable on node 18 after the bump — one compatibility check open"
+  },
+  "checks": {
+    "unit": "pass — 214/214",
+    "build": "pass — production bundle built",
+    "audit": "1 known issue carried (pre-existing, unrelated)"
+  },
+  "decision_request": {
+    "question": "Create the draft PR for kestrel-web 4.3.0-security?",
+    "options": ["create_draft_pr", "send_back", "defer"],
+    "human_terms": "Tests green, build green, but the patch raises the runtime floor from node 18 to node 20 — node 18 teams cannot take it without an engine upgrade, and one node 18 compatibility check is unresolved."
+  },
+  "human_choice": {
+    "decision": "create_draft_pr",
+    "rationale": "Security risk outweighs the floor bump; node 18 consumers get a heads-up in the PR description."
+  },
+  "created_by_agent": "who-decides-agent",
+  "human_operator": "joe"
+}
