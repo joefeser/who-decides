@@ -1,0 +1,37 @@
+{
+  "name": "who-decides",
+  "version": "0.1.0",
+  "description": "A Strands agent that works in the background and surfaces only when there's a real human decision",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "tsx src/console/server.ts",
+    "smoke": "tsx src/smoke.ts",
+    "preflight": "tsx src/preflight.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joefeser/who-decides.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/joefeser/who-decides/issues"
+  },
+  "homepage": "https://github.com/joefeser/who-decides#readme",
+  "private": "true",
+  "dependencies": {
+    "@strands-agents/sdk": "^1.16.0",
+    "openai": "^6.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}
