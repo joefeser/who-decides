@@ -29,6 +29,12 @@ The SDK also ships `StateStore`, `Snapshot`/`TakeSnapshotOptions`, and the
 interrupt type records deserialization from snapshots ("defaults to `'hook'`"),
 suggesting interrupts persist across snapshot restore.
 
+A second resume primitive exists: `InvokeArgs` includes **`CheckpointResumeContent`**
+("Resume payload for a checkpointing agent", marked `@experimental`), and
+`AgentResult` carries `interrupts?: Interrupt[]` and `checkpoint?: Checkpoint`.
+Both primitives are M1-conditional evidence; neither is tested against the M1
+bar (restart survival, exact control-flow state, idempotent response).
+
 **Relevance:** RULING M1 made mid-run pause out of scope "unless Strands ships
 a checkpoint primitive inside the build window." This appears to be that
 primitive, in the TS SDK, shipped. Whether it meets the M1 bar (survives
@@ -39,14 +45,15 @@ resume per the ruling until he rules otherwise.
 
 ### Escape-hatch smoke status
 
-Harness complete (`src/smoke.ts`, `src/provider.ts`): adapter boundary,
-env-only config, typed `ENVIRONMENT_BLOCKED` stops, provenance receipt.
-Exercised the full chain to the provider auth boundary.
+**PASSED (2026-09-03).** Receipt: `passed: true`, reply "Operational.",
+`stopReason: "endTurn"`, provider openai-compatible (gpt-4o), SDK 1.16.0.
+Gate item satisfied: adapter boundary, documented credential path, one minimal
+invocation — on a long-lived provider, not an expiring free tier.
 
-- **Blocked on a valid OpenAI-compatible key.** The key stored in the local
-  WITS dev `.env` (`LLM_API_KEY`) returns `401 Incorrect API key` — stale.
-- The Bedrock default path is intentionally unwired until the day-1 gate
-  passes (adapter refuses `WD_PROVIDER=bedrock` with a typed stop).
+Notes: `AgentResult` exposes `lastMessage`/`stopReason` (camelCase
+`"endTurn"`), not a `result` string; on this path content blocks are plain
+`{ text }` objects without a `type` discriminant — relevant to later
+structured-output work.
 
 ### Joe-side prerequisites for the day-1 Bedrock gate
 
