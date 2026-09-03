@@ -8,7 +8,7 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
 import type { Interrupt } from '@strands-agents/sdk'
-import { loadProvider } from './provider.js'
+import { loadProvider } from './provider'
 
 const SNAPSHOT_PATH = '.tmp/spike-interrupt-snapshot.json'
 const RESPONSE = { choice: 'create_draft_pr', rationale: 'spike: human approved' }
@@ -30,7 +30,7 @@ function decisionTool(): FunctionTool {
     },
     callback(input: unknown, context: { interrupt<T>(params: { name: string, reason?: unknown }): T }) {
       const patchId = (input as { patchId: string }).patchId
-      const decision = context.interrupt({
+      const decision = context.interrupt<{ choice: string, rationale: string }>({
         name: 'human_release_decision',
         reason: {
           question: 'Create the draft PR for this security update?',

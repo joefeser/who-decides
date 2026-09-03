@@ -3,7 +3,7 @@
  * would actually adopt. Proves: adapter boundary, documented credential
  * path, one minimal agent invocation. Prints a provenance receipt. */
 import { Agent } from '@strands-agents/sdk'
-import { loadProvider } from './provider.js'
+import { loadProvider } from './provider'
 
 async function main(): Promise<void> {
   const { model, provenance } = loadProvider()

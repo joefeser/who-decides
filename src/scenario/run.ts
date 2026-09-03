@@ -4,17 +4,18 @@
  * report. Every HACP artifact is validated against the vendored v0.1-draft
  * schemas; the run receipt proves the whole chain. */
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
-import { assertValid } from '../artifacts/schemas.js'
+import { assertValid } from '../artifacts/schemas'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
   buildAgentReport, newInvocationId,
-} from '../artifacts/build.js'
-import type { Scenario } from '../artifacts/build.js'
-import { ConsumptionStore, decisionDigest } from '../consumption/store.js'
-import type { DecisionRecord } from '../consumption/store.js'
+} from '../artifacts/build'
+import type { Scenario } from '../artifacts/build'
+import { ConsumptionStore, decisionDigest } from '../consumption/store'
+import type { DecisionRecord } from '../consumption/store'
 
 function loadScenario(): Scenario {
   const file = process.env.WD_SCENARIO ?? path.resolve(import.meta.dirname, '../../fixtures/patch-scenario.json')
@@ -41,15 +42,25 @@ async function main(): Promise<void> {
   artifacts.push({ name: 'stop-response', kind: 'stop-response', artifact: stop })
 
   // 2 — the human decides (fixture-scripted; in the real demo this is the console).
+  const decidedAt = new Date().toISOString()
+  const runtimeDecision = {
+    decisionId: s.decision_id,
+    choice: s.human_choice.decision,
+    rationale: s.human_choice.rationale,
+    decidedAt,
+  }
   const decisionRecord: DecisionRecord = {
     decisionId: s.decision_id,
     chosenOption: s.human_choice.decision,
     rationale: s.human_choice.rationale,
-    decidedAt: new Date().toISOString(),
+    decidedAt,
     decisionRequestId: s.stop_id,
-    permittedAction: 'dry-run receipt for draft PR creation (no external mutation)',
+    permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
   }
-  const humanDecision = buildHumanDecision(s, 'invocation-a-evidence')
+  // Real digest (raw hex; the builder adds the sha256: prefix) of the
+  // invocation-A evidence the decision responds to.
+  const evidenceDigest = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
+  const humanDecision = buildHumanDecision(s, runtimeDecision, evidenceDigest)
   assertValid('human-decision', humanDecision)
   artifacts.push({ name: 'human-decision', kind: 'human-decision', artifact: humanDecision })
 
@@ -90,7 +101,7 @@ async function main(): Promise<void> {
   }
 
   // 5 — the agent report correlates decision → outcome.
-  const report = buildAgentReport(s, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''))
+  const report = buildAgentReport(s, runtimeDecision, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''))
   assertValid('agent-report', report)
   artifacts.push({ name: 'agent-report', kind: 'agent-report', artifact: report })
 

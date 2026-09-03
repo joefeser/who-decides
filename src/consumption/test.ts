@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ConsumptionStore } from './store.js'
-import type { DecisionRecord } from './store.js'
+import { ConsumptionStore } from './store'
+import type { DecisionRecord } from './store'
 
 function sampleDecision(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
   return {

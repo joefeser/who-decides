@@ -40,6 +40,23 @@ Early spike — being built for the [Agents for Humans](https://agentsforhumans.
 hackathon (AWS / Strands Agents SDK), September 2026. See [docs/roadmap.md](docs/roadmap.md)
 as it fills in.
 
+## Demo boundaries (honest scope)
+
+The decision console (`npm run console`, port 3100) is a **local, single-operator
+demo** and says so plainly:
+
+- The HTTP API has **no authentication** and no session binding. Whoever can
+  reach the port can submit a decision. Binding decisions to an authenticated
+  operator session is tracked as real follow-up work, not pretended here.
+- The HACP human-decision artifacts therefore carry demo attribution: the
+  v0.1-draft vocabulary has no "unauthenticated local console" actor
+  verification value, so the artifact's free-text session references say
+  `demo-unauthenticated-local-console` rather than fabricating a real session.
+- The prepared effect is always a **dry-run**: the exact payload is recorded and
+  shown, and no external mutation is performed in any branch.
+- Resetting the console archives the current run; completed run records and
+  artifacts stay in the local database for audit.
+
 ## Pre-existing work (disclosed)
 
 This repository is a new project, but it builds on disclosed prior work by the

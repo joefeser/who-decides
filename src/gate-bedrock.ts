@@ -2,7 +2,8 @@
  * identical authority semantics, plus measured token usage and an estimated
  * cost against a hard ceiling. Rates are stated assumptions in the receipt. */
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
-import { loadProvider } from './provider.js'
+import type { AgentResult } from '@strands-agents/sdk'
+import { loadProvider } from './provider'
 
 const RUNS = Number(process.env.WD_GATE_RUNS ?? 5)
 const CEILING_USD = Number(process.env.WD_GATE_CEILING ?? 5)
@@ -20,7 +21,7 @@ function decisionTool(): FunctionTool {
       required: ['patchId'],
     },
     callback(input: unknown, context: { interrupt<T>(params: { name: string, reason?: unknown }): T }) {
-      const decision = context.interrupt({
+      const decision = context.interrupt<{ choice: string, rationale: string }>({
         name: 'human_release_decision',
         reason: { question: 'Create the draft PR?', patchId: (input as { patchId: string }).patchId },
       })
@@ -29,8 +30,8 @@ function decisionTool(): FunctionTool {
   })
 }
 
-function usageOf(result: { metrics?: { accumulatedUsage?: Record<string, number>, toJSON?: () => unknown } }): { inputTokens: number, outputTokens: number } {
-  const raw = result.metrics?.toJSON ? (result.metrics.toJSON() as Record<string, unknown>) : (result.metrics as unknown as Record<string, unknown>)
+function usageOf(result: AgentResult): { inputTokens: number, outputTokens: number } {
+  const raw = result.metrics?.toJSON ? (result.metrics.toJSON() as unknown as Record<string, unknown>) : (result.metrics as unknown as Record<string, unknown>)
   const usage = (raw?.accumulatedUsage ?? raw?.usage ?? {}) as Record<string, number>
   return {
     inputTokens: Number(usage.inputTokens ?? usage.input_tokens ?? 0),

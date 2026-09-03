@@ -1,8 +1,8 @@
 /* Cross-process claim CLI — used by the race test to prove atomicity between
  * genuinely concurrent OS processes, not just in-process connections. */
 import { readFileSync } from 'node:fs'
-import { ConsumptionStore, decisionDigest } from './store.js'
-import type { DecisionRecord } from './store.js'
+import { ConsumptionStore, decisionDigest } from './store'
+import type { DecisionRecord } from './store'
 
 function main(): void {
   const [dbPath, decisionPath, successorId, expectedDigest] = process.argv.slice(2)
