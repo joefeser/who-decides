@@ -119,11 +119,11 @@ nothing: the ruled design IS the SDK's shape.
 seeded resume as snapshot + `InterruptResponseContent` (already proven by t2);
 the consumption receipt gates replay regardless of shape (proven by t3).
 
+### Joe-side prerequisites for the day-1 Bedrock gate
+
 1. AWS Builder ID + claim the $50 hackathon credits (Devpost Resources tab).
 2. AWS credentials available to the default credential chain (env or profile).
 3. Bedrock model access enabled for the pinned model in the chosen region.
 
 Once provided: run the 7-item commit-or-pivot gate (RULING M4); same-day
 decision; if it fires, default + video + live demo pivot together.
-
-### Joe-side prerequisites for the day-1 Bedrock gate
