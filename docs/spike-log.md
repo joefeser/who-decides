@@ -55,6 +55,39 @@ Notes: `AgentResult` exposes `lastMessage`/`stopReason` (camelCase
 `{ text }` objects without a `type` discriminant — relevant to later
 structured-output work.
 
+### HACP version-state correction + consumption design (2026-09-03, from the v0.3 scoping session)
+
+- HACP v0.2 protocol documentation exists on public `origin/main`
+  (`2410d225…`): `docs/hacp-0.2.md`, CLI-bridge contract, manual-approved-loop
+  examples. The `schemas/` index is stale (describes v0.1 only) and schema
+  `$id`s remain v0.1-draft — earlier "latest is v0.1-draft" reads were wrong.
+  Version state comes from the repo tree, not the schema index.
+- who-decides stays on the M1-ruled v0.1 base + extension profile; no
+  migration during the hackathon.
+- **Consumption design supersedes the field sketch:** a separate immutable
+  consumption RECEIPT (not a field written into an approved decision) binding
+  the decision + integrity/revision basis + decision request + permitted
+  scope + exactly one successor invocation + durable claim identity/time.
+  Claim acceptance does NOT prove invocation completion or exactly-once
+  external effects.
+- Extension mechanics on closed schemas (`additionalProperties: false` at all
+  levels): unchanged base decision + separately versioned extension record +
+  extension-aware processing REQUIRED for continuation + reject stripped or
+  unsupported extension requirements (fail closed against base-only replay).
+- Spike test list grows: concurrent claims (two attempts → exactly one
+  succeeds), restart survival, claim-before-start failure, ambiguous
+  execution, expiry/revocation ordering. Timestamp + idempotency key alone
+  are insufficient.
+- Demo artifact set grows to five: task-packet, review-finding,
+  human-decision, consumption receipt, agent-report (+ stop-response). The
+  console artifact panel and the video beat must count five, not four.
+- Upstream direction (not ours to land): HACP v0.3-draft = accountable
+  continuation + evidence; authority-origin wording fix (humans originate
+  authority, packets record it); fixtures to #9; inventory/migration to #11.
+  Merge gated on this spike's concurrency/restart evidence (spec follows
+  proof). Dual review at ship time means two different tools, not two passes
+  from one.
+
 ### Joe-side prerequisites for the day-1 Bedrock gate
 
 1. AWS Builder ID + claim the $50 hackathon credits (Devpost Resources tab).
