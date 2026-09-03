@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  svg { display: block; }
+  text { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<svg width="3200" height="2000" viewBox="0 0 3200 2000" xmlns="http://www.w3.org/2000/svg">
+  <rect width="3200" height="2000" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="80" y="130" font-size="64" font-weight="700" fill="#e2e8f0">who-decides — architecture</text>
+  <text x="80" y="196" font-size="30" fill="#94a3b8">A Strands agent that works in the background and surfaces only when there is a real human decision.</text>
+
+  <!-- ===================== BAND 1 : PREPARE ===================== -->
+  <text x="80" y="320" font-size="24" fill="#818cf8" letter-spacing="4" font-weight="600">1 · PREPARE — BACKGROUND, NO HUMAN NEEDED</text>
+
+  <!-- b1: task packet -->
+  <rect x="80" y="360" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="130" cy="420" r="24" fill="#312e81"/><text x="130" y="429" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">1</text>
+  <text x="170" y="430" font-size="30" font-weight="700" fill="#e2e8f0">TASK PACKET</text>
+  <text x="110" y="490" font-size="24" fill="#94a3b8">typed · HACP v0.1-draft</text>
+  <text x="110" y="540" font-size="24" fill="#e2e8f0">• bounded job: dependency-</text>
+  <text x="110" y="576" font-size="24" fill="#e2e8f0">  security update (fixture)</text>
+  <text x="110" y="622" font-size="24" fill="#e2e8f0">• allowed tools · scope</text>
+  <text x="110" y="668" font-size="24" fill="#e2e8f0">• forbidden external effect</text>
+  <text x="110" y="714" font-size="24" fill="#e2e8f0">• stop conditions</text>
+
+  <!-- arrow b1->b2 -->
+  <line x1="680" y1="550" x2="748" y2="550" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="748,540 768,550 748,560" fill="#818cf8"/>
+
+  <!-- b2: invocation A -->
+  <rect x="772" y="360" width="830" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="822" cy="420" r="24" fill="#312e81"/><text x="822" y="429" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">2</text>
+  <text x="862" y="430" font-size="30" font-weight="700" fill="#e2e8f0">INVOCATION A — STRANDS AGENT</text>
+  <text x="802" y="490" font-size="24" fill="#94a3b8">background run · session persisted</text>
+  <text x="802" y="540" font-size="24" fill="#e2e8f0">milestones:  inspect → update → test →</text>
+  <text x="802" y="576" font-size="24" fill="#e2e8f0">build → gather evidence (findings ride inside)</text>
+  <rect x="802" y="614" width="770" height="98" rx="12" fill="#0f172a" stroke="#1e3a8a" stroke-width="2"/>
+  <text x="826" y="652" font-size="22" fill="#93c5fd">provider abstraction (thin, env-config only)</text>
+  <text x="826" y="688" font-size="22" fill="#94a3b8">default: Amazon Bedrock · escape hatch: OpenAI-compatible</text>
+
+  <!-- arrow b2->b3 -->
+  <line x1="1602" y1="550" x2="1870" y2="550" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="1870,540 1890,550 1870,560" fill="#818cf8"/>
+
+  <!-- b3: terminal decision request -->
+  <rect x="1894" y="360" width="600" height="380" rx="16" fill="#1e293b" stroke="#f59e0b" stroke-width="3"/>
+  <circle cx="1944" cy="420" r="24" fill="#78350f"/><text x="1944" y="429" font-size="26" fill="#fde68a" text-anchor="middle" font-weight="700">3</text>
+  <text x="1984" y="430" font-size="30" font-weight="700" fill="#e2e8f0">TERMINAL DECISION REQUEST</text>
+  <text x="1924" y="490" font-size="24" fill="#fbbf24">the run ENDS — nothing pauses</text>
+  <text x="1924" y="540" font-size="24" fill="#e2e8f0">• typed artifact, schema-validated</text>
+  <text x="1924" y="586" font-size="24" fill="#e2e8f0">• tradeoff in human terms:</text>
+  <text x="1924" y="622" font-size="24" fill="#e2e8f0">  runtime floor bump, one check open</text>
+  <text x="1924" y="668" font-size="24" fill="#e2e8f0">• evidence + recommendation</text>
+  <text x="1924" y="714" font-size="24" fill="#f87171">• no external effect before approval</text>
+
+  <!-- drop b3 -> console -->
+  <line x1="2194" y1="740" x2="2194" y2="878" stroke="#34d399" stroke-width="4"/>
+  <polygon points="2184,878 2194,898 2204,878" fill="#34d399"/>
+
+  <!-- ===================== BAND 2 : DECIDE ===================== -->
+  <text x="2540" y="320" font-size="24" fill="#34d399" letter-spacing="4" font-weight="600">2 · DECIDE — THE HUMAN GATE</text>
+
+  <!-- console (right column) -->
+  <rect x="1894" y="900" width="600" height="380" rx="16" fill="#052e2b" stroke="#34d399" stroke-width="3"/>
+  <circle cx="1944" cy="960" r="24" fill="#064e3b"/><text x="1944" y="969" font-size="26" fill="#a7f3d0" text-anchor="middle" font-weight="700">4</text>
+  <text x="1984" y="970" font-size="30" font-weight="700" fill="#ecfdf5">HUMAN — CONSOLE</text>
+  <text x="1924" y="1030" font-size="24" fill="#34d399">the only authority in the system</text>
+  <text x="1924" y="1080" font-size="24" fill="#e2e8f0">states: running → decision required →</text>
+  <text x="1924" y="1116" font-size="24" fill="#e2e8f0">resumed  (hierarchy changes, not badges)</text>
+  <text x="1924" y="1166" font-size="24" font-weight="600" fill="#a7f3d0">"Decision required — waiting for you"</text>
+  <text x="1924" y="1216" font-size="24" fill="#e2e8f0">approve / reject / send back + rationale.</text>
+  <text x="1924" y="1262" font-size="22" fill="#94a3b8">"Run the demo" never preselects a choice.</text>
+
+  <!-- arrow console->record -->
+  <line x1="1894" y1="1090" x2="1726" y2="1090" stroke="#34d399" stroke-width="4"/>
+  <polygon points="1726,1080 1706,1090 1726,1100" fill="#34d399"/>
+
+  <!-- decision record -->
+  <rect x="1050" y="900" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="1100" cy="960" r="24" fill="#312e81"/><text x="1100" y="969" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">5</text>
+  <text x="1140" y="970" font-size="30" font-weight="700" fill="#e2e8f0">DECISION RECORD</text>
+  <text x="1080" y="1030" font-size="24" fill="#94a3b8">immutable · HACP human-decision</text>
+  <text x="1080" y="1080" font-size="24" fill="#e2e8f0">• chosen option + rationale</text>
+  <text x="1080" y="1126" font-size="24" fill="#e2e8f0">• actor (human) · timestamp</text>
+  <text x="1080" y="1172" font-size="24" fill="#e2e8f0">• request correlation id</text>
+  <text x="1080" y="1218" font-size="24" fill="#e2e8f0">• idempotency key</text>
+
+  <!-- arrow record->receipt -->
+  <line x1="1050" y1="1090" x2="882" y2="1090" stroke="#34d399" stroke-width="4"/>
+  <polygon points="882,1080 862,1090 882,1100" fill="#34d399"/>
+
+  <!-- consumption receipt -->
+  <rect x="206" y="900" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="256" cy="960" r="24" fill="#312e81"/><text x="256" y="969" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">6</text>
+  <text x="296" y="970" font-size="30" font-weight="700" fill="#e2e8f0">CONSUMPTION RECEIPT</text>
+  <text x="236" y="1030" font-size="24" fill="#94a3b8">separate · immutable · atomic claim</text>
+  <text x="236" y="1080" font-size="24" fill="#e2e8f0">binds decision ↔ exactly ONE</text>
+  <text x="236" y="1116" font-size="24" fill="#e2e8f0">successor invocation</text>
+  <text x="236" y="1166" font-size="24" fill="#f87171">concurrent resumes fail closed</text>
+  <text x="236" y="1216" font-size="22" fill="#94a3b8">claim ≠ execution (stated honestly)</text>
+
+  <!-- drop receipt -> B -->
+  <line x1="506" y1="1280" x2="506" y2="1418" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="496,1418 506,1438 516,1418" fill="#818cf8"/>
+
+  <!-- ===================== BAND 3 : ACT ===================== -->
+  <text x="640" y="1394" font-size="24" fill="#818cf8" letter-spacing="4" font-weight="600">3 · ACT — ONLY WHAT WAS APPROVED</text>
+
+  <!-- invocation B -->
+  <rect x="206" y="1440" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="256" cy="1500" r="24" fill="#312e81"/><text x="256" y="1509" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">7</text>
+  <text x="296" y="1510" font-size="30" font-weight="700" fill="#e2e8f0">INVOCATION B — SEEDED RESUME</text>
+  <text x="236" y="1570" font-size="24" fill="#94a3b8">new invocation, same logical session</text>
+  <text x="236" y="1620" font-size="24" fill="#e2e8f0">• persisted session + decision record</text>
+  <text x="236" y="1666" font-size="24" fill="#e2e8f0">• validates correlation, consumes claim</text>
+  <text x="236" y="1712" font-size="24" fill="#e2e8f0">  exactly once</text>
+  <text x="236" y="1758" font-size="24" fill="#34d399">"New invocation started from your decision"</text>
+
+  <!-- arrow B->effect -->
+  <line x1="806" y1="1630" x2="1022" y2="1630" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="1022,1620 1042,1630 1022,1640" fill="#818cf8"/>
+
+  <!-- effect receipt -->
+  <rect x="1046" y="1440" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="1096" cy="1500" r="24" fill="#312e81"/><text x="1096" y="1509" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">8</text>
+  <text x="1136" y="1510" font-size="30" font-weight="700" fill="#e2e8f0">EFFECT — DRY-RUN DEFAULT</text>
+  <text x="1076" y="1570" font-size="24" fill="#94a3b8">receipt is the effect · zero external deps</text>
+  <text x="1076" y="1620" font-size="24" fill="#e2e8f0">• exact payload it would execute</text>
+  <text x="1076" y="1666" font-size="24" fill="#e2e8f0">• "no external mutation performed"</text>
+  <text x="1076" y="1712" font-size="24" fill="#e2e8f0">• live draft-PR = configured opt-in,</text>
+  <text x="1076" y="1758" font-size="24" fill="#e2e8f0">  shown via captured receipt</text>
+
+  <!-- arrow effect->report -->
+  <line x1="1646" y1="1630" x2="1862" y2="1630" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="1862,1620 1882,1630 1862,1640" fill="#818cf8"/>
+
+  <!-- agent report -->
+  <rect x="1886" y="1440" width="600" height="380" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="1936" cy="1500" r="24" fill="#312e81"/><text x="1936" y="1509" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">9</text>
+  <text x="1976" y="1510" font-size="30" font-weight="700" fill="#e2e8f0">AGENT REPORT</text>
+  <text x="1916" y="1570" font-size="24" fill="#94a3b8">typed · HACP agent-report</text>
+  <text x="1916" y="1620" font-size="24" fill="#e2e8f0">• decision → outcome correlation</text>
+  <text x="1916" y="1666" font-size="24" fill="#e2e8f0">• rejected branch never ran</text>
+  <text x="1916" y="1712" font-size="24" fill="#e2e8f0">• provenance: provider, model,</text>
+  <text x="1916" y="1758" font-size="24" fill="#e2e8f0">  runtime, dry-run status</text>
+
+  <!-- ===================== ARTIFACT FOOTER ===================== -->
+  <text x="80" y="1886" font-size="24" fill="#94a3b8" letter-spacing="2" font-weight="600">TYPED ARTIFACTS — VALIDATED AGAINST HACP v0.1-draft JSON SCHEMAS</text>
+  <g font-size="22" fill="#c7d2fe">
+    <rect x="80"  y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="295" y="1948" text-anchor="middle">task-packet</text>
+    <rect x="540" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="755" y="1948" text-anchor="middle">review-finding</text>
+    <rect x="1000" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1215" y="1948" text-anchor="middle">human-decision</text>
+    <rect x="1460" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1675" y="1948" text-anchor="middle">consumption-receipt</text>
+    <rect x="1920" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2135" y="1948" text-anchor="middle">agent-report</text>
+    <rect x="2380" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2595" y="1948" text-anchor="middle">stop-response</text>
+  </g>
+  <text x="2870" y="1948" font-size="22" fill="#64748b" text-anchor="end" transform="translate(310 0)"> </text>
+</svg>
+</body>
+</html>
