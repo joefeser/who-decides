@@ -31,7 +31,7 @@ const scenario = JSON.parse(
 test('upstream canonical examples validate against vendored schemas', () => {
   for (const [kind, file] of EXAMPLES) {
     const example = JSON.parse(
-      readFileSync(path.resolve(import.meta.dirname, '../../.tmp/hacp-examples', file), 'utf8'),
+      readFileSync(path.resolve(import.meta.dirname, '../../fixtures/hacp-examples', file), 'utf8'),
     )
     const result = validateArtifact(kind, example)
     assert.ok(result.valid, `${file} should validate (${result.valid ? '' : ('errors: ' + (result as { errors?: string[] }).errors?.join('; '))})`)
