@@ -213,3 +213,30 @@ boundary).
   fall back to free-text markers (`demo-unauthenticated-local-console`).
 - `agent-report.files_changed` minItems 1 forces reporting preparation as
   changes even when the branch executes nothing externally.
+
+## Day 4 — 2026-09-03: live end-to-end pass (real model on the spine)
+
+`npm run live-loop` (WD_PROVIDER=bedrock, AWS_PROFILE=who-decides,
+global.anthropic.claude-sonnet-4-6, us-east-1): one full pass with a real
+Strands agent wired to the typed artifact spine.
+
+What the model actually did:
+
+- **Invocation A** prepared the patch summary, called `request_release_decision`
+  exactly once, and stopped (`stopReason=interrupt`, 1 interrupt) — no PR, no
+  external effect.
+- **Invocation B** resumed via `InterruptResponseContent` with the scripted
+  human choice (`create_draft_pr` + rationale); the SDK completed the pending
+  tool execution and the model ended its turn stating it would take no further
+  autonomous action (`stopReason=endTurn`).
+- **Spine:** packet + 2 findings + stop-response + human-decision +
+  consumption-receipt + effect-receipt + agent-report all built from runtime
+  truth and validated against HACP v0.1-draft. Claim atomic; live duplicate
+  probe REJECTED (competing_successor). Dry-run only.
+- Runtime: 5.6s wall clock for both invocations. Cost well under the $5 gate
+  ceiling (single-pass, in line with Day 2b's $0.054/run measurement).
+
+Artifacts in `.tmp/live-run/` (gitignored); summary JSON records provider,
+invocation ids, receipt id, and probe outcome. Remaining for the demo: final
+video beat using this pass, gallery screenshots from the console, Devpost
+Built With tags.
