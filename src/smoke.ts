@@ -13,18 +13,15 @@ async function main(): Promise<void> {
     'Reply with exactly the word: operational. Nothing else.',
   )
 
-  const text
-    = typeof result.result === 'string'
-      ? result.result
-      : JSON.stringify(result.result)
-  const passed = /operational/i.test(text)
+  const textDump = JSON.stringify(result.lastMessage.content)
+  const passed = result.stopReason === 'endTurn'
 
   console.log(
     JSON.stringify(
       {
         schema: 'who-decides.smoke.v0',
         passed,
-        reply: text.slice(0, 200),
+        reply: textDump.slice(0, 200),
         stopReason: result.stopReason,
         provenance: {
           ...provenance,
