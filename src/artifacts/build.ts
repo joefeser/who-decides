@@ -136,33 +136,59 @@ export function buildStopResponse(s: Scenario): Record<string, unknown> {
   }
 }
 
-export function buildHumanDecision(s: Scenario, invocationReceiptDigest: string): Record<string, unknown> {
+export type RuntimeDecision = {
+  decisionId: string
+  choice: string
+  rationale: string
+  decidedAt: string
+}
+
+/** Console choice → HACP decision vocabulary. v0.1-draft has no send_back/defer
+ * primitives (v0.3 input); these are the closest protocol-legal mappings. */
+const CHOICE_TO_HACP: Record<string, { decision: string, to_status: string }> = {
+  create_draft_pr: { decision: 'start_work', to_status: 'in_progress' },
+  send_back: { decision: 'request_review', to_status: 'draft' },
+  defer: { decision: 'cancel_session', to_status: 'canceled' },
+}
+
+export function hacpDecisionFor(choice: string): { decision: string, to_status: string } {
+  const mapped = CHOICE_TO_HACP[choice]
+  if (!mapped) throw new Error(`UNKNOWN_CHOICE:${choice}`)
+  return mapped
+}
+
+export function buildHumanDecision(s: Scenario, d: RuntimeDecision, invocationReceiptDigest: string): Record<string, unknown> {
+  const { decision, to_status } = hacpDecisionFor(d.choice)
+  /* Demo attribution boundary: v0.1-draft has no "unauthenticated local
+   * console" actor-verification value (v0.3 input), so the enum stays
+   * server_session_with_human_interaction but the free-string references say
+   * plainly that no real session was verified. See README "Demo boundaries". */
   const actor = {
     actor_id: s.human_operator,
     actor_kind: 'human',
     actor_verification_source: 'server_session_with_human_interaction',
     authentication_context: {
       interaction_channel: 'web_ui',
-      session_reference: `session-${s.run_id}`,
-      auth_event_ref: `auth-event-${s.run_id}`,
+      session_reference: 'demo-unauthenticated-local-console',
+      auth_event_ref: 'demo-none',
       secret_material_present: false,
     },
   }
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.human_decision_gate',
-    decision_id: s.decision_id,
+    decision_id: d.decisionId,
     packet_id: s.packet_id,
     report_id: s.report_id,
     profile_id: 'hacp-base-draft',
     profile_version: 'v0.1-draft',
     decision_matrix_version: 'v0.1-draft',
     from_status: 'needs_human_decision',
-    to_status: 'approved',
-    decision: 'start_work',
-    reason: s.human_choice.rationale,
+    to_status,
+    decision,
+    reason: d.rationale,
     created_at: NOW(),
-    decided_at: NOW(),
+    decided_at: d.decidedAt,
     ...actor,
     actor: { ...actor },
     forbidden_effects_confirmed: ['releases_to_users', 'accepts_risk'],
@@ -173,9 +199,33 @@ export function buildHumanDecision(s: Scenario, invocationReceiptDigest: string)
 
 export function buildAgentReport(
   s: Scenario,
+  d: RuntimeDecision,
   consumptionReceiptId: string,
   decisionDigest: string,
 ): Record<string, unknown> {
+  const prepared = `Prepared ${s.package} ${s.to_version}; stopped at HUMAN_DECISION_REQUIRED; resumed from recorded decision ${d.decisionId};`
+  // files_changed reports invocation A's preparation (real in every branch);
+  // the branch difference is the external effect, carried by behaviour + next step.
+  const preparedFiles = ['package.json', 'package-lock.json']
+  const branch: Record<string, { behaviour: string, files: string[], next: string }> = {
+    create_draft_pr: {
+      behaviour: `${prepared} executed only the approved branch: dry-run draft-PR receipt (no external mutation).`,
+      files: preparedFiles,
+      next: 'complete',
+    },
+    send_back: {
+      behaviour: `${prepared} human sent the work back; recorded the feedback, created no PR, and queued the revision branch.`,
+      files: preparedFiles,
+      next: 'revise_and_resubmit',
+    },
+    defer: {
+      behaviour: `${prepared} human deferred; recorded the deferral and executed nothing.`,
+      files: preparedFiles,
+      next: 'revisit_on_request',
+    },
+  }
+  const b = branch[d.choice]
+  if (!b) throw new Error(`UNKNOWN_CHOICE:${d.choice}`)
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.agent_report',
@@ -186,8 +236,8 @@ export function buildAgentReport(
     created_at: NOW(),
     created_by: s.created_by_agent,
     status: 'completed',
-    files_changed: ['package.json', 'package-lock.json'],
-    behaviour_implemented: `Prepared ${s.package} ${s.to_version}; stopped at HUMAN_DECISION_REQUIRED; resumed from recorded decision ${s.decision_id}; executed only the approved branch (dry-run receipt).`,
+    files_changed: b.files,
+    behaviour_implemented: b.behaviour,
     verification_performed: ['unit suite', 'production build', 'dependency audit'],
     scope_confirmation: {
       scope_preserved: true,
@@ -203,14 +253,14 @@ export function buildAgentReport(
     blockers: [],
     residual_risks: [s.tradeoff.unresolved_check],
     requested_next_human_decision: undefined,
-    requested_next_step: 'complete',
+    requested_next_step: b.next,
     boundaries_preserved: true,
     boundary_crossed_reason: null,
     evidence_refs: [
-      { ref: `decision:${s.decision_id}`, kind: 'decision_record', summary: `Decision claimed by exactly one successor invocation; receipt ${consumptionReceiptId}` },
+      { ref: `decision:${d.decisionId}`, kind: 'decision_record', summary: `Decision claimed by exactly one successor invocation; receipt ${consumptionReceiptId}` },
       { ref: `consumption:${consumptionReceiptId}`, kind: 'other', summary: `Decision digest sha256:${decisionDigest}` },
     ],
-    evidence: [`decision:${s.decision_id}`, `consumption:${consumptionReceiptId}`],
+    evidence: [`decision:${d.decisionId}`, `consumption:${consumptionReceiptId}`],
   }
 }
 

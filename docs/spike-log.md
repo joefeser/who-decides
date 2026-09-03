@@ -176,3 +176,40 @@ Remaining: console (M3) wired to this spine, one real-model end-to-end pass
 (Bedrock, cents), final video.
 
 (Prerequisites section retired: the Bedrock gate ran and COMMITted — see Day 2b.)
+
+## Day 3b — 2026-09-03: console (M3) + first PR review loop
+
+Console built on `feat/console` (PR #1): SQLite-backed engine, four API routes,
+client UI that never preselects and polls only while transitioning. Full loop
+green over HTTP; screenshots captured.
+
+PR #1 review loop (Qodo + Codex bot reviews, Joe's dispatch): 11 findings
+triaged, 8 patched in the PR. The two that matter most:
+
+1. **Non-approval branches executed the approval branch.** `send_back` and
+   `defer` still built the draft-PR payload and an approval-shaped report —
+   contradicting the demo's core promise. Fixed: per-branch effect payloads and
+   reports; only `create_draft_pr` produces PR fields. Verified over HTTP for
+   all three choices.
+2. **The human-decision artifact was built from fixture values, not the
+   submitted decision.** Fixed: runtime choice/rationale/decision-id flow into
+   the artifact; artifact, consumption receipt, and agent report now share one
+   decision identity.
+
+Also fixed: idempotency key honored (retry of a committed decision returns
+success + `duplicate`), crash between claim and state-write now recovers with
+the same successor instead of a competing claim, one-active-run enforced in an
+`BEGIN IMMEDIATE` transaction, both receipt kinds structurally validated before
+getting a green check, reset archives instead of deleting audit records, and
+UI busy states clear on network failure. New suite `npm run test:console`
+(6/6). Console auth deliberately deferred → issue #2 (README documents the
+boundary).
+
+### HACP v0.3 vocabulary inputs (from real use in this demo)
+
+- No `send_back`/`defer` decision primitives: mapped to `request_review`→draft
+  and `cancel_session`→canceled. Both feel like protocol lies of necessity.
+- No "unauthenticated/local console" actor-verification source; demo artifacts
+  fall back to free-text markers (`demo-unauthenticated-local-console`).
+- `agent-report.files_changed` minItems 1 forces reporting preparation as
+  changes even when the branch executes nothing externally.

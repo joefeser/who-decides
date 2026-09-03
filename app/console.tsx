@@ -70,8 +70,12 @@ export default function Console() {
 
   async function startRun() {
     setError(null)
-    await fetch('/api/run', { method: 'POST' })
-    await refresh()
+    try {
+      await fetch('/api/run', { method: 'POST' })
+      await refresh()
+    } catch {
+      setError('NETWORK_ERROR: could not reach the console server')
+    }
   }
 
   async function submitDecision(event: React.FormEvent) {
@@ -79,25 +83,35 @@ export default function Console() {
     if (!choice || rationale.trim().length === 0) return
     setSubmitting(true)
     setError(null)
-    const response = await fetch('/api/decision', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ choice, rationale, idempotencyKey: `console:${state?.runId}` }),
-    })
-    setSubmitting(false)
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
-      setError(body.error ?? 'UNKNOWN')
-      return
+    try {
+      const response = await fetch('/api/decision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ choice, rationale, idempotencyKey: `console:${state?.runId}` }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
+        setError(body.error ?? 'UNKNOWN')
+        return
+      }
+      await refresh()
+    } catch {
+      setError('NETWORK_ERROR: decision not recorded — check the server and retry (same choice is safe)')
+    } finally {
+      setSubmitting(false)
     }
-    await refresh()
   }
 
   async function attemptDuplicate() {
     setReplaying(true)
-    await fetch('/api/replay', { method: 'POST' })
-    await refresh()
-    setReplaying(false)
+    try {
+      await fetch('/api/replay', { method: 'POST' })
+      await refresh()
+    } catch {
+      setError('NETWORK_ERROR: probe not recorded — check the server and retry')
+    } finally {
+      setReplaying(false)
+    }
   }
 
   async function resetConsole() {

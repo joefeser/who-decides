@@ -65,13 +65,41 @@ const HEADING: Record<ConsoleState['state'] & string, { heading: string, subhead
   completed: { heading: 'Complete', subheading: 'The decision was consumed exactly once. No external mutation was performed.' },
 }
 
-class ConsoleEngine {
+/* Structural validators for the two who-decides receipt kinds — they are not
+ * HACP v0.1-draft artifacts, but they must never get a green check for free
+ * (Qodo #5 / Codex P2). A malformed receipt fails the write. */
+function validateReceipt(kind: 'consumption-receipt' | 'effect-receipt', artifact: unknown): boolean {
+  if (typeof artifact !== 'object' || artifact === null) return false
+  const r = artifact as Record<string, unknown>
+  if (kind === 'consumption-receipt') {
+    return r.schema === 'who-decides.consumption-receipt.v0'
+      && typeof r.receiptId === 'string' && r.receiptId.length > 0
+      && typeof r.decisionId === 'string' && r.decisionId.length > 0
+      && typeof r.decisionDigest === 'string' && (r.decisionDigest as string).startsWith('sha256:')
+      && typeof r.decisionRequestId === 'string' && r.decisionRequestId.length > 0
+      && typeof r.permittedAction === 'string' && r.permittedAction.length > 0
+      && typeof r.successorInvocationId === 'string' && r.successorInvocationId.length > 0
+      && typeof r.claimedAt === 'string' && r.claimedAt.length > 0
+      && typeof r.claimNote === 'string' && r.claimNote.length > 0
+  }
+  return r.schema === 'who-decides.effect-receipt.v0'
+    && typeof r.effect === 'string' && r.effect.length > 0
+    && r.mode === 'dry-run'
+    && r.noExternalMutationPerformed === true
+    && typeof r.exactPayload === 'object' && r.exactPayload !== null
+    && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.decisionId === 'string'
+    && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.consumptionReceiptId === 'string'
+    && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.successorInvocationId === 'string'
+}
+
+export class ConsoleEngine {
   private readonly db: Database.Database
   private readonly consumption: ConsumptionStore
 
   constructor() {
-    mkdirSync(DB_DIR, { recursive: true })
-    this.db = new Database(path.join(DB_DIR, 'state.db'))
+    const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
+    mkdirSync(dir, { recursive: true })
+    this.db = new Database(path.join(dir, 'state.db'))
     this.db.pragma('journal_mode = WAL')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
@@ -86,7 +114,8 @@ class ConsoleEngine {
         receipt_json TEXT,
         effect_json TEXT,
         replay_json TEXT,
-        milestones_json TEXT
+        milestones_json TEXT,
+        archived INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS artifacts (
         run_id TEXT NOT NULL,
@@ -97,20 +126,18 @@ class ConsoleEngine {
         PRIMARY KEY (run_id, name)
       );
     `)
-    this.consumption = new ConsumptionStore(path.join(DB_DIR, 'consumption.db'))
+    // Pre-archived-column databases (dev .tmp): add the column in place.
+    try { this.db.exec('ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0') } catch { /* column exists */ }
+    this.consumption = new ConsumptionStore(path.join(dir, 'consumption.db'))
   }
 
   currentRun(): { id: string, state: string, phase_changed_at: string } | undefined {
     return this.db
-      .prepare('SELECT id, state, phase_changed_at FROM runs ORDER BY started_at DESC LIMIT 1')
+      .prepare('SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 ORDER BY started_at DESC LIMIT 1')
       .get() as { id: string, state: string, phase_changed_at: string } | undefined
   }
 
   startRun(): { runId: string } {
-    const existing = this.currentRun()
-    if (existing && existing.state !== 'completed') {
-      return { runId: existing.id }
-    }
     const s = loadScenario()
     const runId = `run-${randomUUID()}`
     const invocationA = `inv-${randomUUID()}`
@@ -121,9 +148,25 @@ class ConsoleEngine {
       { label: 'test', detail: s.checks.unit, at: now },
       { label: 'build', detail: s.checks.build, at: now },
     ]
-    this.db
-      .prepare('INSERT INTO runs (id, state, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(runId, 'running', invocationA, now, now, JSON.stringify(milestones))
+    // One-active-run enforced inside an immediate transaction: a concurrent
+    // caller cannot slip a second active run between check and insert.
+    let existingId: string | null = null
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const existing = this.currentRun()
+      if (existing && existing.state !== 'completed') {
+        existingId = existing.id
+      } else {
+        this.db
+          .prepare('INSERT INTO runs (id, state, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(runId, 'running', invocationA, now, now, JSON.stringify(milestones))
+      }
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    if (existingId) return { runId: existingId }
 
     const packet = buildTaskPacket(s)
     assertValid('task-packet', packet)
@@ -155,57 +198,104 @@ class ConsoleEngine {
     }
   }
 
-  submitDecision(choice: string, rationale: string): { ok: boolean, error?: string } {
+  submitDecision(choice: string, rationale: string, idempotencyKey?: string): { ok: boolean, duplicate?: boolean, error?: string } {
     const run = this.currentRun()
     if (!run) return { ok: false, error: 'NO_RUN' }
     this.advancePhases(run)
-    if (run.state !== 'decision_required') return { ok: false, error: `WRONG_STATE:${run.state}` }
+    const row = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(run.id) as { decision_json: string | null, invocation_b: string | null }
+    if (run.state !== 'decision_required') {
+      // Idempotent recovery: a retry whose first attempt committed (e.g. the
+      // HTTP response was lost) must not dead-end in WRONG_STATE.
+      if (row.decision_json) return { ok: true, duplicate: true }
+      return { ok: false, error: `WRONG_STATE:${run.state}` }
+    }
     const s = loadScenario()
     if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
 
-    const decidedAt = new Date().toISOString()
-    const decisionRecord: DecisionRecord = {
-      decisionId: `decision-${run.id}`,
-      chosenOption: choice,
-      rationale,
-      decidedAt,
-      decisionRequestId: s.stop_id,
-      permittedAction: 'dry-run receipt for draft PR creation (no external mutation)',
+    // Persist the decision intent (choice, rationale, decidedAt, successor id)
+    // BEFORE claiming, so a crash between claim and state-write leaves a
+    // retry that reuses the same successor and same digest → 'replayed',
+    // never a competing successor. Only a first submission may set them.
+    const prior = row.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string } : null
+    const invocationB = row.invocation_b ?? `inv-${randomUUID()}`
+    const decidedAt = prior?.decidedAt ?? new Date().toISOString()
+    const effectiveChoice = prior?.choice ?? choice
+    const effectiveRationale = prior?.rationale ?? rationale
+    if (!prior) {
+      this.db
+        .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL')
+        .run(invocationB, JSON.stringify({ choice: effectiveChoice, rationale: effectiveRationale, decidedAt, idempotencyKey: idempotencyKey ?? null }), run.id)
     }
 
-    const invocationB = `inv-${randomUUID()}`
+    const decisionId = `decision-${run.id}`
+    const decisionRecord = this.decisionRecord(decisionId, effectiveChoice, effectiveRationale, decidedAt)
+
     const claim = this.consumption.claim(decisionRecord, invocationB, decisionDigest(decisionRecord))
     if (claim.status === 'rejected') return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
 
-    const humanDecision = buildHumanDecision(s, 'invocation-a-evidence')
+    const runtimeDecision = {
+      decisionId: decisionRecord.decisionId,
+      choice: effectiveChoice,
+      rationale: effectiveRationale,
+      decidedAt,
+    }
+    const humanDecision = buildHumanDecision(s, runtimeDecision, 'invocation-a-evidence')
     assertValid('human-decision', humanDecision)
     this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)
 
-    const effect = {
-      schema: 'who-decides.effect-receipt.v0',
-      effect: choice,
-      mode: 'dry-run',
-      exactPayload: {
-        repo: 'example/kestrel-app',
-        title: `Security: ${s.package} ${s.to_version}`,
-        body: `${s.advisory}\n\nRuntime floor moves ${s.tradeoff.from} → ${s.tradeoff.to}. ${s.tradeoff.who_is_affected}.`,
-        branch: `security/${s.package}-${s.to_version}`,
-      },
-      noExternalMutationPerformed: true,
-      authorizedBy: { decisionId: decisionRecord.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: invocationB },
-    }
+    const effect = this.buildEffect(s, effectiveChoice, runtimeDecision.decisionId, claim.receipt.receiptId, invocationB)
     this.storeArtifact(run.id, 'effect-receipt', 'effect-receipt', effect)
 
-    const report = buildAgentReport(s, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''))
+    const report = buildAgentReport(s, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''))
     assertValid('agent-report', report)
     this.storeArtifact(run.id, 'agent-report', 'agent-report', report)
 
     this.db
-      .prepare('UPDATE runs SET state = ?, invocation_b = ?, phase_changed_at = ?, decision_json = ?, receipt_json = ?, effect_json = ? WHERE id = ?')
-      .run('resuming', invocationB, decidedAt, JSON.stringify({ choice, rationale, decidedAt }), JSON.stringify(claim.receipt), JSON.stringify(effect), run.id)
+      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ?')
+      .run('resuming', decidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect), run.id)
     return { ok: true }
+  }
+
+  /** The effect receipt executes ONLY the approved branch — the console's
+   * core promise. Non-approval choices never produce a draft-PR payload. */
+  private buildEffect(s: Scenario, choice: string, decisionId: string, consumptionReceiptId: string, invocationB: string): Record<string, unknown> {
+    const base = {
+      schema: 'who-decides.effect-receipt.v0',
+      effect: choice,
+      mode: 'dry-run',
+      noExternalMutationPerformed: true,
+      authorizedBy: { decisionId, consumptionReceiptId, successorInvocationId: invocationB },
+    }
+    if (choice === 'create_draft_pr') {
+      return {
+        ...base,
+        exactPayload: {
+          repo: 'example/kestrel-app',
+          title: `Security: ${s.package} ${s.to_version}`,
+          body: `${s.advisory}\n\nRuntime floor moves ${s.tradeoff.from} → ${s.tradeoff.to}. ${s.tradeoff.who_is_affected}.`,
+          branch: `security/${s.package}-${s.to_version}`,
+        },
+      }
+    }
+    if (choice === 'send_back') {
+      return {
+        ...base,
+        exactPayload: {
+          outcome: 'no PR created — work returned to the agent',
+          feedbackToAgent: `Resolve the runtime-floor question (${s.tradeoff.from} → ${s.tradeoff.to}) and resubmit for decision.`,
+          queue: `revision/security-${s.package}-${s.to_version}`,
+        },
+      }
+    }
+    return {
+      ...base,
+      exactPayload: {
+        outcome: 'nothing executed — decision deferred',
+        revisitOn: 'next operator session',
+      },
+    }
   }
 
   attemptDuplicateReplay(): { attemptedBy: string, result: string, detail: string } {
@@ -215,15 +305,7 @@ class ConsoleEngine {
     if (!decisionRow?.decision_json || !decisionRow?.receipt_json) throw new Error('NOT_RESUMED_YET')
     const decision = JSON.parse(decisionRow.decision_json) as { choice: string, rationale: string, decidedAt: string }
     const receipt = JSON.parse(decisionRow.receipt_json) as { decisionId: string }
-    const s = loadScenario()
-    const record: DecisionRecord = {
-      decisionId: receipt.decisionId,
-      chosenOption: decision.choice,
-      rationale: decision.rationale,
-      decidedAt: decision.decidedAt,
-      decisionRequestId: s.stop_id,
-      permittedAction: 'dry-run receipt for draft PR creation (no external mutation)',
-    }
+    const record = this.decisionRecord(receipt.decisionId, decision.choice, decision.rationale, decision.decidedAt)
     const imposter = `inv-${randomUUID()}`
     const result = this.consumption.claim(record, imposter)
     const probe = result.status === 'rejected'
@@ -233,14 +315,34 @@ class ConsoleEngine {
     return probe
   }
 
+  private decisionRecord(decisionId: string, choice: string, rationale: string, decidedAt: string): DecisionRecord {
+    const s = loadScenario()
+    return {
+      decisionId,
+      chosenOption: choice,
+      rationale,
+      decidedAt,
+      decisionRequestId: s.stop_id,
+      permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
+    }
+  }
+
+  /** Reset clears the live console without destroying completed audit
+   * records — HACP artifacts survive the demo loop (Codex P2). */
   reset(): void {
-    this.db.exec('DELETE FROM runs; DELETE FROM artifacts;')
+    this.db.exec('UPDATE runs SET archived = 1')
+  }
+
+  close(): void {
+    this.consumption.close()
+    this.db.close()
   }
 
   private storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', artifact: unknown): void {
-    const valid = kind.startsWith('who-decides') || kind.includes('receipt')
-      ? true
-      : validateArtifact(kind as ArtifactKind, artifact).valid
+    const valid = kind === 'consumption-receipt' || kind === 'effect-receipt'
+      ? validateReceipt(kind, artifact)
+      : validateArtifact(kind, artifact).valid
+    if (!valid) throw new Error(`ARTIFACT_INVALID:${kind}:${name}`)
     this.db
       .prepare('INSERT OR REPLACE INTO artifacts (run_id, name, kind, valid, json) VALUES (?, ?, ?, ?, ?)')
       .run(runId, name, kind, valid ? 1 : 0, JSON.stringify(artifact))

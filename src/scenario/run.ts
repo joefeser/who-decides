@@ -41,15 +41,22 @@ async function main(): Promise<void> {
   artifacts.push({ name: 'stop-response', kind: 'stop-response', artifact: stop })
 
   // 2 — the human decides (fixture-scripted; in the real demo this is the console).
+  const decidedAt = new Date().toISOString()
+  const runtimeDecision = {
+    decisionId: s.decision_id,
+    choice: s.human_choice.decision,
+    rationale: s.human_choice.rationale,
+    decidedAt,
+  }
   const decisionRecord: DecisionRecord = {
     decisionId: s.decision_id,
     chosenOption: s.human_choice.decision,
     rationale: s.human_choice.rationale,
-    decidedAt: new Date().toISOString(),
+    decidedAt,
     decisionRequestId: s.stop_id,
-    permittedAction: 'dry-run receipt for draft PR creation (no external mutation)',
+    permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
   }
-  const humanDecision = buildHumanDecision(s, 'invocation-a-evidence')
+  const humanDecision = buildHumanDecision(s, runtimeDecision, 'invocation-a-evidence')
   assertValid('human-decision', humanDecision)
   artifacts.push({ name: 'human-decision', kind: 'human-decision', artifact: humanDecision })
 
@@ -90,7 +97,7 @@ async function main(): Promise<void> {
   }
 
   // 5 — the agent report correlates decision → outcome.
-  const report = buildAgentReport(s, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''))
+  const report = buildAgentReport(s, runtimeDecision, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''))
   assertValid('agent-report', report)
   artifacts.push({ name: 'agent-report', kind: 'agent-report', artifact: report })
 

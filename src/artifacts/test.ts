@@ -17,6 +17,13 @@ const EXAMPLES: Array<[ArtifactKind, string]> = [
   ['stop-response', 'stop-response.valid.json'],
 ]
 
+const runtimeDecision = (choice: string) => ({
+  decisionId: scenario.decision_id,
+  choice,
+  rationale: scenario.human_choice.rationale,
+  decidedAt: '2026-09-03T00:00:00.000Z',
+})
+
 const scenario = JSON.parse(
   readFileSync(path.resolve(import.meta.dirname, '../../fixtures/patch-scenario.json'), 'utf8'),
 ) as Scenario
@@ -37,8 +44,23 @@ test('scenario artifacts validate: packet, findings, stop, decision, report', ()
     assert.ok(validateArtifact('review-finding', finding).valid)
   }
   assert.ok(validateArtifact('stop-response', buildStopResponse(scenario)).valid)
-  assert.ok(validateArtifact('human-decision', buildHumanDecision(scenario, 'test-digest')).valid)
-  assert.ok(validateArtifact('agent-report', buildAgentReport(scenario, 'receipt-1', 'cafebabe')).valid)
+  const runtime = { decisionId: scenario.decision_id, choice: scenario.human_choice.decision, rationale: scenario.human_choice.rationale, decidedAt: '2026-09-03T00:00:00.000Z' }
+  assert.ok(validateArtifact('human-decision', buildHumanDecision(scenario, runtime, 'test-digest')).valid)
+  assert.ok(validateArtifact('agent-report', buildAgentReport(scenario, runtime, 'receipt-1', 'cafebabe')).valid)
+})
+
+test('non-approval choices map to protocol-legal decisions, not start_work', () => {
+  const mk = (choice: string) => buildHumanDecision(scenario, {
+    decisionId: scenario.decision_id, choice, rationale: 'branch test', decidedAt: '2026-09-03T00:00:00.000Z',
+  }, 'd')
+  const sendBack = mk('send_back') as Record<string, unknown>
+  assert.equal(sendBack.decision, 'request_review')
+  assert.equal(sendBack.to_status, 'draft')
+  const defer = mk('defer') as Record<string, unknown>
+  assert.equal(defer.decision, 'cancel_session')
+  assert.equal(defer.to_status, 'canceled')
+  assert.ok(validateArtifact('human-decision', sendBack).valid)
+  assert.ok(validateArtifact('human-decision', defer).valid)
 })
 
 test('tampered task packet (authority escalated) FAILS', () => {
@@ -48,13 +70,13 @@ test('tampered task packet (authority escalated) FAILS', () => {
 })
 
 test('tampered decision (actor demoted to agent) FAILS', () => {
-  const decision = buildHumanDecision(scenario, 'd') as Record<string, unknown>
+  const decision = buildHumanDecision(scenario, runtimeDecision('create_draft_pr'), 'd') as Record<string, unknown>
   decision.actor_kind = 'ai_agent' // only human verifications allowed
   assert.equal(validateArtifact('human-decision', decision).valid, false)
 })
 
 test('decision missing required rationale FAILS', () => {
-  const decision = buildHumanDecision(scenario, 'd') as Record<string, unknown>
+  const decision = buildHumanDecision(scenario, runtimeDecision('create_draft_pr'), 'd') as Record<string, unknown>
   delete decision.reason
   assert.equal(validateArtifact('human-decision', decision).valid, false)
 })
@@ -66,7 +88,7 @@ test('stop-response with reliability_boundary on a non-reliability stop FAILS', 
 })
 
 test('report claiming boundaries preserved while crossing them FAILS', () => {
-  const report = buildAgentReport(scenario, 'r', 'd') as Record<string, unknown>
+  const report = buildAgentReport(scenario, runtimeDecision('create_draft_pr'), 'r', 'd') as Record<string, unknown>
   report.boundary_crossed_reason = 'merged_without_decision'
   report.boundaries_preserved = true
   assert.equal(validateArtifact('agent-report', report).valid, false)
