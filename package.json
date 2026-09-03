@@ -15,7 +15,9 @@
     "gate:bedrock": "tsx src/gate-bedrock.ts",
     "test:consumption": "tsx --test src/consumption/test.ts",
     "scenario": "tsx src/scenario/run.ts",
-    "test:artifacts": "tsx --test src/artifacts/test.ts"
+    "test:artifacts": "tsx --test src/artifacts/test.ts",
+    "console": "next dev -p 3100",
+    "console:build": "next build"
   },
   "repository": {
     "type": "git",

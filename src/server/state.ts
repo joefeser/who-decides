@@ -7,18 +7,18 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { assertValid, validateArtifact } from '../artifacts/schemas.js'
-import type { ArtifactKind } from '../artifacts/schemas.js'
+import { assertValid, validateArtifact } from '../artifacts/schemas'
+import type { ArtifactKind } from '../artifacts/schemas'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
   buildAgentReport,
-} from '../artifacts/build.js'
-import type { Scenario } from '../artifacts/build.js'
-import { ConsumptionStore, decisionDigest } from '../consumption/store.js'
-import type { DecisionRecord } from '../consumption/store.js'
+} from '../artifacts/build'
+import type { Scenario } from '../artifacts/build'
+import { ConsumptionStore, decisionDigest } from '../consumption/store'
+import type { DecisionRecord } from '../consumption/store'
 import { readFileSync } from 'node:fs'
 
-const DB_DIR = process.env.WD_CONSOLE_DIR ?? path.resolve(import.meta.dirname, '../../.tmp/console')
+const DB_DIR = process.env.WD_CONSOLE_DIR ?? path.resolve(process.cwd(), '.tmp/console')
 const RUN_RUNNING_MS = 2600
 const RUN_RESUMING_MS = 1800
 
@@ -45,7 +45,7 @@ export type ConsoleState = {
   decision: { choice: string, rationale: string, decidedAt: string } | null
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
   replayProbe: { attemptedBy: string, result: string, detail: string } | null
-  effect: { effect: string, mode: string, noExternalMutation: boolean, payload: Record<string, unknown> } | null
+  effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
   artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', valid: boolean }>
   heading: string
   subheading: string
@@ -53,7 +53,7 @@ export type ConsoleState = {
 
 function loadScenario(): Scenario {
   return JSON.parse(
-    readFileSync(path.resolve(import.meta.dirname, '../../fixtures/patch-scenario.json'), 'utf8'),
+    readFileSync(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
   ) as Scenario
 }
 
@@ -80,6 +80,7 @@ class ConsoleEngine {
         invocation_a TEXT,
         invocation_b TEXT,
         started_at TEXT,
+        completed_at TEXT,
         phase_changed_at TEXT NOT NULL,
         decision_json TEXT,
         receipt_json TEXT,

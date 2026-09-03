@@ -13,6 +13,7 @@ export type ProviderConfig = {
     provider: ProviderKind
     modelId: string
     baseUrl?: string
+    region?: string
   }
 }
 

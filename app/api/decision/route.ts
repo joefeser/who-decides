@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import engine from '../../../src/server/state.js'
+import engine from '../../../src/server/state'
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as { choice?: string, rationale?: string, idempotencyKey?: string } | null

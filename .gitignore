@@ -30,3 +30,7 @@ Thumbs.db
 
 # agent scratch
 .tmp/
+
+# next.js
+.next/
+next-env.d.ts

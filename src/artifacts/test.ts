@@ -4,10 +4,10 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { validateArtifact } from './schemas.js'
-import type { ArtifactKind } from './schemas.js'
-import { buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision, buildAgentReport } from './build.js'
-import type { Scenario } from './build.js'
+import { validateArtifact } from './schemas'
+import type { ArtifactKind } from './schemas'
+import { buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision, buildAgentReport } from './build'
+import type { Scenario } from './build'
 
 const EXAMPLES: Array<[ArtifactKind, string]> = [
   ['task-packet', 'task-packet.valid.json'],

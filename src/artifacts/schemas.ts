@@ -7,7 +7,7 @@ import path from 'node:path'
 import Ajv2020 from 'ajv/dist/2020'
 import addFormats from 'ajv-formats'
 
-export const SCHEMA_DIR = path.resolve(import.meta.dirname, '../../schemas/hacp/v0.1-draft')
+export const SCHEMA_DIR = path.resolve(process.cwd(), 'schemas/hacp/v0.1-draft')
 
 export type ArtifactKind =
   | 'task-packet'

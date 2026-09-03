@@ -7,14 +7,14 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
-import { assertValid } from '../artifacts/schemas.js'
+import { assertValid } from '../artifacts/schemas'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
   buildAgentReport, newInvocationId,
-} from '../artifacts/build.js'
-import type { Scenario } from '../artifacts/build.js'
-import { ConsumptionStore, decisionDigest } from '../consumption/store.js'
-import type { DecisionRecord } from '../consumption/store.js'
+} from '../artifacts/build'
+import type { Scenario } from '../artifacts/build'
+import { ConsumptionStore, decisionDigest } from '../consumption/store'
+import type { DecisionRecord } from '../consumption/store'
 
 function loadScenario(): Scenario {
   const file = process.env.WD_SCENARIO ?? path.resolve(import.meta.dirname, '../../fixtures/patch-scenario.json')
