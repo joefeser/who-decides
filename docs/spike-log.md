@@ -88,7 +88,36 @@ structured-output work.
   proof). Dual review at ship time means two different tools, not two passes
   from one.
 
-### Joe-side prerequisites for the day-1 Bedrock gate
+## Day 2 — 2026-09-03 evening: interrupt spike results (M1 evidence)
+
+Three tests, `src/spike-interrupt.ts`, receipts printed per phase.
+
+- **t1 (in-process) PASSED:** tool raised `context.interrupt({name, reason})`;
+  agent halted; resume via `new InterruptResponseContent({interruptId, response})`
+  delivered the human decision INTO the tool; run completed `endTurn`.
+- **t2 (cross-process) PASSED — the M1 bar:** process A ran to interrupt,
+  `takeSnapshot({preset:'session'})` → disk → exit. Fresh process B:
+  `loadSnapshot(json)` + resume → completed; the tool received the decision.
+  Snapshot shape: `data.interrupts.interrupts` (state object nests the map),
+  plus `data.messages`, `data.state`, `data.modelState`. The state includes
+  `pendingToolExecution` ("resume tool execution without re-calling the model").
+- **t3 (replay) — mechanics pass, security FAILS by design:** restoring the
+  SAME snapshot and replaying the SAME response produced a SECOND complete
+  authorized run. The SDK has NO consume-once semantics. Exactly as the M2
+  exchange predicted: an idempotency key / snapshot replay does not prevent one
+  decision authorizing two executions. The consumption receipt is load-bearing
+  for BOTH resume shapes.
+
+**Headline conclusion — the M1 dichotomy dissolves.** The SDK implements
+"mid-run pause" AS a terminated invocation carrying durable pending state,
+restored by a fresh process. "Pause" and "terminal + seeded resume" are the
+same mechanics with different presentation. RULING M1's conditional ("unless
+Strands ships a checkpoint primitive") has technically fired — and it changes
+nothing: the ruled design IS the SDK's shape.
+
+**Recommendation to the owner:** keep RULING M1 unchanged; implement the
+seeded resume as snapshot + `InterruptResponseContent` (already proven by t2);
+the consumption receipt gates replay regardless of shape (proven by t3).
 
 1. AWS Builder ID + claim the $50 hackathon credits (Devpost Resources tab).
 2. AWS credentials available to the default credential chain (env or profile).
@@ -96,3 +125,5 @@ structured-output work.
 
 Once provided: run the 7-item commit-or-pivot gate (RULING M4); same-day
 decision; if it fires, default + video + live demo pivot together.
+
+### Joe-side prerequisites for the day-1 Bedrock gate

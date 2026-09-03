@@ -10,7 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tsx src/console/server.ts",
     "smoke": "tsx src/smoke.ts",
-    "preflight": "tsx src/preflight.ts"
+    "preflight": "tsx src/preflight.ts",
+    "spike:interrupt": "tsx src/spike-interrupt.ts"
   },
   "repository": {
     "type": "git",
