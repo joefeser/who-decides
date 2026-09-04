@@ -51,6 +51,7 @@ if (process.env.WD_PROOF_CHILD === '1') {
 } else {
   const output = process.argv[2]
   assert(output, 'usage: node --import tsx scripts/consumption-proof.mjs <NEW_OUTPUT_DIRECTORY>')
+  mkdirSync(path.dirname(path.resolve(output)), { recursive: true })
   mkdirSync(output, { recursive: false }) // Never overwrite prior proof/history.
   function child(db, decision, successor) {
     const proc = fork(self, [], { execArgv: ['--import', 'tsx'], env: {
