@@ -11,7 +11,7 @@
  *
  * Run: WD_PROVIDER=bedrock AWS_PROFILE=who-decides npm run live-loop
  */
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync } from 'node:fs'
 import path from 'node:path'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
 import type { AgentResult, Interrupt, Snapshot } from '@strands-agents/sdk'
@@ -37,6 +37,37 @@ const CLAIM_DB = path.resolve(process.cwd(), '.tmp/live-loop/consumption.db')
 const STATE_DIR = path.resolve(process.cwd(), '.tmp/live-loop')
 const STATE_FILE = path.join(STATE_DIR, `state-${RUN_TAG}.json`)
 const SNAPSHOT_FILE = path.join(STATE_DIR, `snapshot-${RUN_TAG}.json`)
+/* Execution lease: a replayed receipt is NOT permission to run invocation B
+ * (Codex P1). Exactly one live process may execute the approved branch per
+ * tag; the lease is created atomically (O_EXCL) and taken over only when the
+ * recorded holder is provably dead. Single-machine demo semantics. */
+const LEASE_FILE = path.join(STATE_DIR, `lease-${RUN_TAG}.json`)
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Returns true if THIS process now holds the execution lease. */
+function acquireExecutionLease(): { held: boolean, takeover: boolean } {
+  const record = { holderPid: process.pid, acquiredAt: new Date().toISOString() }
+  try {
+    const fd = openSync(LEASE_FILE, 'wx')
+    writeSync(fd, JSON.stringify(record))
+    closeSync(fd)
+    return { held: true, takeover: false }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+  const existing = JSON.parse(readFileSync(LEASE_FILE, 'utf8')) as { holderPid: number, acquiredAt: string }
+  if (processAlive(existing.holderPid)) return { held: false, takeover: false }
+  writeFileSync(LEASE_FILE, JSON.stringify({ ...record, tookOverFrom: existing.holderPid, previousAcquiredAt: existing.acquiredAt }))
+  return { held: true, takeover: true }
+}
 
 type RunState = {
   phase: 'claimed' | 'completed' | 'rejected'
@@ -248,6 +279,22 @@ async function main(): Promise<void> {
   }
   const wasRecovery = claim.status === 'replayed' || prior !== null
   console.log(`[consume-once] claim ${claim.status}${wasRecovery ? ' (crash recovery — same successor)' : ''}; receipt ${claim.receipt.receiptId}`)
+
+  // A replayed receipt is not permission to execute: only the lease holder
+  // may run invocation B (Codex P1 — concurrent same-tag processes must not
+  // both resume from the shared snapshot).
+  const lease = acquireExecutionLease()
+  if (!lease.held) {
+    store.close()
+    const outcome = 'EXECUTION_LEASE_HELD: another live process is executing (or executed) this decision — not resuming.'
+    console.log(`[stop] ${outcome}`)
+    writeJson('00-live-run-summary.json', {
+      tag: RUN_TAG, provider: provenance, invocationA,
+      outcome, decisionId: state.decisionId, durationMs: Date.now() - started,
+    })
+    return
+  }
+  if (lease.takeover) console.log('[lease] stale lease taken over — previous holder is dead')
 
   // ── Invocation B: resume the REAL agent with exactly the approved branch ─
   const resumed: AgentResult = await agent.invoke([

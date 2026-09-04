@@ -279,3 +279,25 @@ Live proof (tag `crash-proof`, Bedrock):
 
 Also: `WD_LIVE_RATIONALE="  "` now fails fast (`RATIONALE_REQUIRED`) before
 any model call or claim, matching the schema's nonempty `reason`.
+
+### Day 4 addendum 3 — execution lease: a replayed receipt is not permission
+
+Codex round 4 (P1, correct): persisting the successor identity made a
+CONCURRENT same-tag process possible — both would reuse the snapshot and
+invocationB, the claim returns `replayed` to the second, and both could run
+invocation B (spike t3 proved snapshot replay produces a second completed
+run). The claim binds decision→successor; nothing gated EXECUTION.
+
+Fix: per-tag execution lease, created atomically (openSync 'wx'), taken over
+only when the recorded holder pid is provably dead (single-machine demo
+semantics, documented). Live proof (tag `lease-proof`):
+
+- fresh run: claim → lease acquired → resume → complete;
+- crash recovery with dead holder: lease taken over, claim `replayed`, same
+  receipt, invocation A not re-run (2.0s);
+- forged LIVE holder: typed stop `EXECUTION_LEASE_HELD`, invocation B never
+  ran, no model call after the replayed claim.
+
+Residual, named: a holder that dies mid-invocation-B can be taken over and
+B re-executed; effects stay dry-run so no external double-effect is possible
+in this demo. A transactional effect log would be the real fix (post-demo).
