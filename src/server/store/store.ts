@@ -50,8 +50,11 @@ export interface RunStore {
   insertRun(run: NewRun): Promise<void>
   updateRunPhase(runId: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<void>
   getDecisionIntent(runId: string): Promise<DecisionIntentRow | undefined>
-  /** Persists successor + decision intent once; no-op if already present. */
-  persistDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<void>
+  /** Atomic first-writer-wins intent acquisition: inside the exclusive write
+   * slot, persists (successor, decisionJson) only if none exists and returns
+   * the STORED intent — a losing concurrent submission receives the winner's
+   * successor and decision, never its own stale values. */
+  acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow>
   finalizeDecision(runId: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<void>
   storeArtifact(artifact: StoredArtifact): Promise<void>
   listArtifacts(runId: string, tenantId: string): Promise<ArtifactRow[]>

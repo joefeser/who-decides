@@ -199,24 +199,37 @@ export class ConsoleEngine {
     const s = loadScenario()
     if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
-    if (prior && prior.choice !== choice) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
+    // Idempotent reuse matches BOTH key and choice; a different key is a
+    // different submission, not a retry (review finding 3).
+    if (prior && (prior.choice !== choice || prior.idempotencyKey !== (idempotencyKey ?? null))) {
+      return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
+    }
 
-    // Persist the decision intent (choice, rationale, decidedAt, successor id)
-    // BEFORE claiming, so a crash between claim and state-write leaves a
-    // retry that reuses the same successor and same digest → 'replayed',
-    // never a competing successor. Only a first submission may set them.
+    // Atomically acquire the decision intent (choice, rationale, decidedAt,
+    // successor id) BEFORE claiming. First writer wins; a concurrent loser
+    // receives the STORED intent, so it can never claim with its own stale
+    // successor (review findings 1+2). A crash between claim and state-write
+    // leaves a retry that reuses the same successor and digest → 'replayed',
+    // never a competing successor.
     const invocationB = row?.invocation_b ?? `inv-${randomUUID()}`
     const decidedAt = prior?.decidedAt ?? new Date().toISOString()
-    const effectiveChoice = prior?.choice ?? choice
-    const effectiveRationale = prior?.rationale ?? rationale
-    if (!prior) {
-      await this.runs.persistDecisionIntent(run.id, invocationB, JSON.stringify({ choice: effectiveChoice, rationale: effectiveRationale, decidedAt, idempotencyKey: idempotencyKey ?? null }))
+    const stored = await this.runs.acquireDecisionIntent(
+      run.id,
+      invocationB,
+      JSON.stringify({ choice: prior?.choice ?? choice, rationale: prior?.rationale ?? rationale, decidedAt, idempotencyKey: idempotencyKey ?? null }),
+    )
+    const storedDecision = JSON.parse(stored.decision_json!) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null }
+    if (storedDecision.choice !== choice || storedDecision.idempotencyKey !== (idempotencyKey ?? null)) {
+      return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
     }
+    const effectiveChoice = storedDecision.choice
+    const effectiveRationale = storedDecision.rationale
+    const authoritativeInvocationB = stored.invocation_b ?? invocationB
 
     const decisionId = `decision-${run.id}`
     const decisionRecord = this.decisionRecord(decisionId, effectiveChoice, effectiveRationale, decidedAt)
 
-    const claim = await this.receipts.claim(decisionRecord, invocationB, decisionDigest(decisionRecord))
+    const claim = await this.receipts.claim(decisionRecord, authoritativeInvocationB, decisionDigest(decisionRecord))
     if (claim.status === 'rejected') return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
 
     const runtimeDecision = {
@@ -230,7 +243,7 @@ export class ConsoleEngine {
     await this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     await this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)
 
-    const effect = this.buildEffect(s, effectiveChoice, runtimeDecision.decisionId, claim.receipt.receiptId, invocationB)
+    const effect = this.buildEffect(s, effectiveChoice, runtimeDecision.decisionId, claim.receipt.receiptId, authoritativeInvocationB)
     await this.storeArtifact(run.id, 'effect-receipt', 'effect-receipt', effect)
 
     const report = buildAgentReport(s, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''))

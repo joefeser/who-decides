@@ -50,16 +50,27 @@ export class SqliteRunStore implements RunStore {
     try { this.db.exec('ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0') } catch { /* column exists */ }
   }
 
+  /** Slots are serialized on a promise-chain mutex: better-sqlite3 is sync,
+   * but the callback may await microtasks, so an unserialized second BEGIN
+   * IMMEDIATE on this connection could nest transactions (review P1). The
+   * queue also gives a future Postgres adapter the same single-flight
+   * guarantee within one connection. */
+  private writeQueue: Promise<unknown> = Promise.resolve()
+
   async withWriteSlot<T>(fn: () => Promise<T>): Promise<T> {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const result = await fn()
-      this.db.exec('COMMIT')
-      return result
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    const run = this.writeQueue.then(async () => {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        const result = await fn()
+        this.db.exec('COMMIT')
+        return result
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
+      }
+    })
+    this.writeQueue = run.catch(() => { /* keep the queue alive after failures */ })
+    return run as Promise<T>
   }
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {
@@ -88,10 +99,15 @@ export class SqliteRunStore implements RunStore {
     return this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(runId) as DecisionIntentRow | undefined
   }
 
-  async persistDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<void> {
-    this.db
-      .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL')
-      .run(invocationB, decisionJson, runId)
+  async acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow> {
+    return this.withWriteSlot(async () => {
+      const existing = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(runId) as DecisionIntentRow | undefined
+      if (existing?.decision_json) return existing
+      this.db
+        .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL')
+        .run(invocationB, decisionJson, runId)
+      return { decision_json: decisionJson, invocation_b: invocationB }
+    })
   }
 
   async finalizeDecision(runId: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<void> {

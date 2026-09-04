@@ -208,3 +208,37 @@ test('tenants are isolated: separate runs, decisions, and resets in one database
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('concurrent starts and concurrent submissions are safe through the async seam', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-seam-race-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('race')
+  try {
+    // Two overlapping starts must both resolve to ONE run, never a nested-
+    // transaction error (review P1: write-slot re-entrancy).
+    const starts = await Promise.all([engine.startRun(), engine.startRun()])
+    assert.equal(starts[0].runId, starts[1].runId, 'concurrent starts return the same run')
+
+    agePhase(dir, 10)
+
+    // Two overlapping submissions with the SAME key+choice: both succeed
+    // idempotently (loser adopts the stored intent; claim replays).
+    const same = await Promise.all([
+      engine.submitDecision('create_draft_pr', 'same choice', 'same-key'),
+      engine.submitDecision('create_draft_pr', 'same choice', 'same-key'),
+    ])
+    assert.ok(same.every(r => r.ok), `same-key concurrent submissions both succeed: ${JSON.stringify(same)}`)
+
+    // Mismatched key with the same choice is a conflict, not idempotent
+    // success (review finding 3). Exercise the crash window: intent
+    // persisted, run not finalized (state forced back to decision_required).
+    const db = new Database(path.join(dir, 'state.db'))
+    db.prepare("UPDATE runs SET state = 'decision_required'").run()
+    db.close()
+    const conflict = await engine.submitDecision('create_draft_pr', 'same choice', 'different-key')
+    assert.equal(conflict.ok, false)
+    assert.equal(conflict.error, 'DECISION_ALREADY_RECORDED')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
