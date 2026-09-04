@@ -28,6 +28,7 @@ export type Milestone = { label: string, detail: string, at: string }
 
 export type ConsoleState = {
   schema: 'who-decides.console-state.v1'
+  tenantId: string
   runId: string
   state: RunState | 'ready'
   invocationA: string | null
@@ -95,8 +96,14 @@ function validateReceipt(kind: 'consumption-receipt' | 'effect-receipt', artifac
 export class ConsoleEngine {
   private readonly db: Database.Database
   private readonly consumption: ConsumptionStore
+  /** Known-tenant scoping: one engine instance serves one tenant's runs.
+   * Multi-process deployments run one process per tenant, or one process per
+   * tenant pool, with separate state directories. The default keeps the
+   * single-operator local demo behavior unchanged. */
+  readonly tenant: string
 
-  constructor() {
+  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default') {
+    this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
     mkdirSync(dir, { recursive: true })
     this.db = new Database(path.join(dir, 'state.db'))
@@ -105,6 +112,7 @@ export class ConsoleEngine {
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY,
         state TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT 'default',
         invocation_a TEXT,
         invocation_b TEXT,
         started_at TEXT,
@@ -119,6 +127,7 @@ export class ConsoleEngine {
       );
       CREATE TABLE IF NOT EXISTS artifacts (
         run_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT 'default',
         name TEXT NOT NULL,
         kind TEXT NOT NULL,
         valid INTEGER NOT NULL,
@@ -126,15 +135,17 @@ export class ConsoleEngine {
         PRIMARY KEY (run_id, name)
       );
     `)
-    // Pre-archived-column databases (dev .tmp): add the column in place.
+    // Pre-column databases (dev .tmp): add the columns in place.
+    try { this.db.exec("ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
+    try { this.db.exec("ALTER TABLE artifacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
     try { this.db.exec('ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0') } catch { /* column exists */ }
     this.consumption = new ConsumptionStore(path.join(dir, 'consumption.db'))
   }
 
   currentRun(): { id: string, state: string, phase_changed_at: string } | undefined {
     return this.db
-      .prepare('SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 ORDER BY started_at DESC LIMIT 1')
-      .get() as { id: string, state: string, phase_changed_at: string } | undefined
+      .prepare('SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
+      .get(this.tenant) as { id: string, state: string, phase_changed_at: string } | undefined
   }
 
   startRun(): { runId: string } {
@@ -158,8 +169,8 @@ export class ConsoleEngine {
         existingId = existing.id
       } else {
         this.db
-          .prepare('INSERT INTO runs (id, state, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(runId, 'running', invocationA, now, now, JSON.stringify(milestones))
+          .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(runId, 'running', this.tenant, invocationA, now, now, JSON.stringify(milestones))
       }
       this.db.exec('COMMIT')
     } catch (err) {
@@ -342,9 +353,10 @@ export class ConsoleEngine {
   }
 
   /** Reset clears the live console without destroying completed audit
-   * records — HACP artifacts survive the demo loop (Codex P2). */
+   * records — HACP artifacts survive the demo loop (Codex P2). Only THIS
+   * tenant's console is cleared; other tenants' runs are untouched. */
   reset(): void {
-    this.db.exec('UPDATE runs SET archived = 1')
+    this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(this.tenant)
   }
 
   close(): void {
@@ -358,8 +370,8 @@ export class ConsoleEngine {
       : validateArtifact(kind, artifact).valid
     if (!valid) throw new Error(`ARTIFACT_INVALID:${kind}:${name}`)
     this.db
-      .prepare('INSERT OR REPLACE INTO artifacts (run_id, name, kind, valid, json) VALUES (?, ?, ?, ?, ?)')
-      .run(runId, name, kind, valid ? 1 : 0, JSON.stringify(artifact))
+      .prepare('INSERT OR REPLACE INTO artifacts (run_id, tenant_id, name, kind, valid, json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(runId, this.tenant, name, kind, valid ? 1 : 0, JSON.stringify(artifact))
   }
 
   getState(): ConsoleState {
@@ -367,6 +379,7 @@ export class ConsoleEngine {
     if (!run) {
       return {
         schema: 'who-decides.console-state.v1',
+        tenantId: this.tenant,
         runId: '', state: 'ready', invocationA: null, invocationB: null,
         startedAt: null, completedAt: null, milestones: [], decisionRequest: null,
         decision: null, consumption: null, replayProbe: null, effect: null,
@@ -376,7 +389,7 @@ export class ConsoleEngine {
     this.advancePhases(run)
     const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(run.id) as Record<string, string | null>
     const s = loadScenario()
-    const artifacts = (this.db.prepare('SELECT name, kind, valid FROM artifacts WHERE run_id = ? ORDER BY rowid').all(run.id) as Array<{ name: string, kind: string, valid: number }>)
+    const artifacts = (this.db.prepare('SELECT name, kind, valid FROM artifacts WHERE run_id = ? AND tenant_id = ? ORDER BY rowid').all(run.id, this.tenant) as Array<{ name: string, kind: string, valid: number }>)
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
     const decision = row.decision_json ? JSON.parse(row.decision_json) as ConsoleState['decision'] : null
     const receipt = row.receipt_json ? JSON.parse(row.receipt_json) as { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } : null
@@ -385,6 +398,7 @@ export class ConsoleEngine {
     const state = run.state as ConsoleState['state']
     return {
       schema: 'who-decides.console-state.v1',
+      tenantId: this.tenant,
       runId: run.id,
       state,
       invocationA: row.invocation_a,
