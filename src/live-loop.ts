@@ -11,7 +11,7 @@
  *
  * Run: WD_PROVIDER=bedrock AWS_PROFILE=who-decides npm run live-loop
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
 import type { AgentResult, Interrupt } from '@strands-agents/sdk'
@@ -27,8 +27,20 @@ import type { DecisionRecord } from './consumption/store'
 import { randomUUID, createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-const OUT_DIR = path.resolve(process.cwd(), '.tmp/live-run')
 const RUN_TAG = process.env.WD_LIVE_TAG ?? new Date().toISOString().replace(/[:.]/g, '-')
+/* Artifacts go to a per-tag directory; nothing is deleted on start. */
+const RUN_DIR = path.resolve(process.cwd(), '.tmp/live-run', RUN_TAG)
+/* The claim database lives OUTSIDE the per-run artifact directory: claims
+ * must survive reruns so a reused WD_LIVE_TAG cannot re-claim its decision. */
+const CLAIM_DB = path.resolve(process.cwd(), '.tmp/live-loop/consumption.db')
+
+/** Default rationale per choice — an approval argument must never be recorded
+ * against a send_back/defer decision. WD_LIVE_RATIONALE overrides. */
+const RATIONALE: Record<string, string> = {
+  create_draft_pr: 'Security risk outweighs the runtime-floor bump; node 20 is our target platform.',
+  send_back: 'The runtime-floor bump needs an answer for node 18 consumers before we ship this; resolve that and resubmit.',
+  defer: 'Not now — revisit at the next planning session; nothing should execute meanwhile.',
+}
 
 function loadFixture(): Scenario {
   return JSON.parse(
@@ -75,17 +87,24 @@ function promptFor(f: Scenario): string {
 }
 
 function writeJson(name: string, value: unknown): void {
-  writeFileSync(path.join(OUT_DIR, name), JSON.stringify(value, null, 2))
+  writeFileSync(path.join(RUN_DIR, name), JSON.stringify(value, null, 2))
 }
 
 async function main(): Promise<void> {
   const started = Date.now()
   const { model, provenance } = loadProvider()
   const f = loadFixture()
-  rmSync(OUT_DIR, { recursive: true, force: true })
-  mkdirSync(OUT_DIR, { recursive: true })
 
+  // Validate the scripted choice BEFORE any model call or claim (fail fast).
+  const HUMAN_CHOICE = process.env.WD_LIVE_CHOICE ?? 'create_draft_pr'
+  if (!f.decision_request.options.includes(HUMAN_CHOICE)) {
+    throw new Error(`INVALID_CHOICE:${HUMAN_CHOICE} — fixture options: ${f.decision_request.options.join(', ')}`)
+  }
+  const HUMAN_RATIONALE = process.env.WD_LIVE_RATIONALE ?? RATIONALE[HUMAN_CHOICE]!
+
+  mkdirSync(RUN_DIR, { recursive: true })
   console.log(`[live-loop] provider=${provenance.provider} model=${provenance.modelId} tag=${RUN_TAG}`)
+  console.log(`[human] choice=${HUMAN_CHOICE} (scripted); rationale="${HUMAN_RATIONALE.slice(0, 60)}…"`)
 
   // ── Invocation A: real model, real interrupt ────────────────────────────
   const invocationA = `inv-${randomUUID()}`
@@ -96,6 +115,18 @@ async function main(): Promise<void> {
   if (interrupts.length !== 1 || first.stopReason !== 'interrupt') {
     throw new Error(`INVARIANT: expected exactly one interrupt stop, got stopReason=${first.stopReason}, interrupts=${interrupts.length}`)
   }
+
+  // The interrupt must be the scenario's decision request — the model called
+  // OUR tool, and the model-provided patchId must match the fixture patch.
+  const expectedPatchId = `${f.package}-${f.to_version}`
+  const reason = interrupts[0]!.reason as { question?: string, patchId?: string, options?: string[] }
+  if (interrupts[0]!.name !== 'human_release_decision'
+    || reason?.question !== f.decision_request.question
+    || reason?.patchId !== expectedPatchId
+    || JSON.stringify(reason?.options) !== JSON.stringify(f.decision_request.options)) {
+    throw new Error(`INVARIANT: interrupt does not match the scenario (name=${interrupts[0]!.name}, patchId=${reason?.patchId}, expected ${expectedPatchId})`)
+  }
+  console.log(`[invocation A] interrupt verified: human_release_decision for ${expectedPatchId}`)
 
   // ── The spine records what actually happened (validated) ────────────────
   const packet = buildTaskPacket(f)
@@ -109,15 +140,37 @@ async function main(): Promise<void> {
   writeJson('03-stop-response.json', stop)
   console.log('[spine] packet + 2 findings + stop-response validated')
 
-  // ── The human decides (scripted; in the product this is the console) ────
-  const HUMAN_CHOICE = process.env.WD_LIVE_CHOICE ?? 'create_draft_pr'
-  const HUMAN_RATIONALE = 'Security risk outweighs the runtime-floor bump; node 20 is our target platform.'
+  // ── Claim BEFORE resume: the claim gates execution (Codex P1 / Qodo 1). ─
+  // A rejected claim means this decision was already consumed — invocation B
+  // never runs. 'replayed' (same successor + digest) is crash recovery.
   const decidedAt = new Date().toISOString()
   const decisionId = `decision-live-${RUN_TAG}`
-  console.log(`[human] choice=${HUMAN_CHOICE} (scripted)`)
+  const invocationB = `inv-${randomUUID()}`
+  const decisionRecord: DecisionRecord = {
+    decisionId,
+    chosenOption: HUMAN_CHOICE,
+    rationale: HUMAN_RATIONALE,
+    decidedAt,
+    decisionRequestId: f.stop_id,
+    permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
+  }
+  const store = new ConsumptionStore(CLAIM_DB)
+  const claim = store.claim(decisionRecord, invocationB, decisionDigest(decisionRecord))
+  if (claim.status === 'rejected') {
+    store.close()
+    const outcome = `DECISION_ALREADY_CLAIMED:${claim.reason} — ${claim.detail}`
+    writeJson('00-live-run-summary.json', {
+      tag: RUN_TAG, provider: provenance, invocationA,
+      outcome, decisionId, durationMs: Date.now() - started,
+    })
+    console.log(`[stop] ${outcome}`)
+    console.log('[stop] invocation B NOT started — the decision was consumed by a previous run; no model call, no effect.')
+    return
+  }
+  const wasRecovery = claim.status === 'replayed'
+  console.log(`[consume-once] claim ${claim.status}${wasRecovery ? ' (crash recovery — same successor)' : ''}; receipt ${claim.receipt.receiptId}`)
 
   // ── Invocation B: resume the REAL agent with exactly the approved branch ─
-  const invocationB = `inv-${randomUUID()}`
   const resumed: AgentResult = await agent.invoke([
     new InterruptResponseContent({
       interruptId: interrupts[0]!.id,
@@ -128,24 +181,8 @@ async function main(): Promise<void> {
   console.log(`[invocation B] ${invocationB} stopReason=${resumed.stopReason}`)
   console.log(`[invocation B] final: ${finalText.slice(0, 300)}`)
   if (resumed.stopReason !== 'endTurn') {
-    throw new Error(`INVARIANT: resume should end the turn, got ${resumed.stopReason}`)
-  }
-
-  // ── Consume-once + artifacts from runtime truth ──────────────────────────
-  const dbPath = path.join(OUT_DIR, 'consumption.db')
-  const store = new ConsumptionStore(dbPath)
-  const decisionRecord: DecisionRecord = {
-    decisionId,
-    chosenOption: HUMAN_CHOICE,
-    rationale: HUMAN_RATIONALE,
-    decidedAt,
-    decisionRequestId: f.stop_id,
-    permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
-  }
-  const claim = store.claim(decisionRecord, invocationB, decisionDigest(decisionRecord))
-  if (claim.status !== 'claimed') {
     store.close()
-    throw new Error(`INVARIANT: first claim must succeed, got ${claim.status}`)
+    throw new Error(`INVARIANT: resume should end the turn, got ${resumed.stopReason}`)
   }
 
   // Live duplicate probe: a second successor must fail closed.
@@ -155,7 +192,7 @@ async function main(): Promise<void> {
   if (duplicate.status !== 'rejected' || duplicate.reason !== 'competing_successor') {
     throw new Error('INVARIANT: duplicate claim did not fail closed')
   }
-  console.log('[consume-once] claim ok; duplicate probe REJECTED (competing_successor)')
+  console.log('[consume-once] duplicate probe REJECTED (competing_successor)')
 
   const runtimeDecision = { decisionId, choice: HUMAN_CHOICE, rationale: HUMAN_RATIONALE, decidedAt }
   const evidenceDigest = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
@@ -172,7 +209,7 @@ async function main(): Promise<void> {
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: invocationB },
   }
-  const report = buildAgentReport(f, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''))
+  const report = buildAgentReport(f, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
   assertValid('agent-report', report)
 
   writeJson('04-human-decision.json', humanDecision)
@@ -184,15 +221,17 @@ async function main(): Promise<void> {
     provider: provenance,
     invocationA, invocationB,
     interruptName: interrupts[0]!.name,
+    interruptVerified: { question: true, patchId: expectedPatchId, options: true },
     humanChoice: HUMAN_CHOICE,
     decisionId,
+    claimStatus: claim.status,
     receiptId: claim.receipt.receiptId,
     duplicateProbe: 'REJECTED (competing_successor)',
     durationMs: Date.now() - started,
   })
 
-  console.log(`[done] ${((Date.now() - started) / 1000).toFixed(1)}s — artifacts in ${OUT_DIR}`)
-  console.log(`[done] decision ${decisionId} consumed exactly once by ${invocationB}; dry-run only; no external mutation.`)
+  console.log(`[done] ${((Date.now() - started) / 1000).toFixed(1)}s — artifacts in ${RUN_DIR}`)
+  console.log(`[done] decision ${decisionId} claimed before execution and consumed exactly once by ${invocationB}; dry-run only; no external mutation.`)
 }
 
 main().catch((err) => {

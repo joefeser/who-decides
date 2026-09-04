@@ -202,6 +202,7 @@ export function buildAgentReport(
   d: RuntimeDecision,
   consumptionReceiptId: string,
   decisionDigest: string,
+  opts?: { simulatedWorkspace?: boolean },
 ): Record<string, unknown> {
   const prepared = `Prepared ${s.package} ${s.to_version}; stopped at HUMAN_DECISION_REQUIRED; resumed from recorded decision ${d.decisionId};`
   // files_changed reports invocation A's preparation (real in every branch);
@@ -226,6 +227,11 @@ export function buildAgentReport(
   }
   const b = branch[d.choice]
   if (!b) throw new Error(`UNKNOWN_CHOICE:${d.choice}`)
+  // In a simulated/live-proof run no repository was edited; the schema's
+  // files_changed minItems forces one entry, so the report says so itself.
+  const behaviour = opts?.simulatedWorkspace
+    ? `${b.behaviour} Simulated workspace (fixture scenario): no real repository files were edited.`
+    : b.behaviour
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.agent_report',
@@ -237,7 +243,7 @@ export function buildAgentReport(
     created_by: s.created_by_agent,
     status: 'completed',
     files_changed: b.files,
-    behaviour_implemented: b.behaviour,
+    behaviour_implemented: behaviour,
     verification_performed: ['unit suite', 'production build', 'dependency audit'],
     scope_confirmation: {
       scope_preserved: true,
