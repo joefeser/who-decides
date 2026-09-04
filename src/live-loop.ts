@@ -13,8 +13,9 @@
  */
 import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
-import type { AgentResult, Interrupt, Snapshot } from '@strands-agents/sdk'
+import type { AgentResult, Interrupt } from '@strands-agents/sdk'
 import { loadProvider } from './provider'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
@@ -32,41 +33,25 @@ const RUN_DIR = path.resolve(process.cwd(), '.tmp/live-run', RUN_TAG)
 /* The claim database lives OUTSIDE the per-run artifact directory: claims
  * must survive reruns so a reused WD_LIVE_TAG cannot re-claim its decision. */
 const CLAIM_DB = path.resolve(process.cwd(), '.tmp/live-loop/consumption.db')
-/* Crash-recovery state and the resumable agent snapshot, persisted BEFORE
- * the claim so a rerun of the same tag replays instead of competing. */
+/* Decision state and session snapshot retained for inspection after a crash.
+ * No automatic retry is authorized by their presence. */
 const STATE_DIR = path.resolve(process.cwd(), '.tmp/live-loop')
 const STATE_FILE = path.join(STATE_DIR, `state-${RUN_TAG}.json`)
 const SNAPSHOT_FILE = path.join(STATE_DIR, `snapshot-${RUN_TAG}.json`)
-/* Execution lease: a replayed receipt is NOT permission to run invocation B
- * (Codex P1). Exactly one live process may execute the approved branch per
- * tag; the lease is created atomically (O_EXCL) and taken over only when the
- * recorded holder is provably dead. Single-machine demo semantics. */
+/* Permanent per-tag reservation, acquired before any shared run writes.
+ * Existing reservations (including dead/incomplete holders) fail closed.
+ * PID death and receipt replay never establish safe reexecution. */
 const LEASE_FILE = path.join(STATE_DIR, `lease-${RUN_TAG}.json`)
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
+function reserveRun(): boolean {
+  let fd: number
+  try { fd = openSync(LEASE_FILE, 'wx') } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw err
   }
-}
-
-/** Returns true if THIS process now holds the execution lease. */
-function acquireExecutionLease(): { held: boolean, takeover: boolean } {
-  const record = { holderPid: process.pid, acquiredAt: new Date().toISOString() }
-  try {
-    const fd = openSync(LEASE_FILE, 'wx')
-    writeSync(fd, JSON.stringify(record))
-    closeSync(fd)
-    return { held: true, takeover: false }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-  }
-  const existing = JSON.parse(readFileSync(LEASE_FILE, 'utf8')) as { holderPid: number, acquiredAt: string }
-  if (processAlive(existing.holderPid)) return { held: false, takeover: false }
-  writeFileSync(LEASE_FILE, JSON.stringify({ ...record, tookOverFrom: existing.holderPid, previousAcquiredAt: existing.acquiredAt }))
-  return { held: true, takeover: true }
+  try { writeSync(fd, JSON.stringify({ holderPid: process.pid, acquiredAt: new Date().toISOString() })) }
+  finally { closeSync(fd) }
+  return true
 }
 
 type RunState = {
@@ -88,16 +73,6 @@ function loadState(): RunState | null {
 
 function saveState(state: RunState): void {
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
-}
-
-/** The interrupt id nested inside a session snapshot (spike t2 learning:
- * the map lives at data.interrupts.interrupts). */
-function interruptIdFromSnapshot(snapshot: Snapshot): string {
-  const data = snapshot.data as { interrupts?: { interrupts?: Record<string, { id: string }> } } | undefined
-  const map = data?.interrupts?.interrupts
-  const first = map && Object.values(map)[0]
-  if (!first?.id) throw new Error('SNAPSHOT_INVALID:no-interrupt-id')
-  return first.id
 }
 
 /** Default rationale per choice — an approval argument must never be recorded
@@ -156,9 +131,16 @@ function writeJson(name: string, value: unknown): void {
   writeFileSync(path.join(RUN_DIR, name), JSON.stringify(value, null, 2))
 }
 
-async function main(): Promise<void> {
-  const started = Date.now()
+type LiveRuntime = {
+  agent: Pick<Agent, 'invoke' | 'loadSnapshot' | 'takeSnapshot'>
+  provenance: ReturnType<typeof loadProvider>['provenance']
+}
+
+export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = (fixture) => {
   const { model, provenance } = loadProvider()
+  return { agent: new Agent({ model, tools: [decisionTool(fixture)] }), provenance }
+}): Promise<void> {
+  const started = Date.now()
   const f = loadFixture()
 
   // Validate the scripted decision BEFORE any model call or claim (fail fast).
@@ -171,12 +153,8 @@ async function main(): Promise<void> {
     throw new Error('RATIONALE_REQUIRED: WD_LIVE_RATIONALE must be a non-empty human rationale')
   }
 
-  mkdirSync(RUN_DIR, { recursive: true })
-  mkdirSync(STATE_DIR, { recursive: true })
-  console.log(`[live-loop] provider=${provenance.provider} model=${provenance.modelId} tag=${RUN_TAG}`)
-  console.log(`[human] choice=${HUMAN_CHOICE} (scripted); rationale="${HUMAN_RATIONALE.slice(0, 60)}…"`)
 
-  // ── Rerun of a previous tagged run? Stop typed or recover, never compete. ─
+  // ── Rerun of a previous tagged run? Stop without mutating its records. ─
   const prior = loadState()
   if (prior && prior.phase === 'completed') {
     console.log(`[stop] RUN_ALREADY_COMPLETED: decision ${prior.decisionId} was claimed by ${prior.invocationB} (receipt ${prior.receiptId}); the approved branch already executed.`)
@@ -191,18 +169,26 @@ async function main(): Promise<void> {
     throw new Error(`STATE_CONFLICT: tag ${RUN_TAG} already holds a ${prior.phase} decision (${prior.choice}); rerun with the same decision inputs or a fresh tag`)
   }
 
+  // Incomplete historical state cannot prove whether B already started.
+  // Retain it for inspection; never rerun A or B automatically.
+  if (prior || existsSync(SNAPSHOT_FILE)) {
+    console.log('[stop] HUMAN_DECISION_REQUIRED: prior run has an unknown execution outcome; automatic recovery is disabled.')
+    return
+  }
+  mkdirSync(STATE_DIR, { recursive: true })
+  if (!reserveRun()) {
+    console.log('[stop] HUMAN_DECISION_REQUIRED: tag is already reserved; holder death does not authorize takeover.')
+    return
+  }
+  mkdirSync(RUN_DIR, { recursive: true })
+  const { agent, provenance } = runtimeFactory(f)
+  console.log(`[live-loop] provider=${provenance.provider} model=${provenance.modelId} tag=${RUN_TAG}`)
+  console.log(`[human] choice=${HUMAN_CHOICE} (scripted); rationale="${HUMAN_RATIONALE.slice(0, 60)}…"`)
+
   // ── Invocation A: real model, real interrupt ────────────────────────────
-  const agent = new Agent({ model, tools: [decisionTool(f)] })
   let interruptId: string
   let invocationA: string
-  if (prior && existsSync(SNAPSHOT_FILE)) {
-    // Crash recovery: restore the interrupted session; do not re-run A.
-    const snapshot = JSON.parse(readFileSync(SNAPSHOT_FILE, 'utf8')) as Snapshot
-    agent.loadSnapshot(snapshot)
-    interruptId = interruptIdFromSnapshot(snapshot)
-    invocationA = prior.invocationA
-    console.log(`[recovery] snapshot restored for ${invocationA}; interrupt ${interruptId}`)
-  } else {
+  {
     invocationA = `inv-${randomUUID()}`
     const first = await agent.invoke(promptFor(f))
     const interrupts: Interrupt[] = first.interrupts ?? []
@@ -242,10 +228,9 @@ async function main(): Promise<void> {
   console.log('[spine] packet + 2 findings + stop-response validated')
 
   // ── Claim BEFORE resume: the claim gates execution (Codex P1 / Qodo 1). ─
-  // Decision intent + successor id persist BEFORE the claim; a rerun of the
-  // same tag reuses them, so a crash between claim and completion replays
-  // instead of competing. 'replayed' (same successor + digest) is recovery.
-  const state: RunState = prior ?? {
+  // Persist decision intent and successor for audit before taking the claim.
+  // Incomplete state is inspection evidence, not automatic retry authority.
+  const state: RunState = {
     phase: 'claimed',
     decisionId: `decision-live-${RUN_TAG}`,
     choice: HUMAN_CHOICE,
@@ -254,7 +239,7 @@ async function main(): Promise<void> {
     invocationA,
     invocationB: `inv-${randomUUID()}`,
   }
-  if (!prior) saveState(state)
+  saveState(state)
   const decisionRecord: DecisionRecord = {
     decisionId: state.decisionId,
     chosenOption: state.choice,
@@ -277,24 +262,12 @@ async function main(): Promise<void> {
     console.log('[stop] invocation B NOT started — the decision was already consumed; the approved branch never executed.')
     return
   }
-  const wasRecovery = claim.status === 'replayed' || prior !== null
-  console.log(`[consume-once] claim ${claim.status}${wasRecovery ? ' (crash recovery — same successor)' : ''}; receipt ${claim.receipt.receiptId}`)
-
-  // A replayed receipt is not permission to execute: only the lease holder
-  // may run invocation B (Codex P1 — concurrent same-tag processes must not
-  // both resume from the shared snapshot).
-  const lease = acquireExecutionLease()
-  if (!lease.held) {
+  if (claim.status === 'replayed') {
     store.close()
-    const outcome = 'EXECUTION_LEASE_HELD: another live process is executing (or executed) this decision — not resuming.'
-    console.log(`[stop] ${outcome}`)
-    writeJson('00-live-run-summary.json', {
-      tag: RUN_TAG, provider: provenance, invocationA,
-      outcome, decisionId: state.decisionId, durationMs: Date.now() - started,
-    })
+    console.log('[stop] HUMAN_DECISION_REQUIRED: existing claim does not authorize reexecution; invocation B not started.')
     return
   }
-  if (lease.takeover) console.log('[lease] stale lease taken over — previous holder is dead')
+  console.log(`[consume-once] claim ${claim.status}; receipt ${claim.receipt.receiptId}`)
 
   // ── Invocation B: resume the REAL agent with exactly the approved branch ─
   const resumed: AgentResult = await agent.invoke([
@@ -347,7 +320,7 @@ async function main(): Promise<void> {
     provider: provenance,
     invocationA, invocationB: state.invocationB,
     interruptVerified: { question: true, patchId: `${f.package}-${f.to_version}`, options: true },
-    recoveredFromCrash: prior !== null,
+    recoveredFromCrash: false,
     humanChoice: state.choice,
     decisionId: state.decisionId,
     claimStatus: claim.status,
@@ -361,7 +334,7 @@ async function main(): Promise<void> {
   console.log(`[done] decision ${state.decisionId} claimed before execution and consumed exactly once by ${state.invocationB}; dry-run only; no external mutation.`)
 }
 
-main().catch((err) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().catch((err) => {
   console.error('[live-loop] FAILED:', err instanceof Error ? err.message : err)
   process.exitCode = 1
 })

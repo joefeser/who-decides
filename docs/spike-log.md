@@ -301,3 +301,23 @@ semantics, documented). Live proof (tag `lease-proof`):
 Residual, named: a holder that dies mid-invocation-B can be taken over and
 B re-executed; effects stay dry-run so no external double-effect is possible
 in this demo. A transactional effect log would be the real fix (post-demo).
+
+### PR #4 ownership repair — no automatic takeover (2026-09-04)
+
+This supersedes the preceding crash-recovery/lease-takeover claims. A dead PID
+cannot show whether invocation B ran. The live-loop now reserves the tag with
+exclusive creation before any state, snapshot or artifact writes, and retains
+that reservation permanently. Existing reservations, incomplete historical
+state, orphan snapshots and replayed claims stop for human inspection. No PID
+liveness check, takeover, automatic snapshot replay, or automatic reexecution
+remains. Completed runs are read back without mutation. Losing first-time
+processes cannot overwrite the winner's state or summary.
+
+Six synthetic integration tests cover empty/blank rationale before runtime
+construction, all three choices and completed restart, a process exiting after B
+starts, incomplete state with a missing snapshot, empty/dead-holder reservations,
+and competing first-time processes. They inject an in-memory fake agent and run
+without provider credentials or calls. Existing real-model receipts are not
+reused as validation of this change. Authenticated issuer, serialized status and
+revocation checks, and safe automatic recovery remain deferred. This stop-only
+repair does not adopt those policies or prove provider exactly-once effects.

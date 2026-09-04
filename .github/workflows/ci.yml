@@ -18,6 +18,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run test:console
       - run: npm run test:artifacts
+      - run: npm run test:live-loop
       - run: npm run test:consumption
       - run: npm run scenario
       - run: npm run proof:consumption -- .tmp/consumption-proof
