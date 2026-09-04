@@ -64,5 +64,8 @@ export interface RunStore {
   getArtifactJson(runId: string, name: string): Promise<string | undefined>
   persistReplayProbe(runId: string, replayJson: string): Promise<void>
   archiveTenantRuns(tenantId: string): Promise<void>
+  /** Archives a single run — used to retract an incompletely provisioned
+   * run so the next start creates a fresh one instead of inheriting it. */
+  archiveRun(runId: string): Promise<void>
   close(): Promise<void>
 }

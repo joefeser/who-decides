@@ -264,3 +264,26 @@ test('write slots serialize across store instances sharing one database file', a
     await beta.close().catch(() => {})
   }
 })
+
+test('an incompletely provisioned run is repaired by the next start (review P2)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-seam-repair-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('repair')
+  try {
+    await engine.startRun()
+    // Simulate a provisioning failure: the evidence artifact never landed.
+    const db = new Database(path.join(dir, 'state.db'))
+    db.prepare("DELETE FROM artifacts WHERE name = 'stop-response'").run()
+    db.close()
+    // The next start (early-return path) repairs provisioning instead of
+    // handing back a run whose decision submit would fail EVIDENCE_MISSING.
+    await engine.startRun()
+    agePhase(dir, 10)
+    const submitted = await engine.submitDecision('defer', 'repair test', 'repair-key')
+    assert.equal(submitted.ok, true, `decision works after repair: ${JSON.stringify(submitted)}`)
+    const state = await engine.getState()
+    assert.ok(state.artifacts.some(a => a.name === 'stop-response' && a.valid), 'stop-response artifact restored and valid')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})

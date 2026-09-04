@@ -166,6 +166,10 @@ export class SqliteRunStore implements RunStore {
     this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
   }
 
+  async archiveRun(runId: string): Promise<void> {
+    this.db.prepare('UPDATE runs SET archived = 1 WHERE id = ?').run(runId)
+  }
+
   async close(): Promise<void> {
     this.db.close()
   }

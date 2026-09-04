@@ -143,20 +143,47 @@ export class ConsoleEngine {
       id: runId, tenantId: this.tenant, invocationA,
       startedAt: now, phaseChangedAt: now, milestonesJson: JSON.stringify(milestones),
     })
-    if (active.id !== runId) return { runId: active.id }
+    if (active.id !== runId) {
+      // Another caller provisioned this run moments ago and may still be
+      // mid-write (or have failed). Provisioning is idempotent: repair any
+      // missing artifacts before handing the run back (review P2).
+      await this.provisionArtifacts(active.id)
+      return { runId: active.id }
+    }
 
+    try {
+      await this.provisionArtifacts(runId)
+    } catch (err) {
+      // Retract the incompletely provisioned run so the next start creates
+      // a fresh one instead of inheriting a run with missing evidence.
+      await this.runs.archiveRun(runId).catch(() => { /* best-effort cleanup */ })
+      throw err
+    }
+    return { runId }
+  }
+
+  /** Writes the invocation-A artifacts idempotently — the builders are
+   * deterministic, so any caller can complete or repair provisioning. */
+  private async provisionArtifacts(runId: string): Promise<void> {
+    const s = loadScenario()
     const packet = buildTaskPacket(s)
     assertValid('task-packet', packet)
-    await this.storeArtifact(runId, 'task-packet', 'task-packet', packet)
+    if (await this.runs.getArtifactJson(runId, 'task-packet') === undefined) {
+      await this.storeArtifact(runId, 'task-packet', 'task-packet', packet)
+    }
     const findings = buildReviewFindings(s)
     for (const [i, finding] of findings.entries()) {
       assertValid('review-finding', finding)
-      await this.storeArtifact(runId, i === 0 ? 'review-finding-green' : 'review-finding-tradeoff', 'review-finding', finding)
+      const name = i === 0 ? 'review-finding-green' : 'review-finding-tradeoff'
+      if (await this.runs.getArtifactJson(runId, name) === undefined) {
+        await this.storeArtifact(runId, name, 'review-finding', finding)
+      }
     }
     const stop = buildStopResponse(s)
     assertValid('stop-response', stop)
-    await this.storeArtifact(runId, 'stop-response', 'stop-response', stop)
-    return { runId }
+    if (await this.runs.getArtifactJson(runId, 'stop-response') === undefined) {
+      await this.storeArtifact(runId, 'stop-response', 'stop-response', stop)
+    }
   }
 
   /** Wall-clock phase advance — deterministic, no timers. */
