@@ -36,5 +36,5 @@ Thumbs.db
 next-env.d.ts
 
 # local agent-control tooling scratch (committed lane under .agent-control/lanes/ is intentional;
-# supersedes the broader .agent-control/ rule carried by PR #4 — keep only this one after both merge)
+# supersedes the broader .agent-control/ rule — keep only this narrow one)
 .agent-control/tmp/

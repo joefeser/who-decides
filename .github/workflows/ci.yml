@@ -18,5 +18,13 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run test:console
       - run: npm run test:artifacts
+      - run: npm run test:live-loop
       - run: npm run test:consumption
       - run: npm run scenario
+      - run: npm run proof:consumption -- .tmp/consumption-proof
+      - uses: actions/upload-artifact@v4
+        with:
+          name: consumption-proof-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .tmp/consumption-proof/result.json
+          if-no-files-found: error
+          retention-days: 7

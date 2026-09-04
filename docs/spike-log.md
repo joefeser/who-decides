@@ -213,3 +213,132 @@ boundary).
   fall back to free-text markers (`demo-unauthenticated-local-console`).
 - `agent-report.files_changed` minItems 1 forces reporting preparation as
   changes even when the branch executes nothing externally.
+
+## Day 4 — 2026-09-03: live end-to-end pass (real model on the spine)
+
+`npm run live-loop` (WD_PROVIDER=bedrock, AWS_PROFILE=who-decides,
+global.anthropic.claude-sonnet-4-6, us-east-1): one full pass with a real
+Strands agent wired to the typed artifact spine.
+
+What the model actually did:
+
+- **Invocation A** prepared the patch summary, called `request_release_decision`
+  exactly once, and stopped (`stopReason=interrupt`, 1 interrupt) — no PR, no
+  external effect.
+- **Invocation B** resumed via `InterruptResponseContent` with the scripted
+  human choice (`create_draft_pr` + rationale); the SDK completed the pending
+  tool execution and the model ended its turn stating it would take no further
+  autonomous action (`stopReason=endTurn`).
+- **Spine:** packet + 2 findings + stop-response + human-decision +
+  consumption-receipt + effect-receipt + agent-report all built from runtime
+  truth and validated against HACP v0.1-draft. Claim atomic; live duplicate
+  probe REJECTED (competing_successor). Dry-run only.
+- Runtime: 5.6s wall clock for both invocations. Cost well under the $5 gate
+  ceiling (single-pass, in line with Day 2b's $0.054/run measurement).
+
+Artifacts in `.tmp/live-run/` (gitignored); summary JSON records provider,
+invocation ids, receipt id, and probe outcome. Remaining for the demo: final
+video beat using this pass, gallery screenshots from the console, Devpost
+Built With tags.
+
+### Day 4 addendum — review-loop hardening (verified live)
+
+PR #4 bot review (Qodo 4 + Codex 3, overlapping): the significant one was
+ordering — the live script resumed the agent BEFORE claiming the decision, so
+the claim did not gate execution. Restructured to claim-first (matching the
+console): a rejected claim stops the run typed; `replayed` is the crash
+recovery path. Also: strict interrupt verification against the fixture (name,
+question, options, model-provided patchId), choice validated before any model
+call, per-branch rationales, claim DB moved outside the artifact dir so
+claims survive reruns, and live reports state the simulated workspace in the
+artifact itself.
+
+Live verification (2026-09-04, Bedrock):
+
+- fresh tag `verify-claim-first`: claim precedes invocation B; interrupt
+  verified as the exact scenario decision request; resume endTurn; duplicate
+  probe REJECTED. 6.1s.
+- tag reuse: typed stop `DECISION_ALREADY_CLAIMED:competing_successor`;
+  invocation B never started; approved branch never executed.
+- invalid choice (`ship_it`): `INVALID_CHOICE` before any model call.
+
+### Day 4 addendum 2 — durable crash recovery, proven live
+
+Codex round 3 (on 693a8bb) caught the live script's unreachable recovery
+path: the successor id existed only in memory, so a crash after the claim
+made every rerun a competing successor. Fix mirrors the console: per-tag
+state file + session snapshot persist BEFORE the claim; reruns replay.
+
+Live proof (tag `crash-proof`, Bedrock):
+
+- fresh run: claim → resume → artifacts → state completed (5.1s);
+- simulated crash (state rolled back to `claimed`): snapshot restored,
+  invocation A NOT re-run, claim `replayed` with the SAME receipt and
+  successor, resume completed (2.0s);
+- rerun after completion: typed stop `RUN_ALREADY_COMPLETED`, no model call.
+
+Also: `WD_LIVE_RATIONALE="  "` now fails fast (`RATIONALE_REQUIRED`) before
+any model call or claim, matching the schema's nonempty `reason`.
+
+### Day 4 addendum 3 — execution lease: a replayed receipt is not permission
+
+Codex round 4 (P1, correct): persisting the successor identity made a
+CONCURRENT same-tag process possible — both would reuse the snapshot and
+invocationB, the claim returns `replayed` to the second, and both could run
+invocation B (spike t3 proved snapshot replay produces a second completed
+run). The claim binds decision→successor; nothing gated EXECUTION.
+
+Fix: per-tag execution lease, created atomically (openSync 'wx'), taken over
+only when the recorded holder pid is provably dead (single-machine demo
+semantics, documented). Live proof (tag `lease-proof`):
+
+- fresh run: claim → lease acquired → resume → complete;
+- crash recovery with dead holder: lease taken over, claim `replayed`, same
+  receipt, invocation A not re-run (2.0s);
+- forged LIVE holder: typed stop `EXECUTION_LEASE_HELD`, invocation B never
+  ran, no model call after the replayed claim.
+
+Residual, named: a holder that dies mid-invocation-B can be taken over and
+B re-executed; effects stay dry-run so no external double-effect is possible
+in this demo. A transactional effect log would be the real fix (post-demo).
+
+### PR #4 ownership repair — no automatic takeover (2026-09-04)
+
+This supersedes the preceding crash-recovery/lease-takeover claims. A dead PID
+cannot show whether invocation B ran. The live-loop now reserves the tag with
+exclusive creation before any state, snapshot or artifact writes, and retains
+that reservation permanently. Existing reservations, incomplete historical
+state, orphan snapshots and replayed claims stop for human inspection. No PID
+liveness check, takeover, automatic snapshot replay, or automatic reexecution
+remains. Completed runs are read back without mutation. Losing first-time
+processes cannot overwrite the winner's state or summary.
+
+Six synthetic integration tests cover empty/blank rationale before runtime
+construction, all three choices and completed restart, a process exiting after B
+starts, incomplete state with a missing snapshot, empty/dead-holder reservations,
+and competing first-time processes. They inject an in-memory fake agent and run
+without provider credentials or calls. Existing real-model receipts are not
+reused as validation of this change. Authenticated issuer, serialized status and
+revocation checks, and safe automatic recovery remain deferred. This stop-only
+repair does not adopt those policies or prove provider exactly-once effects.
+
+### Day 4 addendum 4 — takeback: honest report fields and model-as-provenance
+
+Handoff note: from 512e41e/062f634 the live loop uses permanent per-tag
+reservation (no takeover; holder death does not authorize reexecution) and
+stops HUMAN_DECISION_REQUIRED on any ambiguous state — stricter than the
+lease-takeover design it replaced, and kept.
+
+Two findings from the 04:22 review, patched:
+
+- simulated reports now emit `surfaces_changed` (the surfaces the simulated
+  preparation targeted) and never `files_changed` — structured consumers no
+  longer see edits that never occurred;
+- the effect payload records the model as `generatedByModel` (execution
+  provenance); `authorizedBy` carries only decision id, receipt, and
+  successor — the human decision authorizes, the model executes.
+
+Live proof (tag `takeback-proof`): report has surfaces_changed and no
+files_changed; payload has generatedByModel; duplicate probe rejected;
+rerun stops typed RUN_ALREADY_COMPLETED. All suites green (live-loop 6,
+console 7, artifacts 8, consumption 12, proof 5/5).
