@@ -164,7 +164,7 @@ async function main(): Promise<void> {
       outcome, decisionId, durationMs: Date.now() - started,
     })
     console.log(`[stop] ${outcome}`)
-    console.log('[stop] invocation B NOT started — the decision was consumed by a previous run; no model call, no effect.')
+    console.log('[stop] invocation B NOT started — the decision was already consumed; the approved branch never executed.')
     return
   }
   const wasRecovery = claim.status === 'replayed'

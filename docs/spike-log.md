@@ -240,3 +240,24 @@ Artifacts in `.tmp/live-run/` (gitignored); summary JSON records provider,
 invocation ids, receipt id, and probe outcome. Remaining for the demo: final
 video beat using this pass, gallery screenshots from the console, Devpost
 Built With tags.
+
+### Day 4 addendum — review-loop hardening (verified live)
+
+PR #4 bot review (Qodo 4 + Codex 3, overlapping): the significant one was
+ordering — the live script resumed the agent BEFORE claiming the decision, so
+the claim did not gate execution. Restructured to claim-first (matching the
+console): a rejected claim stops the run typed; `replayed` is the crash
+recovery path. Also: strict interrupt verification against the fixture (name,
+question, options, model-provided patchId), choice validated before any model
+call, per-branch rationales, claim DB moved outside the artifact dir so
+claims survive reruns, and live reports state the simulated workspace in the
+artifact itself.
+
+Live verification (2026-09-04, Bedrock):
+
+- fresh tag `verify-claim-first`: claim precedes invocation B; interrupt
+  verified as the exact scenario decision request; resume endTurn; duplicate
+  probe REJECTED. 6.1s.
+- tag reuse: typed stop `DECISION_ALREADY_CLAIMED:competing_successor`;
+  invocation B never started; approved branch never executed.
+- invalid choice (`ship_it`): `INVALID_CHOICE` before any model call.
