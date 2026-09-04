@@ -250,6 +250,25 @@ export function buildAgentReport(
   const changedFields = opts?.simulatedWorkspace
     ? { surfaces_changed: b.files }
     : { files_changed: b.files }
+  // In a simulated/live-proof run the checks come from the fixture prompt —
+  // nothing was executed by this run, and the report must not say otherwise.
+  const verification = opts?.simulatedWorkspace
+    ? {
+        verification_performed: ['unit suite (fixture-provided — not executed in this run)', 'production build (fixture-provided — not executed in this run)', 'dependency audit (fixture-provided — not executed in this run)'],
+        verification_results: [
+          { command: 'unit suite', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.unit}` },
+          { command: 'production build', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.build}` },
+          { command: 'dependency audit', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.audit}` },
+        ],
+      }
+    : {
+        verification_performed: ['unit suite', 'production build', 'dependency audit'],
+        verification_results: [
+          { command: 'unit suite', outcome: 'pass' as const, summary: s.checks.unit },
+          { command: 'production build', outcome: 'pass' as const, summary: s.checks.build },
+          { command: 'dependency audit', outcome: 'pass' as const, summary: s.checks.audit },
+        ],
+      }
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.agent_report',
@@ -262,17 +281,12 @@ export function buildAgentReport(
     status: 'completed',
     ...changedFields,
     behaviour_implemented: behaviour,
-    verification_performed: ['unit suite', 'production build', 'dependency audit'],
+    ...verification,
     scope_confirmation: {
       scope_preserved: true,
       forbidden_effects_confirmed: ['releases_to_users', 'accepts_risk'],
       out_of_scope_requests: [],
     },
-    verification_results: [
-      { command: 'unit suite', outcome: 'pass', summary: s.checks.unit },
-      { command: 'production build', outcome: 'pass', summary: s.checks.build },
-      { command: 'dependency audit', outcome: 'pass', summary: s.checks.audit },
-    ],
     linked_finding_ids: [s.finding_tradeoff_id],
     blockers: [],
     residual_risks: [s.tradeoff.unresolved_check],
