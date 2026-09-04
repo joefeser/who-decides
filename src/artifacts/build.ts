@@ -157,20 +157,33 @@ export function hacpDecisionFor(choice: string): { decision: string, to_status: 
   return mapped
 }
 
-export function buildHumanDecision(s: Scenario, d: RuntimeDecision, invocationReceiptDigest: string): Record<string, unknown> {
+export type DecisionChannel = {
+  interaction: 'web_ui' | 'cli' | 'api' | 'other'
+  sessionReference: string
+  authEventRef: string
+}
+
+export function buildHumanDecision(
+  s: Scenario,
+  d: RuntimeDecision,
+  invocationReceiptDigest: string,
+  opts?: { channel?: DecisionChannel },
+): Record<string, unknown> {
   const { decision, to_status } = hacpDecisionFor(d.choice)
   /* Demo attribution boundary: v0.1-draft has no "unauthenticated local
-   * console" actor-verification value (v0.3 input), so the enum stays
-   * server_session_with_human_interaction but the free-string references say
-   * plainly that no real session was verified. See README "Demo boundaries". */
+   * console" or "scripted CLI" actor-verification value (v0.3 input), so the
+   * enum stays server_session_with_human_interaction but the free-string
+   * references say plainly what actually carried the decision. See README
+   * "Demo boundaries". */
+  const channel = opts?.channel
   const actor = {
     actor_id: s.human_operator,
     actor_kind: 'human',
     actor_verification_source: 'server_session_with_human_interaction',
     authentication_context: {
-      interaction_channel: 'web_ui',
-      session_reference: 'demo-unauthenticated-local-console',
-      auth_event_ref: 'demo-none',
+      interaction_channel: channel?.interaction ?? 'web_ui',
+      session_reference: channel?.sessionReference ?? 'demo-unauthenticated-local-console',
+      auth_event_ref: channel?.authEventRef ?? 'demo-none',
       secret_material_present: false,
     },
   }

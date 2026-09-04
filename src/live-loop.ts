@@ -298,8 +298,20 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
   console.log('[consume-once] duplicate probe REJECTED (competing_successor)')
 
   const runtimeDecision = { decisionId: state.decisionId, choice: state.choice, rationale: state.rationale, decidedAt: state.decidedAt }
-  const evidenceDigest = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
-  const humanDecision = buildHumanDecision(f, runtimeDecision, evidenceDigest)
+  // Digest the EXACT bytes written to 03-stop-response.json (writeJson uses
+  // the same 2-space serialization), so consumers can verify the reference
+  // against the saved artifact (review P2).
+  const stopBytes = JSON.stringify(stop, null, 2)
+  const evidenceDigest = createHash('sha256').update(stopBytes).digest('hex')
+  // The decision channel here is a scripted CLI env flow, not a web session —
+  // the artifact says so plainly (review P2).
+  const humanDecision = buildHumanDecision(f, runtimeDecision, evidenceDigest, {
+    channel: {
+      interaction: 'cli',
+      sessionReference: 'scripted-env:WD_LIVE_CHOICE+WD_LIVE_RATIONALE',
+      authEventRef: 'demo-none',
+    },
+  })
   assertValid('human-decision', humanDecision)
 
   const effect = {
