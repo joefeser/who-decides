@@ -261,3 +261,21 @@ Live verification (2026-09-04, Bedrock):
 - tag reuse: typed stop `DECISION_ALREADY_CLAIMED:competing_successor`;
   invocation B never started; approved branch never executed.
 - invalid choice (`ship_it`): `INVALID_CHOICE` before any model call.
+
+### Day 4 addendum 2 — durable crash recovery, proven live
+
+Codex round 3 (on 693a8bb) caught the live script's unreachable recovery
+path: the successor id existed only in memory, so a crash after the claim
+made every rerun a competing successor. Fix mirrors the console: per-tag
+state file + session snapshot persist BEFORE the claim; reruns replay.
+
+Live proof (tag `crash-proof`, Bedrock):
+
+- fresh run: claim → resume → artifacts → state completed (5.1s);
+- simulated crash (state rolled back to `claimed`): snapshot restored,
+  invocation A NOT re-run, claim `replayed` with the SAME receipt and
+  successor, resume completed (2.0s);
+- rerun after completion: typed stop `RUN_ALREADY_COMPLETED`, no model call.
+
+Also: `WD_LIVE_RATIONALE="  "` now fails fast (`RATIONALE_REQUIRED`) before
+any model call or claim, matching the schema's nonempty `reason`.
