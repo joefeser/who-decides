@@ -11,7 +11,7 @@
  *
  * Run: WD_PROVIDER=bedrock AWS_PROFILE=who-decides npm run live-loop
  */
-import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync, renameSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync, renameSync, fsyncSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
@@ -71,12 +71,25 @@ function loadState(): RunState | null {
   return JSON.parse(readFileSync(STATE_FILE, 'utf8')) as RunState
 }
 
-/** Atomic durable write: temp file + rename, so a crash mid-write can never
- * leave the audit state truncated or empty (review P2). */
+/** Durable atomic write: temp file + fsync + rename + directory fsync, so
+ * neither a process crash nor power loss can leave the audit state
+ * truncated, empty, or missing its directory entry (review P2). */
 function saveState(state: RunState): void {
   const tmp = `${STATE_FILE}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(state, null, 2))
+  const fd = openSync(tmp, 'w')
+  try {
+    writeSync(fd, JSON.stringify(state, null, 2))
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
   renameSync(tmp, STATE_FILE)
+  const dirFd = openSync(path.dirname(STATE_FILE), 'r')
+  try {
+    fsyncSync(dirFd)
+  } finally {
+    closeSync(dirFd)
+  }
 }
 
 /** Default rationale per choice — an approval argument must never be recorded
