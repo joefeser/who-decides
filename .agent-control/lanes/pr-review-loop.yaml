@@ -25,6 +25,9 @@ prLoopPacket:
     riskyFileGlobs:
       - .agent-control/**
       - .github/workflows/**
+      # The console UI and API routes ARE the approval boundary's front door
+      # (run/decision/reset/replay handlers drive the engine in src/server).
+      - app/**
       - schemas/**
       - scripts/**
       - src/consumption/**
