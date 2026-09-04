@@ -13,12 +13,15 @@
     "preflight": "tsx src/preflight.ts",
     "spike:interrupt": "tsx src/spike-interrupt.ts",
     "gate:bedrock": "tsx src/gate-bedrock.ts",
+    "live-loop": "tsx src/live-loop.ts",
     "test:consumption": "tsx --test src/consumption/test.ts",
     "test:console": "tsx --test src/server/test.ts",
     "scenario": "tsx src/scenario/run.ts",
     "test:artifacts": "tsx --test src/artifacts/test.ts",
     "console": "next dev -p 3100",
-    "console:build": "next build"
+    "console:build": "next build",
+    "proof:consumption": "node --import tsx scripts/consumption-proof.mjs",
+    "test:live-loop": "tsx --test src/live-loop/test.ts"
   },
   "repository": {
     "type": "git",

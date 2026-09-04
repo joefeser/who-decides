@@ -157,20 +157,33 @@ export function hacpDecisionFor(choice: string): { decision: string, to_status: 
   return mapped
 }
 
-export function buildHumanDecision(s: Scenario, d: RuntimeDecision, invocationReceiptDigest: string): Record<string, unknown> {
+export type DecisionChannel = {
+  interaction: 'web_ui' | 'cli' | 'api' | 'other'
+  sessionReference: string
+  authEventRef: string
+}
+
+export function buildHumanDecision(
+  s: Scenario,
+  d: RuntimeDecision,
+  invocationReceiptDigest: string,
+  opts?: { channel?: DecisionChannel },
+): Record<string, unknown> {
   const { decision, to_status } = hacpDecisionFor(d.choice)
   /* Demo attribution boundary: v0.1-draft has no "unauthenticated local
-   * console" actor-verification value (v0.3 input), so the enum stays
-   * server_session_with_human_interaction but the free-string references say
-   * plainly that no real session was verified. See README "Demo boundaries". */
+   * console" or "scripted CLI" actor-verification value (v0.3 input), so the
+   * enum stays server_session_with_human_interaction but the free-string
+   * references say plainly what actually carried the decision. See README
+   * "Demo boundaries". */
+  const channel = opts?.channel
   const actor = {
     actor_id: s.human_operator,
     actor_kind: 'human',
     actor_verification_source: 'server_session_with_human_interaction',
     authentication_context: {
-      interaction_channel: 'web_ui',
-      session_reference: 'demo-unauthenticated-local-console',
-      auth_event_ref: 'demo-none',
+      interaction_channel: channel?.interaction ?? 'web_ui',
+      session_reference: channel?.sessionReference ?? 'demo-unauthenticated-local-console',
+      auth_event_ref: channel?.authEventRef ?? 'demo-none',
       secret_material_present: false,
     },
   }
@@ -202,6 +215,7 @@ export function buildAgentReport(
   d: RuntimeDecision,
   consumptionReceiptId: string,
   decisionDigest: string,
+  opts?: { simulatedWorkspace?: boolean },
 ): Record<string, unknown> {
   const prepared = `Prepared ${s.package} ${s.to_version}; stopped at HUMAN_DECISION_REQUIRED; resumed from recorded decision ${d.decisionId};`
   // files_changed reports invocation A's preparation (real in every branch);
@@ -226,6 +240,35 @@ export function buildAgentReport(
   }
   const b = branch[d.choice]
   if (!b) throw new Error(`UNKNOWN_CHOICE:${d.choice}`)
+  // In a simulated/live-proof run no repository was edited; emitting
+  // files_changed would assert edits that never occurred. The schema's
+  // surfaces_changed is the accurate representation: these are the surfaces
+  // the SIMULATED preparation targeted, and the behaviour prose says so.
+  const behaviour = opts?.simulatedWorkspace
+    ? `${b.behaviour} Simulated workspace (fixture scenario): no real repository files were edited.`
+    : b.behaviour
+  const changedFields = opts?.simulatedWorkspace
+    ? { surfaces_changed: b.files }
+    : { files_changed: b.files }
+  // In a simulated/live-proof run the checks come from the fixture prompt —
+  // nothing was executed by this run, and the report must not say otherwise.
+  const verification = opts?.simulatedWorkspace
+    ? {
+        verification_performed: ['unit suite (fixture-provided — not executed in this run)', 'production build (fixture-provided — not executed in this run)', 'dependency audit (fixture-provided — not executed in this run)'],
+        verification_results: [
+          { command: 'unit suite', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.unit}` },
+          { command: 'production build', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.build}` },
+          { command: 'dependency audit', outcome: 'not_run' as const, summary: `fixture-provided, not executed in this run: ${s.checks.audit}` },
+        ],
+      }
+    : {
+        verification_performed: ['unit suite', 'production build', 'dependency audit'],
+        verification_results: [
+          { command: 'unit suite', outcome: 'pass' as const, summary: s.checks.unit },
+          { command: 'production build', outcome: 'pass' as const, summary: s.checks.build },
+          { command: 'dependency audit', outcome: 'pass' as const, summary: s.checks.audit },
+        ],
+      }
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.agent_report',
@@ -236,19 +279,14 @@ export function buildAgentReport(
     created_at: NOW(),
     created_by: s.created_by_agent,
     status: 'completed',
-    files_changed: b.files,
-    behaviour_implemented: b.behaviour,
-    verification_performed: ['unit suite', 'production build', 'dependency audit'],
+    ...changedFields,
+    behaviour_implemented: behaviour,
+    ...verification,
     scope_confirmation: {
       scope_preserved: true,
       forbidden_effects_confirmed: ['releases_to_users', 'accepts_risk'],
       out_of_scope_requests: [],
     },
-    verification_results: [
-      { command: 'unit suite', outcome: 'pass', summary: s.checks.unit },
-      { command: 'production build', outcome: 'pass', summary: s.checks.build },
-      { command: 'dependency audit', outcome: 'pass', summary: s.checks.audit },
-    ],
     linked_finding_ids: [s.finding_tradeoff_id],
     blockers: [],
     residual_risks: [s.tradeoff.unresolved_check],
