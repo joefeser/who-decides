@@ -174,3 +174,37 @@ test('a second start while a run is active returns the same run', () => {
     cleanup(dir, engine)
   }
 })
+
+test('tenants are isolated: separate runs, decisions, and resets in one database', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-tenant-test-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const alpha = new ConsoleEngine('tenant-alpha')
+  const beta = new ConsoleEngine('tenant-beta')
+  try {
+    // both tenants run concurrently in the SAME database file
+    alpha.startRun()
+    beta.startRun()
+    agePhase(dir, 10)
+    const alphaRun = alpha.getState()
+    const betaRun = beta.getState()
+    assert.notEqual(alphaRun.runId, betaRun.runId, 'each tenant has its own run')
+    assert.equal(alphaRun.tenantId, 'tenant-alpha')
+    assert.equal(betaRun.tenantId, 'tenant-beta')
+
+    // alpha decides; beta's run is untouched
+    const submitted = alpha.submitDecision('defer', 'alpha decides alone', 'alpha-key')
+    assert.equal(submitted.ok, true)
+    assert.equal(beta.getState().decision, null, 'beta sees no decision from alpha')
+
+    // resetting alpha does not archive beta's live run
+    alpha.reset()
+    assert.equal(alpha.getState().state, 'ready', 'alpha back to ready')
+    assert.equal(beta.getState().state, 'completed' === beta.getState().state ? 'completed' : 'decision_required', 'beta run survives alpha reset')
+    assert.notEqual(beta.getState().runId, '')
+  } finally {
+    alpha.close()
+    beta.close()
+    delete process.env.WD_CONSOLE_DIR
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
