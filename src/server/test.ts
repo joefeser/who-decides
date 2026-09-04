@@ -242,3 +242,25 @@ test('concurrent starts and concurrent submissions are safe through the async se
     await cleanup(dir, engine)
   }
 })
+
+test('write slots serialize across store instances sharing one database file', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-seam-shared-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const alpha = new ConsoleEngine('shared-a')
+  const beta = new ConsoleEngine('shared-b')
+  try {
+    // Concurrent starts across two engines on ONE state file must never
+    // collide on BEGIN IMMEDIATE (review P1: instance-local queues).
+    const results = await Promise.all([
+      alpha.startRun(),
+      beta.startRun(),
+      alpha.startRun(),
+      beta.startRun(),
+    ])
+    assert.equal(results[0].runId, results[2].runId, 'alpha starts agree')
+    assert.equal(results[1].runId, results[3].runId, 'beta starts agree')
+  } finally {
+    await cleanup(dir, alpha)
+    await beta.close().catch(() => {})
+  }
+})

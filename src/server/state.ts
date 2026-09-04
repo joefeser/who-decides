@@ -136,19 +136,14 @@ export class ConsoleEngine {
       { label: 'test', detail: s.checks.unit, at: now },
       { label: 'build', detail: s.checks.build, at: now },
     ]
-    // One-active-run enforced inside the store's exclusive write slot: a
-    // concurrent caller cannot slip a second active run between check and
-    // insert.
-    const existingId = await this.runs.withWriteSlot(async () => {
-      const existing = await this.runs.getCurrentRun(this.tenant)
-      if (existing && existing.state !== 'completed') return existing.id
-      await this.runs.insertRun({
-        id: runId, tenantId: this.tenant, invocationA,
-        startedAt: now, phaseChangedAt: now, milestonesJson: JSON.stringify(milestones),
-      })
-      return null
+    // One-active-run enforced atomically inside the store (adapter-level
+    // check-and-insert): a concurrent caller cannot slip a second active run
+    // between check and insert.
+    const active = await this.runs.ensureActiveRun(this.tenant, {
+      id: runId, tenantId: this.tenant, invocationA,
+      startedAt: now, phaseChangedAt: now, milestonesJson: JSON.stringify(milestones),
     })
-    if (existingId) return { runId: existingId }
+    if (active.id !== runId) return { runId: active.id }
 
     const packet = buildTaskPacket(s)
     assertValid('task-packet', packet)
@@ -222,12 +217,16 @@ export class ConsoleEngine {
     if (storedDecision.choice !== choice || storedDecision.idempotencyKey !== (idempotencyKey ?? null)) {
       return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
     }
+    // EVERY stored value is authoritative — including decidedAt, which is
+    // part of the decision digest: a loser using its own timestamp would
+    // claim with a mismatched digest (review P1).
     const effectiveChoice = storedDecision.choice
     const effectiveRationale = storedDecision.rationale
+    const authoritativeDecidedAt = storedDecision.decidedAt
     const authoritativeInvocationB = stored.invocation_b ?? invocationB
 
     const decisionId = `decision-${run.id}`
-    const decisionRecord = this.decisionRecord(decisionId, effectiveChoice, effectiveRationale, decidedAt)
+    const decisionRecord = this.decisionRecord(decisionId, effectiveChoice, effectiveRationale, authoritativeDecidedAt)
 
     const claim = await this.receipts.claim(decisionRecord, authoritativeInvocationB, decisionDigest(decisionRecord))
     if (claim.status === 'rejected') return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
@@ -236,7 +235,7 @@ export class ConsoleEngine {
       decisionId: decisionRecord.decisionId,
       choice: effectiveChoice,
       rationale: effectiveRationale,
-      decidedAt,
+      decidedAt: authoritativeDecidedAt,
     }
     const humanDecision = buildHumanDecision(s, runtimeDecision, await this.evidenceDigest(run.id))
     assertValid('human-decision', humanDecision)
@@ -250,7 +249,7 @@ export class ConsoleEngine {
     assertValid('agent-report', report)
     await this.storeArtifact(run.id, 'agent-report', 'agent-report', report)
 
-    await this.runs.finalizeDecision(run.id, 'resuming', decidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
+    await this.runs.finalizeDecision(run.id, 'resuming', authoritativeDecidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
     return { ok: true }
   }
 

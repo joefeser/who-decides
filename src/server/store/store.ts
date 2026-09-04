@@ -41,11 +41,13 @@ export type StoredArtifact = {
 export interface RunStore {
   /** Ensure schema exists (idempotent). Adapter-owned migrations live here. */
   initialize(): Promise<void>
-  /** Exclusive write slot covering a check-then-act sequence. We use a
-   * callback (not begin/commit pairs) because it maps directly onto both
-   * SQLite BEGIN IMMEDIATE and Postgres BEGIN...COMMIT without leaking
-   * transaction state across awaits to callers. */
-  withWriteSlot<T>(fn: () => Promise<T>): Promise<T>
+  /** Atomic check-then-act: returns the tenant's active (non-completed) run,
+   * inserting the candidate only when none exists. Composite atomicity lives
+   * INSIDE adapters — SQLite via a synchronous BEGIN IMMEDIATE block, a
+   * future Postgres adapter via a real transaction — because a public
+   * transaction seam cannot guarantee its callback's statements execute on
+   * the same connection (review finding). */
+  ensureActiveRun(tenantId: string, candidate: NewRun): Promise<RunRow>
   getCurrentRun(tenantId: string): Promise<RunRow | undefined>
   insertRun(run: NewRun): Promise<void>
   updateRunPhase(runId: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<void>
