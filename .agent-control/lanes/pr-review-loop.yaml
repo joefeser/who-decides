@@ -8,7 +8,7 @@
 lane:
   id: joefeser-who-decides-pr-review-loop
   version: 0.1.0
-  status: draft
+  status: active
   description: Main-only hackathon PR loop. Feature branches -> PRs -> main; Joe is the merge decision maker (merge commits, never squash); no dev branch.
 
 prLoopPacket:
