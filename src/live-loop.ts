@@ -160,6 +160,13 @@ function syncDir(dir: string): void {
   }
 }
 
+/** Durable directory creation: fsync the parent's entry too, so power loss
+ * cannot discard the just-created directory and everything inside it. */
+function mkdirDurable(dir: string): void {
+  mkdirSync(dir, { recursive: true })
+  syncDir(path.dirname(dir))
+}
+
 type LiveRuntime = {
   agent: Pick<Agent, 'invoke' | 'loadSnapshot' | 'takeSnapshot'>
   provenance: ReturnType<typeof loadProvider>['provenance']
@@ -208,12 +215,12 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
     console.log('[stop] HUMAN_DECISION_REQUIRED: prior run has an unknown execution outcome; automatic recovery is disabled.')
     return
   }
-  mkdirSync(STATE_DIR, { recursive: true })
+  mkdirDurable(STATE_DIR)
   if (!reserveRun()) {
     console.log('[stop] HUMAN_DECISION_REQUIRED: tag is already reserved; holder death does not authorize takeover.')
     return
   }
-  mkdirSync(RUN_DIR, { recursive: true })
+  mkdirDurable(RUN_DIR)
   const { agent, provenance } = runtimeFactory(f)
   console.log(`[live-loop] provider=${provenance.provider} model=${provenance.modelId} tag=${RUN_TAG}`)
   console.log(`[human] choice=${HUMAN_CHOICE} (scripted); rationale="${HUMAN_RATIONALE.slice(0, 60)}…"`)
