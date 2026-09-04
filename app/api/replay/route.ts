@@ -5,7 +5,7 @@ import engine from '../../../src/server/state'
  *  decision. It must fail closed — shown in the console as proof. */
 export async function POST() {
   try {
-    const probe = engine.attemptDuplicateReplay()
+    const probe = await engine.attemptDuplicateReplay()
     return NextResponse.json({ ok: true, probe })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

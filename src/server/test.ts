@@ -15,9 +15,9 @@ function freshEngine(): { engine: ConsoleEngine, dir: string } {
   return { engine: new ConsoleEngine(), dir }
 }
 
-function cleanup(dir: string, engine: ConsoleEngine): void {
+async function cleanup(dir: string, engine: ConsoleEngine): Promise<void> {
   delete process.env.WD_CONSOLE_DIR
-  engine.close()
+  await engine.close()
   rmSync(dir, { recursive: true, force: true })
 }
 
@@ -28,8 +28,8 @@ function agePhase(dir: string, seconds: number): void {
   db.close()
 }
 
-function runToDecision(engine: ConsoleEngine, dir: string): void {
-  engine.startRun()
+async function runToDecision(engine: ConsoleEngine, dir: string): Promise<void> {
+  await engine.startRun()
   agePhase(dir, 10)
 }
 
@@ -40,7 +40,7 @@ function readArtifact(dir: string, name: string): Record<string, unknown> {
   return JSON.parse(row.json) as Record<string, unknown>
 }
 
-test('each choice executes only its own branch (send_back/defer never build a PR)', () => {
+test('each choice executes only its own branch (send_back/defer never build a PR)', async () => {
   const branchMarker: Record<string, string> = {
     create_draft_pr: 'draft-PR receipt',
     send_back: 'created no PR',
@@ -49,11 +49,11 @@ test('each choice executes only its own branch (send_back/defer never build a PR
   for (const [choice, marker] of Object.entries(branchMarker)) {
     const { engine, dir } = freshEngine()
     try {
-      runToDecision(engine, dir)
-      const result = engine.submitDecision(choice, `rationale for ${choice}`, 'test-key')
+      await runToDecision(engine, dir)
+      const result = await engine.submitDecision(choice, `rationale for ${choice}`, 'test-key')
       assert.equal(result.ok, true, `${choice} should submit cleanly`)
       agePhase(dir, 10)
-      const state = engine.getState()
+      const state = await engine.getState()
       assert.equal(state.state, 'completed')
       const payload = (state.effect?.exactPayload ?? {}) as Record<string, unknown>
       if (choice === 'create_draft_pr') {
@@ -67,16 +67,16 @@ test('each choice executes only its own branch (send_back/defer never build a PR
       assert.equal(report.requested_next_step, choice === 'create_draft_pr' ? 'complete' : choice === 'send_back' ? 'revise_and_resubmit' : 'revisit_on_request', `${choice} sets its own next step`)
       assert.ok(state.artifacts.every(a => a.valid), `${choice}: all artifacts valid`)
     } finally {
-      cleanup(dir, engine)
+      await cleanup(dir, engine)
     }
   }
 })
 
-test('human-decision artifact records the submitted choice, rationale, and dynamic id', () => {
+test('human-decision artifact records the submitted choice, rationale, and dynamic id', async () => {
   const { engine, dir } = freshEngine()
   try {
-    runToDecision(engine, dir)
-    engine.submitDecision('send_back', 'my actual rationale text', 'test-key')
+    await runToDecision(engine, dir)
+    await engine.submitDecision('send_back', 'my actual rationale text', 'test-key')
     const decision = readArtifact(dir, 'human-decision')
     assert.equal(decision.reason, 'my actual rationale text')
     assert.equal(decision.decision, 'request_review')
@@ -85,74 +85,74 @@ test('human-decision artifact records the submitted choice, rationale, and dynam
     const receipt = readArtifact(dir, 'consumption-receipt')
     assert.equal(receipt.decisionId, decision.decision_id, 'artifact and receipt share decision identity')
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('retrying a committed decision returns idempotent success, not WRONG_STATE', () => {
+test('retrying a committed decision returns idempotent success, not WRONG_STATE', async () => {
   const { engine, dir } = freshEngine()
   try {
-    runToDecision(engine, dir)
-    const first = engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    await runToDecision(engine, dir)
+    const first = await engine.submitDecision('create_draft_pr', 'approved', 'key-1')
     assert.equal(first.ok, true)
-    const retry = engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    const retry = await engine.submitDecision('create_draft_pr', 'approved', 'key-1')
     assert.equal(retry.ok, true)
     assert.equal(retry.duplicate, true)
     // A DIFFERENT decision after one was recorded is a conflict, not a
     // duplicate success — the first decision was consumed.
-    const conflict = engine.submitDecision('defer', 'changed my mind', 'key-2')
+    const conflict = await engine.submitDecision('defer', 'changed my mind', 'key-2')
     assert.equal(conflict.ok, false)
     assert.equal(conflict.error, 'DECISION_ALREADY_RECORDED')
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('the decision artifact cites a real evidence digest, not a placeholder', () => {
+test('the decision artifact cites a real evidence digest, not a placeholder', async () => {
   const { engine, dir } = freshEngine()
   try {
-    runToDecision(engine, dir)
-    engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    await runToDecision(engine, dir)
+    await engine.submitDecision('create_draft_pr', 'approved', 'key-1')
     const decision = readArtifact(dir, 'human-decision')
     const refs = decision.evidence_refs as string[]
     const digestRef = refs.find(r => String(r).startsWith('sha256:'))
     assert.ok(digestRef, 'evidence_refs carries a sha256 reference')
     assert.match(String(digestRef), /^sha256:[0-9a-f]{64}$/, 'the digest is a real 64-hex hash of the stop-response evidence')
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('crash between claim and state-write recovers with the same successor (no competing claim)', () => {
+test('crash between claim and state-write recovers with the same successor (no competing claim)', async () => {
   const { engine, dir } = freshEngine()
   try {
-    runToDecision(engine, dir)
-    engine.submitDecision('create_draft_pr', 'approved', 'key-1')
-    const successor = engine.getState().invocationB
+    await runToDecision(engine, dir)
+    await engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    const successor = (await engine.getState()).invocationB
     // Simulate the crash window: the claim committed, the run row did not.
     const db = new Database(path.join(dir, 'state.db'))
     db.prepare("UPDATE runs SET state = 'decision_required', receipt_json = NULL, effect_json = NULL").run()
     db.close()
-    const recovery = engine.submitDecision('create_draft_pr', 'approved', 'key-1')
+    const recovery = await engine.submitDecision('create_draft_pr', 'approved', 'key-1')
     assert.equal(recovery.ok, true, 'retry must recover, not strand the run')
     const receipt = readArtifact(dir, 'consumption-receipt')
     assert.equal(receipt.successorInvocationId, successor, 'recovery reuses the persisted successor — never a competing claim')
     agePhase(dir, 10)
-    assert.equal(engine.getState().state, 'completed')
+    assert.equal((await engine.getState()).state, 'completed')
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('reset archives completed runs instead of deleting audit records', () => {
+test('reset archives completed runs instead of deleting audit records', async () => {
   const { engine, dir } = freshEngine()
   try {
-    runToDecision(engine, dir)
-    engine.submitDecision('defer', 'not now', 'key-1')
+    await runToDecision(engine, dir)
+    await engine.submitDecision('defer', 'not now', 'key-1')
     agePhase(dir, 10)
-    assert.equal(engine.getState().state, 'completed')
-    engine.reset()
-    assert.equal(engine.getState().state, 'ready', 'console is ready for a fresh run')
+    assert.equal((await engine.getState()).state, 'completed')
+    await engine.reset()
+    assert.equal((await engine.getState()).state, 'ready', 'console is ready for a fresh run')
     const db = new Database(path.join(dir, 'state.db'))
     const rows = db.prepare('SELECT COUNT(*) AS n FROM runs WHERE archived = 1').get() as { n: number }
     const artifacts = db.prepare('SELECT COUNT(*) AS n FROM artifacts').get() as { n: number }
@@ -160,50 +160,50 @@ test('reset archives completed runs instead of deleting audit records', () => {
     assert.equal(rows.n, 1, 'completed run row survives reset')
     assert.ok(artifacts.n >= 8, 'completed run artifacts survive reset')
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('a second start while a run is active returns the same run', () => {
+test('a second start while a run is active returns the same run', async () => {
   const { engine, dir } = freshEngine()
   try {
-    const first = engine.startRun()
-    const second = engine.startRun()
+    const first = await engine.startRun()
+    const second = await engine.startRun()
     assert.equal(second.runId, first.runId)
   } finally {
-    cleanup(dir, engine)
+    await cleanup(dir, engine)
   }
 })
 
-test('tenants are isolated: separate runs, decisions, and resets in one database', () => {
+test('tenants are isolated: separate runs, decisions, and resets in one database', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'wd-tenant-test-'))
   process.env.WD_CONSOLE_DIR = dir
   const alpha = new ConsoleEngine('tenant-alpha')
   const beta = new ConsoleEngine('tenant-beta')
   try {
     // both tenants run concurrently in the SAME database file
-    alpha.startRun()
-    beta.startRun()
+    await alpha.startRun()
+    await beta.startRun()
     agePhase(dir, 10)
-    const alphaRun = alpha.getState()
-    const betaRun = beta.getState()
+    const alphaRun = await alpha.getState()
+    const betaRun = await beta.getState()
     assert.notEqual(alphaRun.runId, betaRun.runId, 'each tenant has its own run')
     assert.equal(alphaRun.tenantId, 'tenant-alpha')
     assert.equal(betaRun.tenantId, 'tenant-beta')
 
     // alpha decides; beta's run is untouched
-    const submitted = alpha.submitDecision('defer', 'alpha decides alone', 'alpha-key')
+    const submitted = await alpha.submitDecision('defer', 'alpha decides alone', 'alpha-key')
     assert.equal(submitted.ok, true)
-    assert.equal(beta.getState().decision, null, 'beta sees no decision from alpha')
+    assert.equal((await beta.getState()).decision, null, 'beta sees no decision from alpha')
 
     // resetting alpha does not archive beta's live run
-    alpha.reset()
-    assert.equal(alpha.getState().state, 'ready', 'alpha back to ready')
-    assert.equal(beta.getState().state, 'completed' === beta.getState().state ? 'completed' : 'decision_required', 'beta run survives alpha reset')
-    assert.notEqual(beta.getState().runId, '')
+    await alpha.reset()
+    assert.equal((await alpha.getState()).state, 'ready', 'alpha back to ready')
+    assert.equal((await beta.getState()).state, 'completed' === (await beta.getState()).state ? 'completed' : 'decision_required', 'beta run survives alpha reset')
+    assert.notEqual((await beta.getState()).runId, '')
   } finally {
-    alpha.close()
-    beta.close()
+    await alpha.close()
+    await beta.close()
     delete process.env.WD_CONSOLE_DIR
     rmSync(dir, { recursive: true, force: true })
   }
