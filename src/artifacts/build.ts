@@ -227,11 +227,16 @@ export function buildAgentReport(
   }
   const b = branch[d.choice]
   if (!b) throw new Error(`UNKNOWN_CHOICE:${d.choice}`)
-  // In a simulated/live-proof run no repository was edited; the schema's
-  // files_changed minItems forces one entry, so the report says so itself.
+  // In a simulated/live-proof run no repository was edited; emitting
+  // files_changed would assert edits that never occurred. The schema's
+  // surfaces_changed is the accurate representation: these are the surfaces
+  // the SIMULATED preparation targeted, and the behaviour prose says so.
   const behaviour = opts?.simulatedWorkspace
     ? `${b.behaviour} Simulated workspace (fixture scenario): no real repository files were edited.`
     : b.behaviour
+  const changedFields = opts?.simulatedWorkspace
+    ? { surfaces_changed: b.files }
+    : { files_changed: b.files }
   return {
     hacp_version: 'v0.1-draft',
     record_kind: 'hacp.agent_report',
@@ -242,7 +247,7 @@ export function buildAgentReport(
     created_at: NOW(),
     created_by: s.created_by_agent,
     status: 'completed',
-    files_changed: b.files,
+    ...changedFields,
     behaviour_implemented: behaviour,
     verification_performed: ['unit suite', 'production build', 'dependency audit'],
     scope_confirmation: {

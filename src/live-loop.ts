@@ -11,7 +11,7 @@
  *
  * Run: WD_PROVIDER=bedrock AWS_PROFILE=who-decides npm run live-loop
  */
-import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, openSync, writeSync, closeSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Agent, FunctionTool, InterruptResponseContent } from '@strands-agents/sdk'
@@ -71,8 +71,12 @@ function loadState(): RunState | null {
   return JSON.parse(readFileSync(STATE_FILE, 'utf8')) as RunState
 }
 
+/** Atomic durable write: temp file + rename, so a crash mid-write can never
+ * leave the audit state truncated or empty (review P2). */
 function saveState(state: RunState): void {
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
+  const tmp = `${STATE_FILE}.tmp-${process.pid}`
+  writeFileSync(tmp, JSON.stringify(state, null, 2))
+  renameSync(tmp, STATE_FILE)
 }
 
 /** Default rationale per choice — an approval argument must never be recorded
@@ -302,9 +306,11 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
     schema: 'who-decides.effect-receipt.v0',
     effect: state.choice,
     mode: 'dry-run',
+    // The model is execution provenance ONLY — authorization comes from the
+    // recorded human decision and its consumption receipt (authorizedBy).
     exactPayload: state.choice === 'create_draft_pr'
-      ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, authorizedByModel: provenance.modelId }
-      : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', authorizedByModel: provenance.modelId },
+      ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, generatedByModel: provenance.modelId }
+      : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', generatedByModel: provenance.modelId },
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
   }

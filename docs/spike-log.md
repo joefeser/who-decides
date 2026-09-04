@@ -321,3 +321,24 @@ without provider credentials or calls. Existing real-model receipts are not
 reused as validation of this change. Authenticated issuer, serialized status and
 revocation checks, and safe automatic recovery remain deferred. This stop-only
 repair does not adopt those policies or prove provider exactly-once effects.
+
+### Day 4 addendum 4 — takeback: honest report fields and model-as-provenance
+
+Handoff note: from 512e41e/062f634 the live loop uses permanent per-tag
+reservation (no takeover; holder death does not authorize reexecution) and
+stops HUMAN_DECISION_REQUIRED on any ambiguous state — stricter than the
+lease-takeover design it replaced, and kept.
+
+Two findings from the 04:22 review, patched:
+
+- simulated reports now emit `surfaces_changed` (the surfaces the simulated
+  preparation targeted) and never `files_changed` — structured consumers no
+  longer see edits that never occurred;
+- the effect payload records the model as `generatedByModel` (execution
+  provenance); `authorizedBy` carries only decision id, receipt, and
+  successor — the human decision authorizes, the model executes.
+
+Live proof (tag `takeback-proof`): report has surfaces_changed and no
+files_changed; payload has generatedByModel; duplicate probe rejected;
+rerun stops typed RUN_ALREADY_COMPLETED. All suites green (live-loop 6,
+console 7, artifacts 8, consumption 12, proof 5/5).
