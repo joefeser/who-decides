@@ -36,9 +36,52 @@ explicit, declared up front in the task packet, and never silently transferred.
 
 ## Status
 
-Early spike — being built for the [Agents for Humans](https://agentsforhumans.devpost.com/)
-hackathon (AWS / Strands Agents SDK), September 2026. See [docs/roadmap.md](docs/roadmap.md)
-as it fills in.
+Being built for the [Agents for Humans](https://agentsforhumans.devpost.com/)
+hackathon (AWS / Strands Agents SDK), September 2026. The core loop is proven:
+a real Strands agent on Bedrock stops at a typed decision request, resumes on
+a recorded human decision, and every artifact validates against the vendored
+HACP schemas. See [docs/roadmap.md](docs/roadmap.md) and
+[docs/spike-log.md](docs/spike-log.md) for evidence.
+
+## Quickstart
+
+```sh
+npm install
+
+# Decision console (no model needed — deterministic demo of the full loop)
+npm run console          # http://localhost:3100
+
+# Tests (all offline; CI runs the same plus the contention proof)
+npx tsc --noEmit
+npm run test:console     # engine: branches, idempotency, crash recovery, reset
+npm run test:artifacts   # schema validation incl. tamper-rejection
+npm run test:consumption # consume-once claims, races, expiry, replay
+npm run test:live-loop   # the live script's decision flow (synthetic runtime)
+npm run scenario         # end-to-end artifact spine, deterministic
+```
+
+### Real-model pass (Bedrock)
+
+```sh
+WD_PROVIDER=bedrock AWS_PROFILE=who-decides npm run live-loop
+```
+
+One real agent run end to end: invocation A stops at exactly one
+`HUMAN_DECISION_REQUIRED` interrupt, a scripted decision is claimed exactly
+once (the claim gates execution), invocation B resumes from the session and
+executes only the approved branch as a dry-run. Artifacts land in
+`.tmp/live-run/<tag>/`. Set `WD_LIVE_TAG` (filename-safe slug) to name a run;
+rerunning a consumed tag stops typed. An OpenAI-compatible escape hatch exists
+via `WD_PROVIDER=openai-compatible` with `WD_BASE_URL`/`WD_MODEL`/`WD_API_KEY`.
+
+## Review loop
+
+Pull requests are reviewed by Codex and Qodo before merge, with an
+[ACK](https://github.com/joefeser/agent-control-kit) lane proposal under
+`.agent-control/lanes/pr-review-loop.yaml` (see
+[docs/ack-startup-guide.md](docs/ack-startup-guide.md) — the lane is
+committed but not yet activated). Merge commits only, never squash; main is
+human-mediated.
 
 ## Demo boundaries (honest scope)
 

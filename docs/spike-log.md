@@ -342,3 +342,24 @@ Live proof (tag `takeback-proof`): report has surfaces_changed and no
 files_changed; payload has generatedByModel; duplicate probe rejected;
 rerun stops typed RUN_ALREADY_COMPLETED. All suites green (live-loop 6,
 console 7, artifacts 8, consumption 12, proof 5/5).
+
+## Day 5 — 2026-09-04: lane on main, main is the story
+
+PR #4 (live end-to-end pass) merged at 0d22637 and PR #5 (ACK lane proposal)
+at b9b2e57 — both merge commits, per the standing rule. Main now carries the
+complete loop: real-model interrupt/resume, typed spine, consume-once claims
+with the domain-separated digest, durable no-takeover reservations, execution
+leases superseded by fail-closed tag reservation, and the committed (draft)
+ACK lane. `agent-control onboard doctor --base main` reports
+`onboarding_doctor_ready` against the committed lane; activation (flipping
+`status: draft`) remains an explicit owner decision.
+
+Loop retrospective worth keeping: the review loops on PR #4 ran eleven
+rounds. Two of my "clean" verdicts were wrong — a hand-rolled timestamp
+filter hid live findings twice, and the second false-clean is what prompted
+the other Codex session's (correct) takeover. Corrections: last-N unfiltered
+reads, thread-level review, and the ACK lane for review state instead of
+hand-rolled polling. The miss cost hours; the fix is process, not memory.
+
+Devpost polish begins: gallery screenshots recaptured from merged main
+(.tmp/devpost/), README quickstart added.
