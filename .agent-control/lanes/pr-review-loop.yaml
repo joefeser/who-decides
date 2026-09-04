@@ -31,6 +31,8 @@ prLoopPacket:
       - schemas/**
       - scripts/**
       - src/consumption/**
+      - src/live-loop.ts
+      - src/live-loop/**
       - src/server/**
       - src/artifacts/**
       - src/provider.ts

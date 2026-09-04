@@ -53,16 +53,12 @@ rebuild ACK dev and treat it as stable.
   not exist here. Unknown paths need assessment, not a safety assumption.
 - **Validation (proves a patch before handoff):**
   `npx tsc --noEmit`; `npm run test:console`; `npm run test:artifacts`;
-  `npm run test:consumption`; `npm run scenario`; `git diff --check`.
+  `npm run test:consumption`; `npm run test:live-loop`; `npm run scenario`;
+  `git diff --check`. CI on main additionally runs `npm run proof:consumption`
+  with artifact upload — run it locally whenever consumption-store behavior
+  changes.
   **Do not use `npm test` — it is still the failing placeholder** (`package.json`
   on main). Fixing it is a separate small PR Joe can approve.
-
-## Pending updates after PR #4 (live-loop) merges
-
-- Add `npm run test:live-loop` and `npm run proof:consumption` to the
-  validation list (CI on that branch already runs the proof with artifact
-  upload; the lane should not lag CI).
-- Add `src/live-loop.ts` and `src/live-loop/**` to `riskyFileGlobs`.
 
 ## Boundaries carried from the recommendation
 
