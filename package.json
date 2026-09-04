@@ -19,7 +19,8 @@
     "scenario": "tsx src/scenario/run.ts",
     "test:artifacts": "tsx --test src/artifacts/test.ts",
     "console": "next dev -p 3100",
-    "console:build": "next build"
+    "console:build": "next build",
+    "proof:consumption": "node --import tsx scripts/consumption-proof.mjs"
   },
   "repository": {
     "type": "git",

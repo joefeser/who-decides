@@ -1,7 +1,7 @@
 /* Consumption receipt tests — the spike-log test list:
  * happy claim · identical replay · competing successor rejected ·
  * digest mismatch rejected · expiry ordering · restart survival ·
- * in-process concurrent race · cross-process concurrent race (two CLIs).
+ * sequential connection/CLI retries. Real overlap: scripts/consumption-proof.mjs.
  * Run: npm run test:consumption */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ConsumptionStore } from './store'
+import { ConsumptionStore, decisionDigest } from './store'
+import { createHash } from 'node:crypto'
+import Database from 'better-sqlite3'
 import type { DecisionRecord } from './store'
 
 function sampleDecision(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
@@ -93,7 +95,7 @@ test('restart survival: a fresh store on the same file preserves the claim', () 
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('in-process concurrent race: many connections, exactly one winner', () => {
+test('sequential connections: exactly one winner', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'wd-consumption-'))
   const dbPath = path.join(dir, 'consumption.db')
   new ConsumptionStore(dbPath).close()
@@ -113,7 +115,7 @@ test('in-process concurrent race: many connections, exactly one winner', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('cross-process concurrent race: two CLIs, exactly one winner', () => {
+test('sequential CLI processes: exactly one winner', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'wd-consumption-'))
   const dbPath = path.join(dir, 'consumption.db')
   const decisionPath = path.join(dir, 'decision.json')
@@ -131,5 +133,76 @@ test('cross-process concurrent race: two CLIs, exactly one winner', () => {
   const losers = outcomes.filter(o => o.status === 'rejected')
   assert.equal(winners.length, 1, `expected exactly one winner, got ${JSON.stringify(outcomes)}`)
   assert.equal(losers.length, 1)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+
+test('changed approved content cannot replay an old receipt with a matching submitted digest', () => {
+  const store = new ConsumptionStore(':memory:')
+  const original = sampleDecision()
+  const first = store.claim(original, 'inv-b')
+  for (const change of [
+    { permittedAction: 'different action' }, { decisionRequestId: 'different request' },
+    { chosenOption: 'defer' }, { rationale: 'changed' }, { decidedAt: '2026-09-04T00:00:00Z' },
+    { expiresAt: '2100-01-01T00:00:00Z' },
+  ]) {
+    const changed = { ...original, ...change }
+    const result = store.claim(changed, 'inv-b', decisionDigest(changed))
+    assert.equal(result.status, 'rejected')
+    if (result.status === 'rejected') assert.equal(result.reason, 'digest_mismatch')
+    assert.deepEqual(store.getReceipt(original.decisionId), first.status === 'claimed' ? first.receipt : undefined)
+  }
+  store.close()
+})
+
+test('expiry extension or removal cannot use the old digest', () => {
+  const store = new ConsumptionStore(':memory:')
+  const expired = sampleDecision({ expiresAt: '2000-01-01T00:00:00Z' })
+  const digest = decisionDigest(expired)
+  assert.equal(store.claim(expired, 'inv-b', digest).status, 'rejected')
+  for (const expiresAt of ['2100-01-01T00:00:00Z', undefined]) {
+    const result = store.claim({ ...expired, expiresAt }, 'inv-b', digest)
+    assert.equal(result.status, 'rejected')
+    if (result.status === 'rejected') assert.equal(result.reason, 'digest_mismatch')
+  }
+  assert.equal(store.getReceipt(expired.decisionId), undefined)
+  store.close()
+})
+
+test('invalid expiry rejects malformed dates and calendar rollovers without a claim', () => {
+  const store = new ConsumptionStore(':memory:')
+  for (const expiresAt of ['invalid-date', '', '2100-01-01', '2100-02-29T00:00:00Z',
+    '2100-04-31T00:00:00Z', '2100-01-01T24:00:00Z', '2100-01-01T00:00:00+24:00']) {
+    const result = store.claim(sampleDecision({ expiresAt }), 'inv-b')
+    assert.equal(result.status, 'rejected', expiresAt)
+    if (result.status === 'rejected') assert.equal(result.reason, 'invalid_expiry')
+    assert.equal(store.getReceipt('dec-001'), undefined)
+  }
+  assert.equal(store.claim(sampleDecision({ expiresAt: '2104-02-29T12:00:00.123+01:00' }), 'inv-b').status, 'claimed')
+  store.close()
+})
+
+test('legacy receipts stay byte-for-byte intact but cannot authorize replay, with or without supplied expiry', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-legacy-'))
+  const dbPath = path.join(dir, 'claims.db')
+  new ConsumptionStore(dbPath).close()
+  const db = new Database(dbPath)
+  const decision = sampleDecision()
+  // Exact pre-repair six-field digest, shared by old expiry/no-expiry inputs.
+  const oldDigest = `sha256:${createHash('sha256').update(JSON.stringify(decision)).digest('hex')}`
+  const receipt = { schema: 'who-decides.consumption-receipt.v0', receiptId: 'legacy',
+    decisionId: decision.decisionId, decisionDigest: oldDigest, decisionRequestId: decision.decisionRequestId,
+    permittedAction: decision.permittedAction, successorInvocationId: 'inv-b', claimedAt: decision.decidedAt,
+    claimNote: 'historical fixture' }
+  const bytes = JSON.stringify(receipt)
+  db.prepare('INSERT INTO consumption_receipts VALUES (?, ?, ?, ?, ?)').run(decision.decisionId, bytes, 'inv-b', oldDigest, decision.decidedAt)
+  const store = new ConsumptionStore(dbPath)
+  for (const expiresAt of [undefined, '2100-01-01T00:00:00Z']) {
+    assert.equal(store.claim({ ...decision, expiresAt }, 'inv-b').status, 'rejected')
+    assert.deepEqual(store.getReceipt(decision.decisionId), receipt)
+  }
+  assert.equal((db.prepare('SELECT receipt_json FROM consumption_receipts').get() as { receipt_json: string }).receipt_json, bytes)
+  store.close()
+  db.close()
   rmSync(dir, { recursive: true, force: true })
 })
