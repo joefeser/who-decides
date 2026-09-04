@@ -42,6 +42,25 @@ export type ClaimResult =
   | { status: 'replayed', receipt: ConsumptionReceipt, note: string }
   | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor', detail: string }
 
+/** Require a real RFC3339 calendar date, not Date.parse's rollover or
+ * locale-dependent shortcuts. Fractional seconds and explicit offsets are
+ * supported; leap seconds are not supported by this local runtime. */
+function validateExpiry(expiresAt: string): { ok: true, time: number } | { ok: false, detail: string } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(expiresAt)
+  const time = Date.parse(expiresAt)
+  const year = match ? Number(match[1]) : 0
+  const month = match ? Number(match[2]) : 0
+  const day = match ? Number(match[3]) : 0
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (!match || !Number.isFinite(time) || month < 1 || month > 12 || day < 1 || day > days[month - 1]
+    || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
+    || Number(match[8] ?? 0) > 23 || Number(match[9] ?? 0) > 59) {
+    return { ok: false, detail: 'expiry must be a valid RFC3339 timestamp' }
+  }
+  return { ok: true, time }
+}
+
 export function decisionDigest(decision: DecisionRecord): `sha256:${string}` {
   // Version the local digest encoding; historical receipts remain readable but
   // cannot prove expiry was absent (the old digest omitted it entirely).
@@ -82,22 +101,9 @@ export class ConsumptionStore {
       return { status: 'rejected', reason: 'digest_mismatch', detail: 'provided digest does not match the decision record' }
     }
     if (decision.expiresAt !== undefined) {
-      // Require a real RFC3339 calendar date, not Date.parse's rollover or
-      // locale-dependent shortcuts. Fractional seconds and explicit offsets
-      // are supported; leap seconds are not supported by this local runtime.
-      const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(decision.expiresAt)
-      const time = Date.parse(decision.expiresAt)
-      const year = match ? Number(match[1]) : 0
-      const month = match ? Number(match[2]) : 0
-      const day = match ? Number(match[3]) : 0
-      const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-      const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-      if (!match || !Number.isFinite(time) || month < 1 || month > 12 || day < 1 || day > days[month - 1]
-        || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6]) > 59
-        || Number(match[8] ?? 0) > 23 || Number(match[9] ?? 0) > 59) {
-        return { status: 'rejected', reason: 'invalid_expiry', detail: 'expiry must be a valid RFC3339 timestamp' }
-      }
-      if (time <= Date.now()) {
+      const validity = validateExpiry(decision.expiresAt)
+      if (!validity.ok) return { status: 'rejected', reason: 'invalid_expiry', detail: validity.detail }
+      if (validity.time <= Date.now()) {
         return { status: 'rejected', reason: 'expired', detail: `decision expired at ${decision.expiresAt}` }
       }
     }
@@ -105,25 +111,42 @@ export class ConsumptionStore {
     const existing = this.readClaim(decision.decisionId)
     if (existing) return this.checkReplay(existing, decision, successorInvocationId)
 
-    const receipt: ConsumptionReceipt = {
-      schema: CONSUMPTION_SCHEMA,
-      receiptId: randomUUID(),
-      decisionId: decision.decisionId,
-      decisionDigest: decisionDigest(decision),
-      decisionRequestId: decision.decisionRequestId,
-      permittedAction: decision.permittedAction,
-      successorInvocationId,
-      claimedAt: new Date().toISOString(),
-      claimNote: 'Claim acceptance does not prove invocation completion or exactly-once external effects.',
+    // No existing claim: acquire the write slot BEFORE constructing the
+    // receipt. The insert can wait on another connection's write lock, so the
+    // expiry is rechecked and claimedAt is stamped AFTER the wait, inside the
+    // slot — the committed receipt then reflects the actual claim time and
+    // never authorizes an already-expired decision (review P1).
+    let expiresAtTime: number | null = null
+    if (decision.expiresAt !== undefined) {
+      const validity = validateExpiry(decision.expiresAt)
+      if (!validity.ok) return { status: 'rejected', reason: 'invalid_expiry', detail: validity.detail }
+      expiresAtTime = validity.time
     }
-
     const insert = this.db.prepare(
       'INSERT INTO consumption_receipts (decision_id, receipt_json, successor_invocation_id, decision_digest, claimed_at) VALUES (?, ?, ?, ?, ?)',
     )
+    this.db.exec('BEGIN IMMEDIATE')
     try {
+      if (expiresAtTime !== null && expiresAtTime <= Date.now()) {
+        this.db.exec('ROLLBACK')
+        return { status: 'rejected', reason: 'expired', detail: `decision expired at ${decision.expiresAt} (rechecked after write-slot wait)` }
+      }
+      const receipt: ConsumptionReceipt = {
+        schema: CONSUMPTION_SCHEMA,
+        receiptId: randomUUID(),
+        decisionId: decision.decisionId,
+        decisionDigest: decisionDigest(decision),
+        decisionRequestId: decision.decisionRequestId,
+        permittedAction: decision.permittedAction,
+        successorInvocationId,
+        claimedAt: new Date().toISOString(),
+        claimNote: 'Claim acceptance does not prove invocation completion or exactly-once external effects.',
+      }
       insert.run(receipt.decisionId, JSON.stringify(receipt, null, 2), receipt.successorInvocationId, receipt.decisionDigest, receipt.claimedAt)
+      this.db.exec('COMMIT')
       return { status: 'claimed', receipt }
     } catch (error) {
+      if (this.db.inTransaction) this.db.exec('ROLLBACK')
       const message = error instanceof Error ? error.message : String(error)
       if (message.includes('UNIQUE constraint failed')) {
         const winner = this.readClaim(decision.decisionId)

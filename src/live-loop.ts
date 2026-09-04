@@ -84,12 +84,7 @@ function saveState(state: RunState): void {
     closeSync(fd)
   }
   renameSync(tmp, STATE_FILE)
-  const dirFd = openSync(path.dirname(STATE_FILE), 'r')
-  try {
-    fsyncSync(dirFd)
-  } finally {
-    closeSync(dirFd)
-  }
+  syncDir(path.dirname(STATE_FILE))
 }
 
 /** Default rationale per choice — an approval argument must never be recorded
@@ -144,8 +139,25 @@ function promptFor(f: Scenario): string {
   ].join('\n')
 }
 
+/** Durable artifact write: fsync each file so the completed marker can never
+ * outlive the artifacts it summarizes (review P2). */
 function writeJson(name: string, value: unknown): void {
-  writeFileSync(path.join(RUN_DIR, name), JSON.stringify(value, null, 2))
+  const fd = openSync(path.join(RUN_DIR, name), 'w')
+  try {
+    writeSync(fd, JSON.stringify(value, null, 2))
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function syncDir(dir: string): void {
+  const dirFd = openSync(dir, 'r')
+  try {
+    fsyncSync(dirFd)
+  } finally {
+    closeSync(dirFd)
+  }
 }
 
 type LiveRuntime = {
@@ -164,6 +176,10 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
   const HUMAN_CHOICE = process.env.WD_LIVE_CHOICE ?? 'create_draft_pr'
   if (!f.decision_request.options.includes(HUMAN_CHOICE)) {
     throw new Error(`INVALID_CHOICE:${HUMAN_CHOICE} — fixture options: ${f.decision_request.options.join(', ')}`)
+  }
+  // The tag becomes a path segment everywhere below — it must be a safe slug.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(RUN_TAG)) {
+    throw new Error(`INVALID_TAG: WD_LIVE_TAG must be a filename-safe slug (letters, digits, . _ -; max 64 chars): "${RUN_TAG.slice(0, 24)}"`)
   }
   const HUMAN_RATIONALE = process.env.WD_LIVE_RATIONALE ?? RATIONALE[HUMAN_CHOICE]!
   if (HUMAN_RATIONALE.trim().length === 0) {
@@ -331,11 +347,12 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
     schema: 'who-decides.effect-receipt.v0',
     effect: state.choice,
     mode: 'dry-run',
-    // The model is execution provenance ONLY — authorization comes from the
+    // The payload is constructed by the host script from fixture data; the
+    // model's returned text never feeds it. Authorization comes from the
     // recorded human decision and its consumption receipt (authorizedBy).
     exactPayload: state.choice === 'create_draft_pr'
-      ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, generatedByModel: provenance.modelId }
-      : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', generatedByModel: provenance.modelId },
+      ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, payloadSource: 'host-constructed from fixture (model output advisory only)' }
+      : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', payloadSource: 'host-constructed from fixture (model output advisory only)' },
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
   }
@@ -359,6 +376,9 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
     duplicateProbe: 'REJECTED (competing_successor)',
     durationMs: Date.now() - started,
   })
+  // All artifacts are fsynced; flush the run directory entry too, so the
+  // durable completed marker can never name artifacts that are missing.
+  syncDir(RUN_DIR)
   saveState({ ...state, phase: 'completed', receiptId: claim.receipt.receiptId })
 
   console.log(`[done] ${((Date.now() - started) / 1000).toFixed(1)}s — artifacts in ${RUN_DIR}`)
