@@ -45,10 +45,12 @@
       }
     },
     "humanEventRef": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "baseDecisionRef": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "baseDecisionDigest": {
       "$ref": "#/$defs/digest",
@@ -59,7 +61,8 @@
       }
     },
     "requestRef": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "action": {
       "const": {

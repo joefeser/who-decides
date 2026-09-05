@@ -20,6 +20,7 @@ const timestamp = (value: string): number => /^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[
 const canonicalNs = (value: string) => /^(0|[1-9][0-9]*)$/.test(value)
 const sleep = (milliseconds: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key))
+const nonEmpty = (values: Array<string | undefined>) => values.every(value => typeof value === 'string' && value.length > 0)
 const digestMatches = (actual: unknown, expected: Digest) => { try { return equalJcs(actual, expected) } catch { return false } }
 
 export class LocalOwnerVerifier {
@@ -96,7 +97,14 @@ export class LocalOwnerVerifier {
       return ok(sample)
     } catch { return stop('UNVERIFIED_ASSUMPTION', 'clock unavailable') }
   }
-  private persistClock(sample: ClockSample) { this.db.prepare('INSERT INTO local_owner_clock VALUES(?,?) ON CONFLICT(issuer_id) DO UPDATE SET wall_time=excluded.wall_time').run(this.config.issuerId,sample.wallTime) }
+  private persistClock(sample: ClockSample) {
+    // The durable checkpoint only ever moves FORWARD: concurrent processes on
+    // different decisions (whose filesystem guards do not serialize each
+    // other) must not let a slower writer drag the accepted wall time
+    // backwards (review P1). Fixed-format ISO-8601 Z strings order
+    // lexicographically exactly as they do in time.
+    this.db.prepare('INSERT INTO local_owner_clock VALUES(?,?) ON CONFLICT(issuer_id) DO UPDATE SET wall_time=excluded.wall_time WHERE excluded.wall_time>local_owner_clock.wall_time').run(this.config.issuerId,sample.wallTime)
+  }
   private store(kind: string, id: string, decisionId: string, record: Record<string, unknown>) {
     const digest = recordDigest(kind, record); const complete = { ...record, digest }
     this.db.prepare('INSERT INTO local_owner_records VALUES (?, ?, ?, ?, ?, ?)').run(this.config.issuerId, kind, id, decisionId, digest.value, JSON.stringify(complete))
@@ -123,7 +131,7 @@ export class LocalOwnerVerifier {
 
   recordDecision(token: string, input: DecisionInput): CandidateResult<Record<string, unknown>> {
     return this.guarded(token, input?.decisionId ?? '', () => {
-      if (!input || !exactKeys(input as unknown as Record<string, unknown>, ['decisionId','humanEventRef','baseDecisionRef','baseDecisionDigest','requestRef','action','approvedAt','expiresAt'])) return stop('MISSING_AUTHORITY','missing or stripped candidate context')
+      if (!input || !exactKeys(input as unknown as Record<string, unknown>, ['decisionId','humanEventRef','baseDecisionRef','baseDecisionDigest','requestRef','action','approvedAt','expiresAt']) || !nonEmpty([input.decisionId,input.humanEventRef,input.baseDecisionRef,input.requestRef])) return stop('MISSING_AUTHORITY','missing or stripped candidate context')
       if (!equalJcs(input.action,FIXED_ACTION)) return stop('SCOPE_CONFLICT','unsupported action')
       this.db.exec('BEGIN IMMEDIATE')
       try {
@@ -148,7 +156,7 @@ export class LocalOwnerVerifier {
   }
 
   admitClaim(token:string,input:ClaimInput):CandidateResult<Record<string,unknown>>{
-    return this.guarded(token,input?.decisionId??'',()=>{if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','decisionDigest','claimId','attemptKey','successorId','requestRef','action','claimedAt','expiresAt']))return stop('MISSING_AUTHORITY','missing claim context');if(!equalJcs(input.action,FIXED_ACTION))return stop('SCOPE_CONFLICT','unsupported action')
+    return this.guarded(token,input?.decisionId??'',()=>{if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','decisionDigest','claimId','attemptKey','successorId','requestRef','action','claimedAt','expiresAt'])||!nonEmpty([input.decisionId,input.claimId,input.attemptKey,input.successorId,input.requestRef]))return stop('MISSING_AUTHORITY','missing claim context');if(!equalJcs(input.action,FIXED_ACTION))return stop('SCOPE_CONFLICT','unsupported action')
       this.db.exec('BEGIN IMMEDIATE');try{
         const slot=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any;if(!slot){this.db.exec('ROLLBACK');return stop('MISSING_AUTHORITY','missing decision')}
         if(slot.claim_digest){const old=this.read('claim',input.claimId);if(old.kind==='corrupt'){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','claim readback corrupt')}if(old.kind==='missing'){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','slot already consumed')}const candidate={recordKind:'claim',profileId:PROFILE_ID,profileVersion:PROFILE_VERSION,issuerId:this.config.issuerId,...input};const result=recordDigest('claim',candidate).value===slot.claim_digest?ok(old.record):stop('SCOPE_CONFLICT','changed binding replay');this.db.exec('ROLLBACK');return result}
@@ -165,7 +173,7 @@ export class LocalOwnerVerifier {
     try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json),expected=recordDigest('status-event',record);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||expected.value!==rows[index].digest||!digestMatches(record.digest,expected))return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
   }
   guardedStart(token:string,input:StartInput):CandidateResult<any>{
-    return this.guarded(token,input?.decisionId??'',()=>{
+    return this.guarded(token,input?.decisionId??'',()=>{ if(!nonEmpty([input?.decisionId,input?.claimId,input?.intentId,input?.successorId]))return stop('MISSING_AUTHORITY','missing start context')
       this.db.exec('BEGIN IMMEDIATE');let intent:any,decision:any,claim:any,first:ClockSample,deadline:bigint
       try{
         const slot=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any

@@ -54,16 +54,20 @@
       }
     },
     "claimId": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "attemptKey": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "successorId": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "requestRef": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "action": {
       "const": {

@@ -35,3 +35,42 @@ test('all five closed candidate record schemas validate emitted records and exac
 
 test('candidate schemas reject non-UTC, missing-millisecond and invalid-calendar timestamps',()=>{const a=admitted();try{const db=new Database(a.s.dbPath,{readonly:true});const row=db.prepare("select record_json from local_owner_records where kind='claim'").get() as any;db.close();const schema=JSON.parse(readFileSync(path.resolve('schemas/local-owner/claim.schema.json'),'utf8'));const ajv=new Ajv2020({strict:false});addFormats(ajv);const validate=ajv.compile(schema);for(const value of ['', '2026-09-05T00:00:00Z', '2026-09-05T00:00:00.000+00:00', '2026-02-30T00:00:00.000Z']){const record=JSON.parse(row.record_json);record.expiresAt=value;assert.equal(validate(record),false,value)}}finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}})
 test('closed clock shape and unknown clock fail before observation',()=>{for(const sample of [{wallTime:'2026-09-05T00:00:02.000Z',monotonicNanoseconds:'01'},{wallTime:'2026-09-05T00:00:02.000Z',monotonicNanoseconds:'1',extra:true},null]){let i=0;const s=setup('fixture-issuer',()=>{if(i++<2)return{wallTime:`2026-09-05T00:00:0${i-1}.000Z`,monotonicNanoseconds:String(i)};if(sample===null)throw Error('clock unavailable');return sample as any});const a=admitted(s);try{const r=a.s.v.guardedStart(TOKEN,{decisionId:'d1',claimId:'c1',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION});assert.equal((r as any).stop,'UNVERIFIED_ASSUMPTION')}finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}}})
+
+test('same candidate decision id under two issuers: separate slots, no cross-issuer access (review P1)',()=>{const s=setup('issuer-a');try{
+  // BOTH issuers admit the SAME decision id in the SAME database file.
+  const b=s.v.recordDecision(TOKEN,decision('d1'));assert(b.ok)
+  const other=new LocalOwnerVerifier({...s.config,issuerId:'issuer-b',trustedHumanDecisions:[base('d1','packet-1')]});try{
+    const b2=other.recordDecision(TOKEN,decision('d1'));assert(b2.ok)
+    const db=new Database(s.dbPath)
+    const slots=db.prepare('select issuer_id,decision_id from local_owner_slots order by issuer_id').all()
+    db.close()
+    assert.deepEqual(slots,[{issuer_id:'issuer-a',decision_id:'d1'},{issuer_id:'issuer-b',decision_id:'d1'}],'two independent slots for the same id')
+    // No cross-issuer access: issuer-a cannot see issuer-b's slot and vice versa.
+    assert.equal((s.v.inspect(TOKEN,'d1') as any).value.issuer_id,'issuer-a')
+    assert.equal((other.inspect(TOKEN,'d1') as any).value.issuer_id,'issuer-b')
+    // The digests differ (different issuers bound into the records).
+    assert.notEqual((b.value.digest as any).value,(b2.value.digest as any).value)
+  }finally{other.close()}
+}finally{s.v.close();rmSync(s.dir,{recursive:true})}})
+
+test('durable clock checkpoint never moves backwards (review P1)',()=>{const s=setup('clock-race');try{
+  // The reachable interleaving: guardedStart samples its second clock OUTSIDE
+  // the result transaction — another process may commit a later durable time
+  // before the slower writer persists. persistClock must never regress it.
+  const persist=(v:LocalOwnerVerifier,wall:string)=>(v as unknown as {persistClock(sample:{wallTime:string,monotonicNanoseconds:string}):void}).persistClock({wallTime:wall,monotonicNanoseconds:'1'})
+  const read=()=>{const db=new Database(s.dbPath);const row=db.prepare('select wall_time from local_owner_clock where issuer_id=?').get('clock-race') as {wall_time:string}|undefined;db.close();return row?.wall_time}
+  persist(s.v,'2026-09-05T10:00:00.000Z');assert.equal(read(),'2026-09-05T10:00:00.000Z','forward write applies')
+  // A concurrent process commits a later accepted time…
+  const db=new Database(s.dbPath);db.prepare('update local_owner_clock set wall_time=? where issuer_id=?').run('2026-09-05T12:00:00.000Z','clock-race');db.close()
+  // …then the slower writer persists its earlier sample: must be a no-op.
+  persist(s.v,'2026-09-05T11:00:00.000Z');assert.equal(read(),'2026-09-05T12:00:00.000Z','earlier sample cannot drag the checkpoint back')
+  persist(s.v,'2026-09-05T12:30:00.000Z');assert.equal(read(),'2026-09-05T12:30:00.000Z','forward writes still apply after a blocked regression')
+}finally{s.v.close();rmSync(s.dir,{recursive:true})}})
+
+test('empty identifiers are rejected before any admission (review P2)',()=>{const s=setup();try{
+  const emptyDec:any=decision();emptyDec.decisionId='';assert.equal((s.v.recordDecision(TOKEN,emptyDec) as any).stop,'MISSING_AUTHORITY')
+  const d=s.v.recordDecision(TOKEN,decision());assert(d.ok)
+  for(const key of ['claimId','attemptKey','successorId','requestRef'] as const){const c:any=claim(d.value);c[key]='';assert.equal((s.v.admitClaim(TOKEN,c) as any).stop,'MISSING_AUTHORITY',key)}
+  const badStart:any={decisionId:'d1',claimId:'',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION}
+  assert.equal((s.v.guardedStart(TOKEN,badStart) as any).stop,'MISSING_AUTHORITY')
+}finally{s.v.close();rmSync(s.dir,{recursive:true})}})
