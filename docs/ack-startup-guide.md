@@ -8,7 +8,7 @@ recommendation: `docs/ack-onboarding-recommendation.md` on
 
 ## Verified environment (2026-09-04)
 
-- CLI: `agent-control` 0.5.0, channel **stable** (`/opt/homebrew/bin/agent-control`,
+- CLI at authoring: `agent-control` 0.5.0 stable (now superseded — see update below) (`/opt/homebrew/bin/agent-control`,
   `agent-control version --json` reports `distFresh: true`, no source build).
 - `onboard doctor --repo joefeser/who-decides --base main --json` runs clean and
   currently reports `onboarding_doctor_attention_required` — the lane file does
@@ -34,9 +34,12 @@ agent-control pr-loop --repo joefeser/who-decides --pr NUMBER --base main \
   --require-codex-review --quiet --json --handoff-out <path>
 ```
 
-`--compact` and `--json-decision` are v0.5.1 dev features, **not** in stable
-v0.5.0 — check `--help` before using flags this guide does not list. Do not
-rebuild ACK dev and treat it as stable.
+**Update 2026-09-05:** ACK **0.5.1 is released and stable** (agent-control-kit
+#394 merged). The small-context workflow this guide anticipated is now
+available: `pr-loop --quiet --json-decision --handoff-out …` and
+`worker-prompt --compact` are stable flags. The CLI baseline for this repo is
+now `>=0.5.1 <0.6.0`; verify with `agent-control version --json` before
+delegating work.
 
 ## What the proposed lane says (reconciled from the generator draft)
 
