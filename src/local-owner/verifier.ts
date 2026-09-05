@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { closeSync, openSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { assertValid } from '../artifacts/schemas'
 import { FIXED_ACTION, FIXED_OBSERVATION, OBSERVATION_DIGEST_VALUE, type BaseDecision, type CandidateResult, type CandidateStop, type ClaimInput, type ClockSample, type DecisionInput, type StartInput } from './contracts'
 import { PROFILE_ID, PROFILE_VERSION, digestEnvelope, equalJcs, recordDigest, type Digest } from './jcs'
-import { admittedGuardPath, LOCAL_OWNER_WRITER_VERSION, openAdmittedStore, requireClosedWriterInventory, type StoreAdmission } from '../store-admission'
+import { admittedGuardPath, LOCAL_OWNER_WRITER_VERSION, openAdmittedStore, requireClosedWriterInventory, verifyAdmittedGuardDirectory, type StoreAdmission } from '../store-admission'
 
 export type VerifierConfig = {
   dbPath: string, issuerId: string, actorId: string, credential: string,
@@ -61,15 +61,16 @@ export class LocalOwnerVerifier {
     catch { return stop('ENVIRONMENT_BLOCKED', 'owner-admitted writer inventory is unavailable or changed') }
     const lockPath = admittedGuardPath(this.config.storeAdmission, this.config.issuerId, decisionId)
     let descriptor: number | undefined
+    const guardToken = randomBytes(16)
     const deadline = Date.now() + (this.config.test?.waitGuardMs ?? 0)
-    do { try { descriptor = openSync(lockPath, 'wx'); break } catch { if (Date.now() >= deadline) break; sleep(5) } } while (true)
+    do { try { verifyAdmittedGuardDirectory(this.config.storeAdmission);descriptor = openSync(lockPath, 'wx');verifyAdmittedGuardDirectory(this.config.storeAdmission);break } catch { if(descriptor!==undefined){closeSync(descriptor);descriptor=undefined}if (Date.now() >= deadline) break; sleep(5) } } while (true)
     if (descriptor === undefined) return stop('ENVIRONMENT_BLOCKED', 'serialization guard unavailable; it is never reclaimed automatically')
     try {
-      writeSync(descriptor, randomBytes(16))
+      writeSync(descriptor, guardToken)
       if (this.config.test?.holdGuardMs) sleep(this.config.test.holdGuardMs)
       return operation()
     } catch { return stop('ENVIRONMENT_BLOCKED', 'store or serialization unavailable') }
-    finally { closeSync(descriptor); unlinkSync(lockPath) }
+    finally { closeSync(descriptor);try{verifyAdmittedGuardDirectory(this.config.storeAdmission);const current=readFileSync(lockPath);if(current.length===guardToken.length&&timingSafeEqual(current,guardToken))unlinkSync(lockPath)}catch{/* identity drift leaves the guard in place and fails closed */} }
   }
   private sampleClock(): CandidateResult<ClockSample> {
     try {

@@ -421,7 +421,9 @@ identity-pinned SQLite main database and a closed inventory of all enabled
 legacy writers. Path strings alone are rejected: canonical path, opened-main
 device/inode, persistent database ID, filesystem type, configuration
 generation, default local VFS posture, and WAL/FULL/NORMAL settings must remain
-the admitted values. Missing, separate, aliased, replaced, unknown, stale, or
+the admitted values. Guard placement and its physical directory identity are
+also manifest-bound and revalidated during acquisition. Missing, separate,
+aliased, replaced, unknown, stale, or
 unapproved stores/writers fail closed before candidate mutation.
 
 The proof's final fixture uses independent processes and connections to force

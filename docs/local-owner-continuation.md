@@ -34,7 +34,9 @@ aliases, identity/configuration drift, an unapproved filesystem, URI/VFS
 overrides, missing or unknown writer attestations, an alternate insertion path,
 or a legacy writer trying to open the admitted file without its admission
 packet. The admitted database identity also determines the cross-process guard
-directory. Bootstrap is an owner-controlled provisioning action that must
+directory; that directory's device/inode/filesystem identity is pinned and
+revalidated while each guard is acquired and released. Bootstrap is an
+owner-controlled provisioning action that must
 finish before any writer starts; it is not recovery, migration, or a reset.
 
 Every mutation takes a per-decision exclusive filesystem guard. Start keeps the

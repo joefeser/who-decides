@@ -28,6 +28,9 @@ export type StoreAdmission = {
   lockingMode: 'normal'
   writers: WriterAdmission[]
   guardDirectory: string
+  guardDevice: string
+  guardInode: string
+  guardFilesystemType: string
 }
 
 const ADMISSION_SQL = `
@@ -72,6 +75,9 @@ const manifestPayload = (admission: StoreAdmission) => JSON.stringify({
   lockingMode: admission.lockingMode,
   writers: sortedWriters(admission.writers),
   guardDirectory: admission.guardDirectory,
+  guardDevice: admission.guardDevice,
+  guardInode: admission.guardInode,
+  guardFilesystemType: admission.guardFilesystemType,
 })
 export const storeAdmissionDigest = (admission: StoreAdmission) => createHash('sha256').update(manifestPayload(admission)).digest('hex')
 
@@ -109,11 +115,13 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
     const canonicalPath = realpathSync(requestedPath)
     const identity = physicalIdentity(canonicalPath)
     if (!input.approvedFilesystemTypes.includes(identity.filesystemType)) fail('database filesystem type changed during bootstrap')
+    const guardDirectory = path.join(path.dirname(canonicalPath), `.who-decides-guards-${databaseId}`)
+    mkdirSync(guardDirectory, { recursive: false })
+    const guardIdentity = physicalIdentity(guardDirectory)
     const base = { schema: STORE_ADMISSION_SCHEMA, canonicalPath, databaseId, ...identity, schemaSha256: schemaFingerprint(db), configGeneration: input.configGeneration, journalMode: 'wal' as const, synchronous: 'full' as const, lockingMode: 'normal' as const, writers: sortedWriters(input.writers) }
-    const admission: StoreAdmission = { ...base, guardDirectory: path.join(path.dirname(canonicalPath), `.who-decides-guards-${databaseId}`) }
+    const admission: StoreAdmission = { ...base, guardDirectory, guardDevice: guardIdentity.device, guardInode: guardIdentity.inode, guardFilesystemType: guardIdentity.filesystemType }
     const digest = storeAdmissionDigest(admission)
     db.prepare('INSERT INTO owner_store_admission VALUES (1, ?, ?, ?)').run(databaseId, input.configGeneration, digest)
-    mkdirSync(admission.guardDirectory, { recursive: false })
     return admission
   } finally { db?.close(); closeSync(descriptor) }
 }
@@ -127,7 +135,7 @@ export function openAdmittedStore(dbPath: string, admission: StoreAdmission, wri
   if (identity.device !== admission.device || identity.inode !== admission.inode || identity.filesystemType !== admission.filesystemType) fail('opened database physical identity drifted')
   const expectedWriter = admission.writers.find(candidate => candidate.role === writer.role)
   if (!expectedWriter || expectedWriter.role !== writer.role || expectedWriter.version !== writer.version || expectedWriter.insertionPath !== writer.insertionPath) fail('writer role, version, or insertion path is unapproved')
-  if (!existsSync(admission.guardDirectory) || realpathSync(admission.guardDirectory) !== admission.guardDirectory) fail('canonical guard directory is missing or aliased')
+  verifyAdmittedGuardDirectory(admission)
   const db = new Database(resolved, { fileMustExist: true })
   try {
     const main = (db.pragma('database_list') as Array<{ name: string, file: string }>).find(row => row.name === 'main')
@@ -158,6 +166,12 @@ export function requireClosedWriterInventory(db: Database.Database, admission: S
 
 export function admittedGuardPath(admission: StoreAdmission, issuerId: string, decisionId: string) {
   return path.join(admission.guardDirectory, createHash('sha256').update(`${admission.databaseId}\0${issuerId}\0${decisionId}`).digest('hex') + '.guard')
+}
+
+export function verifyAdmittedGuardDirectory(admission: StoreAdmission) {
+  if (!existsSync(admission.guardDirectory) || realpathSync(admission.guardDirectory) !== admission.guardDirectory) fail('canonical guard directory is missing or aliased')
+  const identity = physicalIdentity(admission.guardDirectory)
+  if (identity.device !== admission.guardDevice || identity.inode !== admission.guardInode || identity.filesystemType !== admission.guardFilesystemType) fail('canonical guard directory physical identity drifted')
 }
 
 /** General legacy mode must never be able to open an admitted candidate store
