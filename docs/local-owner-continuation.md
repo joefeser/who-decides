@@ -35,3 +35,12 @@ The five executable schemas under `schemas/local-owner/` are separate candidate
 records. Existing closed base schemas and product paths remain unchanged.
 This implementation does not prove remote trust, provider exactly-once effects,
 release readiness, deployment, migration, or owner acceptance.
+
+## Proof evidence integrity
+
+The v2 proof marks a fixture observed only when the exact fixture ID has a
+passing unit or child-process receipt. This is a regression boundary for
+`EVIDENCE_INTEGRITY — proof observed labels outran test bodies`. The current
+non-architecture gate observes 43 of 44 fixtures. It leaves
+`legacy-insert-races-profile-admission` uncovered and makes no cross-store or
+same-file migration claim while that architecture decision is under review.
