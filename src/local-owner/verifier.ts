@@ -112,7 +112,7 @@ export class LocalOwnerVerifier {
   private appendStatus(decisionId: string, targetKind: 'decision' | 'claim', targetDigest: string, state: 'active' | 'revoked', at: string) {
     const rows = this.db.prepare('SELECT sequence,digest,record_json FROM local_owner_status WHERE issuer_id=? AND decision_id=? AND target_kind=? ORDER BY sequence').all(this.config.issuerId, decisionId, targetKind) as Array<{sequence:number,digest:string,record_json:string}>
     const parsed=rows.map(row=>JSON.parse(row.record_json) as Record<string,unknown>)
-    if (rows.some((row, index) => row.sequence !== index || recordDigest('status-event', parsed[index]).value !== row.digest)) throw new Error('CORRUPT_STATUS')
+    if (rows.some((row, index) => { const expected=recordDigest('status-event',parsed[index]);return row.sequence!==index||expected.value!==row.digest||!digestMatches(parsed[index].digest,expected) })) throw new Error('CORRUPT_STATUS')
     const previous = rows.at(-1); if (previous && parsed.at(-1)?.state === 'revoked') throw new Error('REVOCATION_TERMINAL')
     const record: Record<string, unknown> = { recordKind:'status-event',profileId:PROFILE_ID,profileVersion:PROFILE_VERSION,issuerId:this.config.issuerId,decisionId,eventId:randomUUID(),targetKind,targetDigest,sequence:rows.length,previousDigest:previous?.digest??null,state,recordedAt:at,actorId:this.config.actorId }
     const digest = recordDigest('status-event', record); const complete={...record,digest}
@@ -162,7 +162,7 @@ export class LocalOwnerVerifier {
   private currentStatus(slot:any,decisionId:string,targetKind:'decision'|'claim'){
     const targetDigest=targetKind==='decision'?slot.decision_digest:slot.claim_digest,head=targetKind==='decision'?slot.decision_status_head:slot.claim_status_head
     const rows=this.db.prepare('SELECT sequence,digest,record_json FROM local_owner_status WHERE issuer_id=? AND decision_id=? AND target_kind=? ORDER BY sequence').all(this.config.issuerId,decisionId,targetKind) as any[];let previous:null|string=null,last:any=null
-    try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||recordDigest('status-event',record).value!==rows[index].digest)return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
+    try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json),expected=recordDigest('status-event',record);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||expected.value!==rows[index].digest||!digestMatches(record.digest,expected))return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
   }
   guardedStart(token:string,input:StartInput):CandidateResult<any>{
     return this.guarded(token,input?.decisionId??'',()=>{
