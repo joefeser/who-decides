@@ -182,6 +182,11 @@ export class LocalOwnerVerifier {
     try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json),expected=recordDigest('status-event',record);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||expected.value!==rows[index].digest||!digestMatches(record.digest,expected))return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
   }
   guardedStart(token:string,input:StartInput):CandidateResult<any>{
+    if(!this.authenticate(token))return stop('MISSING_AUTHORITY','access denied')
+    try{const prior=this.db.prepare('SELECT start_intent_digest,claim_session FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input?.decisionId??'') as any
+      if(prior?.start_intent_digest)return stop('HUMAN_DECISION_REQUIRED','existing start intent; no retry')
+      if(prior?.claim_session&&prior.claim_session!==PROCESS_SESSION_ID)return stop('HUMAN_DECISION_REQUIRED','restart after claim requires human inspection')
+    }catch{return stop('ENVIRONMENT_BLOCKED','store unavailable')}
     return this.guarded(token,input?.decisionId??'',()=>{ if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','claimId','intentId','successorId','action'])||!nonEmpty([input.decisionId,input.claimId,input.intentId,input.successorId]))return stop('MISSING_AUTHORITY','missing start context')
       this.db.exec('BEGIN IMMEDIATE');let intent:any,decision:any,claim:any,first:ClockSample,deadline:bigint
       try{
