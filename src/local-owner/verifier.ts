@@ -182,6 +182,11 @@ export class LocalOwnerVerifier {
     try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json),expected=recordDigest('status-event',record);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||expected.value!==rows[index].digest||!digestMatches(record.digest,expected))return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
   }
   guardedStart(token:string,input:StartInput):CandidateResult<any>{
+    if(!this.authenticate(token))return stop('MISSING_AUTHORITY','access denied')
+    try{const prior=this.db.prepare('SELECT start_intent_digest,claim_session FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input?.decisionId??'') as any
+      if(prior?.start_intent_digest)return stop('HUMAN_DECISION_REQUIRED','existing start intent; no retry')
+      if(prior?.claim_session&&prior.claim_session!==PROCESS_SESSION_ID)return stop('HUMAN_DECISION_REQUIRED','restart after claim requires human inspection')
+    }catch{return stop('ENVIRONMENT_BLOCKED','store unavailable')}
     return this.guarded(token,input?.decisionId??'',()=>{ if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','claimId','intentId','successorId','action'])||!nonEmpty([input.decisionId,input.claimId,input.intentId,input.successorId]))return stop('MISSING_AUTHORITY','missing start context')
       this.db.exec('BEGIN IMMEDIATE');let intent:any,decision:any,claim:any,first:ClockSample,deadline:bigint
       try{
@@ -212,7 +217,7 @@ export class LocalOwnerVerifier {
         intent=this.store('start-intent',input.intentId,input.decisionId,record);this.db.prepare('UPDATE local_owner_slots SET start_intent_digest=? WHERE issuer_id=? AND decision_id=?').run((intent.digest as Digest).value,this.config.issuerId,input.decisionId);this.persistClock(first);this.db.exec('COMMIT')
       }catch(error){if(this.db.inTransaction)this.db.exec('ROLLBACK');return stop('HUMAN_DECISION_REQUIRED',String(error))}
       if(this.config.test?.crashAfterIntent)process.exit(91)
-      const second=this.sampleClock();if(!second.ok)return this.recordUncertain(input,intent,first,second.detail)
+      const second=this.sampleClock();if(!second.ok)return this.recordUncertain(input,intent,first,second.detail,second.stop)
       const refreshed=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any
       const effective=Math.min(timestamp(decision.expiresAt as string),timestamp(claim.expiresAt as string))
       if(timestamp(second.value.wallTime)>=effective||BigInt(second.value.monotonicNanoseconds)>=deadline||this.currentStatus(refreshed,input.decisionId,'decision')?.state!=='active'||this.currentStatus(refreshed,input.decisionId,'claim')?.state!=='active')return this.recordUncertain(input,intent,second.value,'stale immediately before observation','STALE_PACKET')
