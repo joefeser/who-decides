@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/status-event.0.1-candidate.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recordKind",
+    "profileId",
+    "profileVersion",
+    "issuerId",
+    "decisionId",
+    "digest",
+    "eventId",
+    "targetKind",
+    "targetDigest",
+    "sequence",
+    "previousDigest",
+    "state",
+    "recordedAt",
+    "actorId"
+  ],
+  "properties": {
+    "recordKind": {
+      "const": "status-event"
+    },
+    "profileId": {
+      "const": "org.hacp.local-owner-continuation"
+    },
+    "profileVersion": {
+      "const": "0.1-candidate"
+    },
+    "issuerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.status-event.0.1-candidate"
+        }
+      }
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetKind": {
+      "enum": [
+        "decision",
+        "claim"
+      ]
+    },
+    "targetDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "previousDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "active",
+        "revoked"
+      ]
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-([0-2]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "actorId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "domain",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonicalization": {
+          "const": "json-rfc8785-jcs"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wallTime",
+        "monotonicNanoseconds"
+      ],
+      "properties": {
+        "wallTime": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-([0-2]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+        },
+        "monotonicNanoseconds": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "sequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "previousDigest": {
+            "const": null
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "previousDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "previousDigest"
+        ]
+      }
+    }
+  ]
+}

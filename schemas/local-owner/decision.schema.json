@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/decision.0.1-candidate.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recordKind",
+    "profileId",
+    "profileVersion",
+    "issuerId",
+    "decisionId",
+    "digest",
+    "humanEventRef",
+    "baseDecisionRef",
+    "baseDecisionDigest",
+    "requestRef",
+    "action",
+    "approvedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "recordKind": {
+      "const": "decision"
+    },
+    "profileId": {
+      "const": "org.hacp.local-owner-continuation"
+    },
+    "profileVersion": {
+      "const": "0.1-candidate"
+    },
+    "issuerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.decision.0.1-candidate"
+        }
+      }
+    },
+    "humanEventRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseDecisionRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseDecisionDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.base-decision-reference.0.1-candidate"
+        }
+      }
+    },
+    "requestRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "const": {
+        "operationId": "observe_fixed_payload",
+        "parameters": {
+          "payload": "HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1"
+        }
+      }
+    },
+    "approvedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-([0-2]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-([0-2]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "domain",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonicalization": {
+          "const": "json-rfc8785-jcs"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wallTime",
+        "monotonicNanoseconds"
+      ],
+      "properties": {
+        "wallTime": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-([0-2]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+        },
+        "monotonicNanoseconds": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    }
+  }
+}

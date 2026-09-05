@@ -40,7 +40,7 @@ export type ConsumptionReceipt = {
 export type ClaimResult =
   | { status: 'claimed', receipt: ConsumptionReceipt }
   | { status: 'replayed', receipt: ConsumptionReceipt, note: string }
-  | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor', detail: string }
+  | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor' | 'profile_slot_conflict', detail: string }
 
 /** Require a real RFC3339 calendar date, not Date.parse's rollover or
  * locale-dependent shortcuts. Fractional seconds and explicit offsets are
@@ -127,6 +127,11 @@ export class ConsumptionStore {
     )
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const candidateTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_owner_slots'").get()
+      if (candidateTable && this.db.prepare('SELECT 1 FROM local_owner_slots WHERE decision_id=?').get(decision.decisionId)) {
+        this.db.exec('ROLLBACK')
+        return { status: 'rejected', reason: 'profile_slot_conflict', detail: 'decision ID is already admitted by the local-owner candidate profile' }
+      }
       if (expiresAtTime !== null && expiresAtTime <= Date.now()) {
         this.db.exec('ROLLBACK')
         return { status: 'rejected', reason: 'expired', detail: `decision expired at ${decision.expiresAt} (rechecked after write-slot wait)` }
