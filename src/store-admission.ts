@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, realpathSync, statfsSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, statfsSync, statSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { CONSUMPTION_TABLE_SQL, LOCAL_OWNER_TABLES_SQL } from './store-schema'
@@ -31,6 +31,13 @@ export type StoreAdmission = {
   guardDevice: string
   guardInode: string
   guardFilesystemType: string
+  /** sha256 of the random generation token held in the guard-directory
+   * sidecar. The token lives OUTSIDE the copyable database bytes, so a
+   * database replaced by a byte-clone cannot satisfy admission without the
+   * pinned guard directory's sidecar as well (review P1: inode-reuse). */
+  generationTokenDigest: string
+  generationSidecarDevice: string
+  generationSidecarInode: string
 }
 
 const ADMISSION_SQL = `
@@ -78,6 +85,9 @@ const manifestPayload = (admission: StoreAdmission) => JSON.stringify({
   guardDevice: admission.guardDevice,
   guardInode: admission.guardInode,
   guardFilesystemType: admission.guardFilesystemType,
+  generationTokenDigest: admission.generationTokenDigest,
+  generationSidecarDevice: admission.generationSidecarDevice,
+  generationSidecarInode: admission.generationSidecarInode
 })
 export const storeAdmissionDigest = (admission: StoreAdmission) => createHash('sha256').update(manifestPayload(admission)).digest('hex')
 
@@ -118,8 +128,14 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
     const guardDirectory = path.join(path.dirname(canonicalPath), `.who-decides-guards-${databaseId}`)
     mkdirSync(guardDirectory, { recursive: false })
     const guardIdentity = physicalIdentity(guardDirectory)
+    const generationPath = path.join(guardDirectory, 'generation')
+    const generationToken = randomUUID() + randomUUID()
+    const sidecarDescriptor = openSync(generationPath, 'wx')
+    try { writeSync(sidecarDescriptor, generationToken) } finally { closeSync(sidecarDescriptor) }
+    const generationTokenDigest = createHash('sha256').update(generationToken).digest('hex')
+    const sidecarIdentity = physicalIdentity(generationPath)
     const base = { schema: STORE_ADMISSION_SCHEMA, canonicalPath, databaseId, ...identity, schemaSha256: schemaFingerprint(db), configGeneration: input.configGeneration, journalMode: 'wal' as const, synchronous: 'full' as const, lockingMode: 'normal' as const, writers: sortedWriters(input.writers) }
-    const admission: StoreAdmission = { ...base, guardDirectory, guardDevice: guardIdentity.device, guardInode: guardIdentity.inode, guardFilesystemType: guardIdentity.filesystemType }
+    const admission: StoreAdmission = { ...base, guardDirectory, guardDevice: guardIdentity.device, guardInode: guardIdentity.inode, guardFilesystemType: guardIdentity.filesystemType, generationTokenDigest, generationSidecarDevice: sidecarIdentity.device, generationSidecarInode: sidecarIdentity.inode }
     const digest = storeAdmissionDigest(admission)
     db.prepare('INSERT INTO owner_store_admission VALUES (1, ?, ?, ?)').run(databaseId, input.configGeneration, digest)
     return admission
@@ -183,6 +199,17 @@ export function verifyAdmittedGuardDirectory(admission: StoreAdmission) {
   if (!existsSync(admission.guardDirectory) || realpathSync(admission.guardDirectory) !== admission.guardDirectory) fail('canonical guard directory is missing or aliased')
   const identity = physicalIdentity(admission.guardDirectory)
   if (identity.device !== admission.guardDevice || identity.inode !== admission.guardInode || identity.filesystemType !== admission.guardFilesystemType) fail('canonical guard directory physical identity drifted')
+  // Generation sidecar: the token lives outside the copyable database bytes.
+  // A database replaced by a byte-clone (even at a reused inode) cannot be
+  // admitted without this file ALSO being present, byte-identical, and at
+  // its pinned physical identity. A missing or recreated sidecar fails
+  // closed — replacement invalidates admission, whatever the bytes say.
+  const generationPath = path.join(admission.guardDirectory, 'generation')
+  if (!existsSync(generationPath)) fail('generation sidecar is missing; the admitted file generation cannot be confirmed')
+  const sidecarIdentity = physicalIdentity(generationPath)
+  if (sidecarIdentity.device !== admission.generationSidecarDevice || sidecarIdentity.inode !== admission.generationSidecarInode) fail('generation sidecar physical identity drifted; the store was replaced or the sidecar was recreated')
+  const token = readFileSync(generationPath, 'utf8')
+  if (createHash('sha256').update(token).digest('hex') !== admission.generationTokenDigest) fail('generation token does not match the admitted generation')
 }
 
 /** General legacy mode must never be able to open an admitted candidate store

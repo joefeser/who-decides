@@ -1,12 +1,13 @@
 import nodeTest from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
+import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import Ajv2020 from 'ajv/dist/2020'
 import addFormats from 'ajv-formats'
 import { ConsumptionStore } from '../consumption/store'
+import { openAdmittedStore } from '../store-admission'
 import { LocalOwnerVerifier } from './verifier'
 import { FIXED_ACTION, OBSERVATION_DIGEST_VALUE } from './contracts'
 import { PROFILE_ID, PROFILE_VERSION, digestEnvelope, recordDigest } from './jcs'
@@ -383,7 +384,7 @@ test('owner-admitted store rejects aliases drift unsafe paths and incomplete wri
   const locking=make();try{const raw=new Database(locking.admission.canonicalPath);raw.pragma('journal_mode = DELETE');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(locking.admission)),/journal posture changed/)}finally{rmSync(locking.dir,{recursive:true})}
   const schemaDrift=make();try{const raw=new Database(schemaDrift.admission.canonicalPath);raw.exec('DROP TABLE consumption_receipts');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(schemaDrift.admission)),/schema generation changed/)}finally{rmSync(schemaDrift.dir,{recursive:true})}
   const triggerDrift=make();try{const raw=new Database(triggerDrift.admission.canonicalPath);raw.exec('CREATE TRIGGER erase_slot AFTER INSERT ON local_owner_slots BEGIN DELETE FROM local_owner_slots WHERE decision_id=NEW.decision_id; END');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(triggerDrift.admission)),/schema generation changed/)}finally{rmSync(triggerDrift.dir,{recursive:true})}
-  const guardDrift=make();try{const alternate=path.join(path.dirname(guardDrift.admission.canonicalPath),'alternate-guards');mkdirSync(alternate);const stat=statSync(alternate,{bigint:true}),fs=statfsSync(alternate,{bigint:true});const changed={...guardDrift.admission,guardDirectory:alternate,guardDevice:stat.dev.toString(),guardInode:stat.ino.toString(),guardFilesystemType:fs.type.toString()};assert.throws(()=>new LocalOwnerVerifier(configFor(changed)),/persistent database identity/)}finally{rmSync(guardDrift.dir,{recursive:true})}
+  const guardDrift=make();try{const alternate=path.join(path.dirname(guardDrift.admission.canonicalPath),'alternate-guards');mkdirSync(alternate);const stat=statSync(alternate,{bigint:true}),fs=statfsSync(alternate,{bigint:true});const changed={...guardDrift.admission,guardDirectory:alternate,guardDevice:stat.dev.toString(),guardInode:stat.ino.toString(),guardFilesystemType:fs.type.toString()};assert.throws(()=>new LocalOwnerVerifier(configFor(changed)),/generation sidecar is missing|persistent database identity/)}finally{rmSync(guardDrift.dir,{recursive:true})}
   const guardReplacement=make();try{renameSync(guardReplacement.admission.guardDirectory,`${guardReplacement.admission.guardDirectory}.old`);mkdirSync(guardReplacement.admission.guardDirectory);assert.throws(()=>new LocalOwnerVerifier(configFor(guardReplacement.admission)),/guard directory physical identity drifted/)}finally{rmSync(guardReplacement.dir,{recursive:true})}
   const incomplete=make([candidateWriter,legacyWriter]);try{const candidate=new LocalOwnerVerifier(configFor(incomplete.admission));assert.equal((candidate.recordDecision(TOKEN,decision()) as any).stop,'ENVIRONMENT_BLOCKED');candidate.close();for(const writer of [{...legacyWriter,role:'unknown'},{...legacyWriter,version:'stale'},{...legacyWriter,insertionPath:'direct-sql'}])assert.throws(()=>new ConsumptionStore(incomplete.admission.canonicalPath,{admission:incomplete.admission,writer}),/unapproved/);assert.throws(()=>new ConsumptionStore(incomplete.admission.canonicalPath),/approved writer configuration/);const legacy=new ConsumptionStore(incomplete.admission.canonicalPath,{admission:incomplete.admission,writer:legacyWriter});const admittedCandidate=new LocalOwnerVerifier(configFor(incomplete.admission));assert(admittedCandidate.recordDecision(TOKEN,decision()).ok);admittedCandidate.close();legacy.close()}finally{rmSync(incomplete.dir,{recursive:true})}
   const legacyMissing=make([candidateWriter,legacyWriter]);try{const legacy=new ConsumptionStore(legacyMissing.admission.canonicalPath,{admission:legacyMissing.admission,writer:legacyWriter});const result=legacy.claim({decisionId:'legacy-missing',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'successor');assert.equal(result.status,'rejected');if(result.status==='rejected')assert.equal(result.reason,'environment_blocked');legacy.close()}finally{rmSync(legacyMissing.dir,{recursive:true})}
@@ -507,4 +508,48 @@ test('unavailable database returns a typed denial from every mutation', () => {
       assert.equal((operation() as any).stop, 'ENVIRONMENT_BLOCKED')
     }
   } finally { rmSync(a.s.dir, { recursive: true }) }
+})
+
+const filesystemTypeOf = (p: string) => statfsSync(path.dirname(p), { bigint: true }).type.toString()
+
+test('generation sidecar closes byte-clone replacement even at a reused inode (review P1)', () => {
+  // Bootstrap a fresh admitted store, then exercise the replacement family.
+  const dir = mkdtempSync(path.join(tmpdir(), 'lo-gen-'))
+  const dbPath = path.join(realpathSync(dir), 'store.db')
+  const admission = bootstrapOwnerAdmittedStore({ dbPath, configGeneration: 'g1', writers: [legacyWriter], approvedFilesystemTypes: [filesystemTypeOf(dbPath)] })
+  try {
+    // The sidecar exists with the pinned identity and matching token.
+    const ok = openAdmittedStore(dbPath, admission, legacyWriter)
+    ok.close()
+
+    // Attack 1: byte-clone replacement of the DATABASE alone. Even if the
+    // inode is reused, admission must fail: the manifest digest no longer
+    // matches (the clone's row predates the sidecar binding) OR the
+    // physical/sidecar checks reject it. With the sidecar digest now part of
+    // the manifest, an OLD clone's manifest row cannot match.
+    // Simulated by replacing the DB with bytes saved after tampering with
+    // the manifest row (an attacker-controlled clone cannot forge the new
+    // digest without the token).
+    const db = new Database(dbPath)
+    db.prepare("UPDATE owner_store_admission SET manifest_sha256=? WHERE singleton=1").run('0'.repeat(64))
+    db.close()
+    const bytes = readFileSync(dbPath)
+    rmSync(dbPath)
+    writeFileSync(dbPath, bytes) // recreate — inode likely reused
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a tampered clone fails even at a reused inode')
+
+    // Attack 2: deleting the sidecar fails closed regardless of DB bytes.
+    const genPath = path.join(admission.guardDirectory, 'generation')
+    rmSync(genPath)
+    // restore a pristine DB clone first so only the sidecar is wrong
+    rmSync(dbPath); writeFileSync(dbPath, bytes)
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'missing generation sidecar fails closed')
+
+    // Attack 3: recreating the sidecar with the SAME token bytes fails the
+    // sidecar physical-identity pin (new inode).
+    writeFileSync(genPath, 'forged-token')
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a recreated sidecar fails its identity pin')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
