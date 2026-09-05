@@ -30,7 +30,8 @@ export class LocalOwnerVerifier {
 
   constructor(private readonly config: VerifierConfig) {
     if (!config.issuerId || !config.actorId || config.credential.length < 16) throw new Error('INVALID_OWNER_CONFIGURATION')
-    if (config.selectedProfile.id !== PROFILE_ID || config.selectedProfile.version !== PROFILE_VERSION
+    if (!config.selectedProfile
+      || config.selectedProfile.id !== PROFILE_ID || config.selectedProfile.version !== PROFILE_VERSION
       || config.selectedProfile.status !== 'active' || config.selectedProfile.pin !== APPROVED_PROFILE_PIN) throw new Error('PROFILE_NOT_SELECTED')
     mkdirSync(path.dirname(config.dbPath), { recursive: true })
     this.db = new Database(config.dbPath)

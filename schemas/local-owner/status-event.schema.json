@@ -56,7 +56,8 @@
       ]
     },
     "targetDigest": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "sequence": {
       "type": "integer",
@@ -130,5 +131,37 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "sequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "previousDigest": {
+            "const": null
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "previousDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "previousDigest"
+        ]
+      }
+    }
+  ]
 }
