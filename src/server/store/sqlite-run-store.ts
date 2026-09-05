@@ -118,9 +118,12 @@ export class SqliteRunStore implements RunStore {
   }
 
   async markProvisioned(runId: string): Promise<boolean> {
+    // The phase clock restarts here: provisioning is not part of the visible
+    // running phase, so a slow provider must not eat into the 2.6s the UI
+    // spends showing "running" (review P2).
     const result = this.db
-      .prepare("UPDATE runs SET state = 'running' WHERE id = ? AND state = 'provisioning' AND archived = 0")
-      .run(runId)
+      .prepare("UPDATE runs SET state = 'running', phase_changed_at = ? WHERE id = ? AND state = 'provisioning' AND archived = 0")
+      .run(new Date().toISOString(), runId)
     return result.changes > 0
   }
 

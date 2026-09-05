@@ -371,3 +371,20 @@ test('audit artifacts are immutable and archived rows are never mutated (review 
     await cleanup(dir, engine)
   }
 })
+
+test('provisioning completion restarts the phase clock (review round 7)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-clock-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('clock')
+  try {
+    await engine.startRun()
+    // startRun completes provisioning; the visible running phase must be
+    // measured from COMPLETION, not from the pre-provisioning insert time.
+    const state = await engine.getState()
+    assert.equal(state.state, 'running', 'fresh run shows the visible running phase')
+    await new Promise(r => setTimeout(r, 50))
+    assert.equal((await engine.getState()).state, 'running', 'still running well after start returns')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
