@@ -55,7 +55,8 @@ async function runLegacyCandidateRace(order:'legacy-first'|'candidate-first') {
   const lockHeld=await winner.wait('writeLockHeld')
   loser.proc.send(order==='legacy-first'?candidateInput:{decision:legacyDecision,successor:`legacy-successor-${order}`})
   const loserBeforeBegin=await loser.wait('beforeBeginImmediate')
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,75)
+  // Keep IPC delivery active so an early loser result cannot be hidden.
+  await new Promise(resolve=>setTimeout(resolve,75))
   const loserBlockedBeforeRelease=!loser.messages.some(message=>message.kind==='result');assert(loserBlockedBeforeRelease)
   const releaseMonotonicNanoseconds=process.hrtime.bigint().toString();assert(BigInt(lockHeld.monotonicNanoseconds)<BigInt(loserBeforeBegin.monotonicNanoseconds)&&BigInt(loserBeforeBegin.monotonicNanoseconds)<BigInt(releaseMonotonicNanoseconds))
   writeFileSync(releasePath,'release')

@@ -39,6 +39,14 @@ revalidated while each guard is acquired and released. Bootstrap is an
 owner-controlled provisioning action that must
 finish before any writer starts; it is not recovery, migration, or a reset.
 
+Admission is revalidated on the live connection after acquiring each SQLite
+write transaction. Schema, physical identity, configuration and writer drift
+deny further writes, including drift committed while a writer waited for the
+lock. The pre-observation check and result persistence share a second write
+transaction, and clock sampling rechecks the guard directory before handoff.
+Legacy writers attest the role, version and insertion path compiled into their
+implementation; configuration cannot relabel them as a candidate writer.
+
 Every mutation takes a per-decision exclusive filesystem guard. Start keeps the
 same guard from status/clock validation through a `synchronous=FULL` intent
 commit, a second status/clock check, and the synchronous comparison returning

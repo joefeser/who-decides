@@ -393,6 +393,107 @@ test('owner-admitted store rejects aliases drift unsafe paths and incomplete wri
 
 test('evidence integrity never marks a case observed without its passing receipt',()=>{assert.equal(EVIDENCE_INTEGRITY_DEFECT,'EVIDENCE_INTEGRITY — proof observed labels outran test bodies');const result=deriveProofInventory([{id:'passed-case',expected:'pass'},{id:'failed-case',expected:'deny'},{id:'missing-case',expected:'unknown'}],[{id:'passed-case',test:'exact assertion',status:'passed'},{id:'failed-case',test:'failed assertion',status:'failed'}]);assert.deepEqual(result.map(x=>[x.id,x.status]),[['passed-case','observed'],['failed-case','uncovered'],['missing-case','uncovered']]);assert.throws(()=>deriveProofInventory([{id:'known',expected:'x'}],[{id:'invented',test:'bad label',status:'passed'}]),/UNKNOWN_FIXTURE_RECEIPT/)})
 
+const legacyDecision = () => ({ decisionId: 'd1', chosenOption: 'x', rationale: 'fixture', decidedAt: '2026-09-05T00:00:00.000Z', decisionRequestId: 'r', permittedAction: 'x' })
+
+test('already-open writers deny schema and configuration drift without admitting a decision', () => {
+  for (const mode of ['candidate', 'legacy']) {
+    for (const mutation of ['trigger', 'generation']) {
+      const s = setupWithLegacy()
+      try {
+        const db = new Database(s.dbPath)
+        if (mutation === 'generation') db.exec("UPDATE owner_store_admission SET config_generation='changed'")
+        else db.exec(`CREATE TRIGGER ignore_admission BEFORE INSERT ON ${mode === 'candidate' ? 'local_owner_slots' : 'consumption_receipts'} BEGIN SELECT RAISE(IGNORE); END`)
+        db.close()
+        const result = mode === 'candidate' ? s.v.recordDecision(TOKEN, decision()) : s.legacy.claim(legacyDecision(), 'successor')
+        assert(mode === 'candidate' ? !(result as any).ok : (result as any).status === 'rejected', `${mode}: ${mutation}`)
+        const check = new Database(s.dbPath, { readonly: true })
+        try {
+          for (const table of ['local_owner_slots', 'local_owner_records', 'local_owner_status', 'consumption_receipts']) {
+            assert.equal((check.prepare(`SELECT count(*) n FROM ${table}`).get() as any).n, 0, table)
+          }
+        } finally { check.close() }
+      } finally { s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+    }
+  }
+})
+
+test('user triggers resembling SQLite internal names remain in the schema fingerprint', () => {
+  const s = setupWithLegacy()
+  try {
+    const db = new Database(s.dbPath)
+    db.exec('CREATE TRIGGER sqliteXignore BEFORE INSERT ON consumption_receipts BEGIN SELECT RAISE(IGNORE); END')
+    db.close()
+    assert.throws(() => new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission }), /schema generation changed/)
+    assert.equal(s.legacy.claim(legacyDecision(), 'successor').status, 'rejected')
+  } finally { s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+})
+
+test('already-open writers reject a replaced database path', () => {
+  const s = setupWithLegacy()
+  const oldPath = `${s.dbPath}.old`
+  try {
+    renameSync(s.dbPath, oldPath)
+    copyFileSync(oldPath, s.dbPath)
+    assert.equal(s.v.recordDecision(TOKEN, decision()).ok, false)
+    assert.equal(s.legacy.claim(legacyDecision(), 'successor').status, 'rejected')
+  } finally {
+    unlinkSync(s.dbPath); renameSync(oldPath, s.dbPath)
+    s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true })
+  }
+})
+
+test('writer inventory is rechecked after entering the SQLite write boundary', () => {
+  for (const mode of ['candidate', 'legacy']) {
+    const s = setupWithLegacy()
+    const removeAttestation = () => {
+      const db = new Database(s.dbPath)
+      db.exec("DELETE FROM owner_writer_attestations WHERE role='local-owner-verifier'")
+      db.close()
+    }
+    const writer = mode === 'candidate'
+      ? new LocalOwnerVerifier({ ...s.config, test: { beforeDecisionBeginImmediate: removeAttestation } })
+      : new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission, test: { beforeBeginImmediate: removeAttestation } })
+    try {
+      const result = mode === 'candidate' ? (writer as LocalOwnerVerifier).recordDecision(TOKEN, decision()) : (writer as ConsumptionStore).claim(legacyDecision(), 'successor')
+      assert(mode === 'candidate' ? !(result as any).ok : (result as any).status === 'rejected', mode)
+      const db = new Database(s.dbPath, { readonly: true })
+      try {
+        assert.equal((db.prepare('SELECT count(*) n FROM local_owner_slots').get() as any).n, 0)
+        assert.equal((db.prepare('SELECT count(*) n FROM consumption_receipts').get() as any).n, 0)
+      } finally { db.close() }
+    } finally { writer.close(); s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+  }
+})
+
+test('legacy writer cannot attest as the candidate implementation', () => {
+  const s = setup()
+  let legacy: ConsumptionStore | undefined
+  try {
+    assert.throws(() => { legacy = new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission, writer: candidateWriter }) }, /unapproved/)
+  } finally { legacy?.close(); s.v.close(); rmSync(s.dir, { recursive: true }) }
+})
+
+test('start denies guard replacement during the guarded interval', () => {
+  const s = setup()
+  let samples = 0
+  const v = new LocalOwnerVerifier({ ...s.config, test: { clock: () => {
+    if (++samples === 4) {
+      renameSync(s.config.storeAdmission.guardDirectory, `${s.config.storeAdmission.guardDirectory}.old`)
+      mkdirSync(s.config.storeAdmission.guardDirectory)
+    }
+    return { wallTime: new Date().toISOString(), monotonicNanoseconds: process.hrtime.bigint().toString() }
+  } } })
+  try {
+    const d = v.recordDecision(TOKEN, decision()); assert(d.ok)
+    assert(v.admitClaim(TOKEN, claim(d.value)).ok)
+    const result = v.guardedStart(TOKEN, startInput())
+    assert.equal(result.ok, false)
+    const db = new Database(s.dbPath, { readonly: true })
+    try { assert.equal((db.prepare("SELECT count(*) n FROM local_owner_records WHERE kind='start-result' AND json_extract(record_json,'$.outcome')='completed'").get() as any).n, 0) }
+    finally { db.close() }
+  } finally { v.close(); s.v.close(); rmSync(s.dir, { recursive: true }) }
+})
+
 test('unavailable database returns a typed denial from every mutation', () => {
   const a = admitted()
   a.s.v.close()

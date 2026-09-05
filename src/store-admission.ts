@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statfsSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, realpathSync, statfsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { CONSUMPTION_TABLE_SQL, LOCAL_OWNER_TABLES_SQL } from './store-schema'
@@ -57,7 +57,7 @@ const physicalIdentity = (dbPath: string) => {
   return { device: stat.dev.toString(), inode: stat.ino.toString(), filesystemType: fs.type.toString() }
 }
 const schemaFingerprint = (db: Database.Database) => createHash('sha256').update(JSON.stringify(
-  db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all(),
+  db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name").all(),
 )).digest('hex')
 const normalizeWriter = (writer: WriterAdmission): WriterAdmission => ({ role: writer.role, version: writer.version, insertionPath: writer.insertionPath })
 const sortedWriters = (writers: WriterAdmission[]) => writers.map(normalizeWriter).sort((a, b) => a.role.localeCompare(b.role))
@@ -102,12 +102,12 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
   if (!input.approvedFilesystemTypes.includes(parentFilesystemType)) fail('filesystem type is not owner-approved for reliable local SQLite locking')
   const databaseId = randomUUID()
   const descriptor = openSync(requestedPath, 'wx', 0o600)
-  const createdIdentity = physicalIdentity(requestedPath)
   let db: Database.Database | undefined
   try {
+    const created = fstatSync(descriptor, { bigint: true })
     db = new Database(requestedPath, { fileMustExist: true })
     const openedIdentity = physicalIdentity(requestedPath)
-    if (JSON.stringify(openedIdentity) !== JSON.stringify(createdIdentity)) fail('exclusively created bootstrap target was replaced before SQLite open')
+    if (openedIdentity.device !== created.dev.toString() || openedIdentity.inode !== created.ino.toString()) fail('exclusively created bootstrap target was replaced before SQLite open')
     if (String(db.pragma('journal_mode = WAL', { simple: true })).toLowerCase() !== 'wal') fail('WAL journal mode unavailable')
     db.pragma('synchronous = FULL')
     db.pragma('locking_mode = NORMAL')
@@ -138,25 +138,36 @@ export function openAdmittedStore(dbPath: string, admission: StoreAdmission, wri
   verifyAdmittedGuardDirectory(admission)
   const db = new Database(resolved, { fileMustExist: true })
   try {
-    const main = (db.pragma('database_list') as Array<{ name: string, file: string }>).find(row => row.name === 'main')
-    if (!main) throw new Error('OWNER_STORE_ADMISSION_FAILED: opened SQLite main database is missing')
-    if (realpathSync(main.file) !== admission.canonicalPath) fail('opened SQLite main database does not match admission')
-    const openedIdentity = physicalIdentity(main.file)
-    if (openedIdentity.device !== admission.device || openedIdentity.inode !== admission.inode || openedIdentity.filesystemType !== admission.filesystemType) fail('opened SQLite main database physical identity drifted')
-    if (String(db.pragma('journal_mode', { simple: true })).toLowerCase() !== admission.journalMode) fail('SQLite journal posture changed')
     db.pragma('synchronous = FULL')
     db.pragma('locking_mode = NORMAL')
-    if (Number(db.pragma('synchronous', { simple: true })) !== 2 || String(db.pragma('locking_mode', { simple: true })).toLowerCase() !== 'normal') fail('SQLite connection locking posture is not approved')
-    if (schemaFingerprint(db) !== admission.schemaSha256) fail('approved store schema generation changed')
-    const row = db.prepare('SELECT database_id,config_generation,manifest_sha256 FROM owner_store_admission WHERE singleton=1').get() as { database_id: string, config_generation: string, manifest_sha256: string } | undefined
+    verifyAdmittedStore(db, admission)
     const digest = storeAdmissionDigest(admission)
-    if (!row || row.database_id !== admission.databaseId || row.config_generation !== admission.configGeneration || row.manifest_sha256 !== digest) fail('persistent database identity or configuration generation does not match')
     db.prepare('INSERT INTO owner_writer_attestations VALUES (?,?,?,?,?) ON CONFLICT(role) DO UPDATE SET version=excluded.version,insertion_path=excluded.insertion_path,config_generation=excluded.config_generation,manifest_sha256=excluded.manifest_sha256').run(writer.role, writer.version, writer.insertionPath, admission.configGeneration, digest)
     return db
   } catch (error) { db.close(); throw error }
 }
 
+/** Read-only verification for the live connection, repeated under each write
+ * transaction. Opening a store is not a lifetime admission lease. */
+export function verifyAdmittedStore(db: Database.Database, admission: StoreAdmission) {
+  if (!admission || admission.schema !== STORE_ADMISSION_SCHEMA || isUnsafePath(admission.canonicalPath)) fail('invalid store admission')
+  validateWriterInventory(admission.writers)
+  verifyAdmittedGuardDirectory(admission)
+  const main = (db.pragma('database_list') as Array<{ name: string, file: string }>).find(row => row.name === 'main')
+  if (!main) throw new Error('OWNER_STORE_ADMISSION_FAILED: opened SQLite main database is missing')
+  if (realpathSync(main.file) !== admission.canonicalPath) fail('opened SQLite main database does not match admission')
+  const openedIdentity = physicalIdentity(main.file)
+  if (openedIdentity.device !== admission.device || openedIdentity.inode !== admission.inode || openedIdentity.filesystemType !== admission.filesystemType) fail('opened SQLite main database physical identity drifted')
+  if (String(db.pragma('journal_mode', { simple: true })).toLowerCase() !== admission.journalMode) fail('SQLite journal posture changed')
+  if (Number(db.pragma('synchronous', { simple: true })) !== 2 || String(db.pragma('locking_mode', { simple: true })).toLowerCase() !== 'normal') fail('SQLite connection locking posture is not approved')
+  if (schemaFingerprint(db) !== admission.schemaSha256) fail('approved store schema generation changed')
+  const row = db.prepare('SELECT database_id,config_generation,manifest_sha256 FROM owner_store_admission WHERE singleton=1').get() as { database_id: string, config_generation: string, manifest_sha256: string } | undefined
+  const digest = storeAdmissionDigest(admission)
+  if (!row || row.database_id !== admission.databaseId || row.config_generation !== admission.configGeneration || row.manifest_sha256 !== digest) fail('persistent database identity or configuration generation does not match')
+}
+
 export function requireClosedWriterInventory(db: Database.Database, admission: StoreAdmission) {
+  verifyAdmittedStore(db, admission)
   const rows = db.prepare('SELECT role,version,insertion_path,config_generation,manifest_sha256 FROM owner_writer_attestations ORDER BY role').all() as Array<{ role: string, version: string, insertion_path: string, config_generation: string, manifest_sha256: string }>
   const digest = storeAdmissionDigest(admission)
   const actual = rows.map(row => ({ role: row.role, version: row.version, insertionPath: row.insertion_path, configGeneration: row.config_generation, manifestSha256: row.manifest_sha256 }))

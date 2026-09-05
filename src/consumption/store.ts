@@ -92,7 +92,10 @@ export class ConsumptionStore {
   constructor(dbPath: string, options: ConsumptionStoreOptions = {}) {
     this.options = options
     if (options.admission) {
-      const writer = options.writer ?? { role: 'legacy-consumption-writer', version: LEGACY_CONSUMPTION_WRITER_VERSION, insertionPath: 'ConsumptionStore.claim' }
+      const writer = { role: 'legacy-consumption-writer', version: LEGACY_CONSUMPTION_WRITER_VERSION, insertionPath: 'ConsumptionStore.claim' }
+      if (options.writer && (options.writer.role !== writer.role || options.writer.version !== writer.version || options.writer.insertionPath !== writer.insertionPath)) {
+        throw new Error('OWNER_STORE_ADMISSION_FAILED: writer identity is unapproved for this implementation')
+      }
       this.db = openAdmittedStore(dbPath, options.admission, writer)
     } else {
       mkdirSync(path.dirname(dbPath), { recursive: true })
@@ -142,6 +145,13 @@ export class ConsumptionStore {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.options.test?.afterBeginImmediate?.()
+      if (this.options.admission) {
+        try { requireClosedWriterInventory(this.db, this.options.admission) }
+        catch {
+          this.db.exec('ROLLBACK')
+          return { status: 'rejected', reason: 'environment_blocked', detail: 'owner-admitted store or writer inventory changed before insertion' }
+        }
+      }
       const candidateTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_owner_slots'").get()
       if (candidateTable && this.db.prepare('SELECT 1 FROM local_owner_slots WHERE decision_id=?').get(decision.decisionId)) {
         this.db.exec('ROLLBACK')
