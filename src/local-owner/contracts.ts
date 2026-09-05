@@ -18,7 +18,7 @@ export type BaseDecision = Record<string, unknown>
 export type DecisionInput = {
   decisionId: string, humanEventRef: string, baseDecisionRef: string,
   baseDecisionDigest: Digest, requestRef: string, action: typeof FIXED_ACTION,
-  approvedAt: string, expiresAt: string, baseDecision: BaseDecision,
+  approvedAt: string, expiresAt: string,
 }
 export type ClaimInput = {
   decisionId: string, decisionDigest: Digest, claimId: string, attemptKey: string,

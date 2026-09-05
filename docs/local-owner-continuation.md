@@ -2,13 +2,15 @@
 
 `LocalOwnerVerifier` is the only surface implementing the explicitly selected
 `org.hacp.local-owner-continuation / 0.1-candidate` contract pinned at HACP
-`de8a2a7a0104d4f1a67f866d20d32ebf30ee8752`. The profile SHA-256 is
-`18dedc4a2ef445e142ef395c62883d3448ad0ee021dbde789fe6b14e94538c34`.
+`3b61e64d61984f0c5617c4a71266802f31961494`. The profile SHA-256 is
+`bc02b5972c2ac1184637062b3dabf7a655ae442cb6fa22940d8d119f678483ec`.
 It is a local library and has no HTTP, console, live-loop, provider, command, or
 network integration.
 
 The configured credential authenticates access; the configured issuer and
-actor supply identity. Callers cannot select either. An unchanged closed HACP
+actor supply identity. Callers cannot select either. Human decisions are
+installed from owner-controlled configuration into a distinct trusted local
+store and atomically reserved when used. An unchanged closed HACP
 v0.1 human `start_work` decision must bind the candidate decision, packet and
 fixed action. Its detached companion digest uses the candidate's published JCS
 domain; it is not described as a native field or digest of the base format.
@@ -22,7 +24,9 @@ record. A verifier instance that did not admit the claim cannot start it.
 Every mutation takes a per-decision exclusive filesystem guard. Start keeps the
 same guard from status/clock validation through a `synchronous=FULL` intent
 commit, a second status/clock check, and the synchronous comparison returning
-the fixed observation. Status writers use the same guard. A crash leaves the
+the fixed observation. The intent derives and records a monotonic deadline from
+the earlier decision/claim expiry; wall or monotonic equality denies handoff.
+Status writers use the same guard. A crash leaves the
 guard in place and it is never reclaimed automatically. The intent is admission,
 not evidence that observation occurred. Results separately record `completed`
 or `uncertain`; replay and restart stop for human inspection.
