@@ -287,3 +287,31 @@ test('an incompletely provisioned run is repaired by the next start (review P2)'
     await cleanup(dir, engine)
   }
 })
+
+test('phase transitions are compare-and-swap; cleanup respects completed provisioning', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-cas-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('cas')
+  try {
+    await engine.startRun()
+    agePhase(dir, 10)
+    const store = (engine as unknown as { runs: import('./store/store').RunStore }).runs
+
+    // CAS: transition from the observed state wins…
+    const won = await store.updateRunPhase((await engine.getState()).runId, 'decision_required', 'resuming', new Date().toISOString())
+    assert.equal(won, true, 'CAS from the current state applies')
+    // …and a stale transition from the OLD state must NOT overwrite.
+    const stale = await store.updateRunPhase((await engine.getState()).runId, 'decision_required', 'decision_required', new Date().toISOString())
+    assert.equal(stale, false, 'stale CAS loses')
+    const after = await engine.getState()
+    assert.equal(after.state, 'resuming', 'a lost CAS cannot regress the phase')
+
+    // Guarded cleanup: once provisioning evidence exists, the retraction
+    // no-ops (a concurrent repair must survive a creator's late failure).
+    const runId = after.runId
+    const unprovisionedArchived = await store.archiveRunIfUnprovisioned(runId)
+    assert.equal(unprovisionedArchived, false, 'provisioned run is not archived by cleanup guard')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})

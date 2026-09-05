@@ -50,7 +50,11 @@ export interface RunStore {
   ensureActiveRun(tenantId: string, candidate: NewRun): Promise<RunRow>
   getCurrentRun(tenantId: string): Promise<RunRow | undefined>
   insertRun(run: NewRun): Promise<void>
-  updateRunPhase(runId: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<void>
+  /** Compare-and-swap phase transition: applies only when the run is still
+   * in `expectedState` (a stale poller must never overwrite a newer phase —
+   * e.g. flipping a consumed run back to decision_required). Returns whether
+   * the transition applied. */
+  updateRunPhase(runId: string, expectedState: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<boolean>
   getDecisionIntent(runId: string): Promise<DecisionIntentRow | undefined>
   /** Atomic first-writer-wins intent acquisition: inside the exclusive write
    * slot, persists (successor, decisionJson) only if none exists and returns
@@ -64,8 +68,9 @@ export interface RunStore {
   getArtifactJson(runId: string, name: string): Promise<string | undefined>
   persistReplayProbe(runId: string, replayJson: string): Promise<void>
   archiveTenantRuns(tenantId: string): Promise<void>
-  /** Archives a single run — used to retract an incompletely provisioned
-   * run so the next start creates a fresh one instead of inheriting it. */
-  archiveRun(runId: string): Promise<void>
+  /** Archives a single run, but ONLY while its provisioning evidence is
+   * still missing — if another caller completed/repaired provisioning, the
+   * run must survive (review P2: creator cleanup vs concurrent repair). */
+  archiveRunIfUnprovisioned(runId: string): Promise<boolean>
   close(): Promise<void>
 }

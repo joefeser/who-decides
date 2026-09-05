@@ -156,7 +156,7 @@ export class ConsoleEngine {
     } catch (err) {
       // Retract the incompletely provisioned run so the next start creates
       // a fresh one instead of inheriting a run with missing evidence.
-      await this.runs.archiveRun(runId).catch(() => { /* best-effort cleanup */ })
+      await this.runs.archiveRunIfUnprovisioned(runId).catch(() => { /* best-effort cleanup */ })
       throw err
     }
     return { runId }
@@ -186,18 +186,21 @@ export class ConsoleEngine {
     }
   }
 
-  /** Wall-clock phase advance — deterministic, no timers. */
+  /** Wall-clock phase advance — deterministic, no timers. Transitions are
+   * compare-and-swap: a stale poller losing the race must not overwrite a
+   * newer phase (e.g. flip a consumed run back to decision_required). The
+   * local object only advances when the CAS won. */
   private async advancePhases(run: { id: string, state: string, phase_changed_at: string }): Promise<void> {
     const elapsed = Date.now() - Date.parse(run.phase_changed_at)
     if (run.state === 'running' && elapsed >= RUN_RUNNING_MS) {
-      await this.runs.updateRunPhase(run.id, 'decision_required', new Date().toISOString())
-      run.state = 'decision_required'
+      const won = await this.runs.updateRunPhase(run.id, 'running', 'decision_required', new Date().toISOString())
+      if (won) run.state = 'decision_required'
     }
     const elapsed2 = Date.now() - Date.parse(run.phase_changed_at)
     if (run.state === 'resuming' && elapsed2 >= RUN_RESUMING_MS) {
       const now = new Date().toISOString()
-      await this.runs.updateRunPhase(run.id, 'completed', now, now)
-      run.state = 'completed'
+      const won = await this.runs.updateRunPhase(run.id, 'resuming', 'completed', now, now)
+      if (won) run.state = 'completed'
     }
   }
 
@@ -205,13 +208,17 @@ export class ConsoleEngine {
     const run = await this.currentRun()
     if (!run) return { ok: false, error: 'NO_RUN' }
     await this.advancePhases(run)
-    const row = await this.runs.getDecisionIntent(run.id)
-    const prior = row?.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null } : null
+    // Authoritative post-advance state comes from the row, never the local
+    // object — a lost CAS race here means the run already moved on.
+    const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
+    const runState = row.state!
+    const prior = row.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null } : null
+    const rowInvocationB = row.invocation_b
 
     // Idempotent recovery, matched strictly: only the SAME submission (key +
     // choice) may return committed success. A different decision arriving
     // after one was recorded is a conflict — the first decision was consumed.
-    if (run.state !== 'decision_required') {
+    if (runState !== 'decision_required') {
       if (prior && prior.choice === choice && prior.idempotencyKey === (idempotencyKey ?? null)) {
         return { ok: true, duplicate: true }
       }
@@ -233,7 +240,7 @@ export class ConsoleEngine {
     // successor (review findings 1+2). A crash between claim and state-write
     // leaves a retry that reuses the same successor and digest → 'replayed',
     // never a competing successor.
-    const invocationB = row?.invocation_b ?? `inv-${randomUUID()}`
+    const invocationB = rowInvocationB ?? `inv-${randomUUID()}`
     const decidedAt = prior?.decidedAt ?? new Date().toISOString()
     const stored = await this.runs.acquireDecisionIntent(
       run.id,
@@ -405,7 +412,7 @@ export class ConsoleEngine {
     const receipt = row.receipt_json ? JSON.parse(row.receipt_json) as { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } : null
     const effect = row.effect_json ? JSON.parse(row.effect_json) as ConsoleState['effect'] : null
     const replay = row.replay_json ? JSON.parse(row.replay_json) as ConsoleState['replayProbe'] : null
-    const state = run.state as ConsoleState['state']
+    const state = (row.state ?? run.state) as ConsoleState['state']
     return {
       schema: 'who-decides.console-state.v1',
       tenantId: this.tenant,

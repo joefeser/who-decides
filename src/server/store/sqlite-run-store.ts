@@ -117,14 +117,13 @@ export class SqliteRunStore implements RunStore {
       .run(run.id, 'running', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson)
   }
 
-  async updateRunPhase(runId: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<void> {
-    if (completedAt !== undefined) {
-      this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ?, completed_at = ? WHERE id = ?')
-        .run(state, phaseChangedAt, completedAt, runId)
-    } else {
-      this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ? WHERE id = ?')
-        .run(state, phaseChangedAt, runId)
-    }
+  async updateRunPhase(runId: string, expectedState: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<boolean> {
+    const result = completedAt !== undefined
+      ? this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ?, completed_at = ? WHERE id = ? AND state = ?')
+        .run(state, phaseChangedAt, completedAt, runId, expectedState)
+      : this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ? WHERE id = ? AND state = ?')
+        .run(state, phaseChangedAt, runId, expectedState)
+    return result.changes > 0
   }
 
   async getDecisionIntent(runId: string): Promise<DecisionIntentRow | undefined> {
@@ -166,8 +165,12 @@ export class SqliteRunStore implements RunStore {
     this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
   }
 
-  async archiveRun(runId: string): Promise<void> {
-    this.db.prepare('UPDATE runs SET archived = 1 WHERE id = ?').run(runId)
+  async archiveRunIfUnprovisioned(runId: string): Promise<boolean> {
+    const result = this.db
+      .prepare(`UPDATE runs SET archived = 1 WHERE id = ? AND id NOT IN
+                (SELECT run_id FROM artifacts WHERE run_id = ? AND name = 'stop-response')`)
+      .run(runId, runId)
+    return result.changes > 0
   }
 
   async close(): Promise<void> {
