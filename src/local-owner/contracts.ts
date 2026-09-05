@@ -1,13 +1,13 @@
 import type { Digest } from './jcs'
 
-export const FIXED_ACTION = {
+export const FIXED_ACTION = Object.freeze({
   operationId: 'observe_fixed_payload',
-  parameters: { payload: 'HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1' },
-} as const
-export const FIXED_OBSERVATION = {
+  parameters: Object.freeze({ payload: 'HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1' }),
+} as const)
+export const FIXED_OBSERVATION = Object.freeze({
   operationId: 'observe_fixed_payload',
   payload: 'HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1',
-} as const
+} as const)
 export const OBSERVATION_DIGEST_VALUE = '2291610e38245f88bac99efc480897600b1f322a4004d0113487033a3b13de5e'
 
 export type ClockSample = { wallTime: string, monotonicNanoseconds: string }

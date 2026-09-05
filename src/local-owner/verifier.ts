@@ -22,6 +22,7 @@ const sleep = (milliseconds: number) => Atomics.wait(new Int32Array(new SharedAr
 const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key))
 const nonEmpty = (values: Array<string | undefined>) => values.every(value => typeof value === 'string' && value.length > 0)
 const digestMatches = (actual: unknown, expected: Digest) => { try { return equalJcs(actual, expected) } catch { return false } }
+const actionMatches = (actual: unknown) => { try { return equalJcs(actual, FIXED_ACTION) } catch { return false } }
 
 export class LocalOwnerVerifier {
   private readonly db: Database.Database
@@ -81,8 +82,11 @@ export class LocalOwnerVerifier {
     const deadline = Date.now() + (this.config.test?.waitGuardMs ?? 0)
     do { try { descriptor = openSync(lockPath, 'wx'); break } catch { if (Date.now() >= deadline) break; sleep(5) } } while (true)
     if (descriptor === undefined) return stop('ENVIRONMENT_BLOCKED', 'serialization guard unavailable; it is never reclaimed automatically')
-    writeSync(descriptor, randomBytes(16))
-    try { if (this.config.test?.holdGuardMs) sleep(this.config.test.holdGuardMs); return operation() }
+    try {
+      writeSync(descriptor, randomBytes(16))
+      if (this.config.test?.holdGuardMs) sleep(this.config.test.holdGuardMs)
+      return operation()
+    } catch { return stop('ENVIRONMENT_BLOCKED', 'store or serialization unavailable') }
     finally { closeSync(descriptor); unlinkSync(lockPath) }
   }
   private sampleClock(): CandidateResult<ClockSample> {
@@ -93,6 +97,10 @@ export class LocalOwnerVerifier {
       const monotonic = BigInt(sample.monotonicNanoseconds)
       if (this.lastMonotonic !== null && monotonic < this.lastMonotonic) return stop('UNVERIFIED_ASSUMPTION', 'monotonic clock rollback')
       const prior = this.db.prepare('SELECT wall_time FROM local_owner_clock WHERE issuer_id = ?').get(this.config.issuerId) as { wall_time: string } | undefined
+      if (prior ? !Number.isFinite(timestamp(prior.wall_time))
+        : this.db.prepare('SELECT 1 FROM local_owner_slots WHERE issuer_id=? LIMIT 1').get(this.config.issuerId)) {
+        return stop('UNVERIFIED_ASSUMPTION', 'durable clock checkpoint missing or corrupt')
+      }
       if (prior && timestamp(sample.wallTime) < timestamp(prior.wall_time)) return stop('UNVERIFIED_ASSUMPTION', 'wall clock rollback')
       this.lastMonotonic = monotonic
       return ok(sample)
@@ -133,7 +141,7 @@ export class LocalOwnerVerifier {
   recordDecision(token: string, input: DecisionInput): CandidateResult<Record<string, unknown>> {
     return this.guarded(token, input?.decisionId ?? '', () => {
       if (!input || !exactKeys(input as unknown as Record<string, unknown>, ['decisionId','humanEventRef','baseDecisionRef','baseDecisionDigest','requestRef','action','approvedAt','expiresAt']) || !nonEmpty([input.decisionId,input.humanEventRef,input.baseDecisionRef,input.requestRef])) return stop('MISSING_AUTHORITY','missing or stripped candidate context')
-      if (!equalJcs(input.action,FIXED_ACTION)) return stop('SCOPE_CONFLICT','unsupported action')
+      if (!actionMatches(input.action)) return stop('SCOPE_CONFLICT','unsupported action')
       this.db.exec('BEGIN IMMEDIATE')
       try {
         const clock=this.sampleClock();if(!clock.ok){this.db.exec('ROLLBACK');return clock}
@@ -157,10 +165,10 @@ export class LocalOwnerVerifier {
   }
 
   admitClaim(token:string,input:ClaimInput):CandidateResult<Record<string,unknown>>{
-    return this.guarded(token,input?.decisionId??'',()=>{if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','decisionDigest','claimId','attemptKey','successorId','requestRef','action','claimedAt','expiresAt'])||!nonEmpty([input.decisionId,input.claimId,input.attemptKey,input.successorId,input.requestRef]))return stop('MISSING_AUTHORITY','missing claim context');if(!equalJcs(input.action,FIXED_ACTION))return stop('SCOPE_CONFLICT','unsupported action')
+    return this.guarded(token,input?.decisionId??'',()=>{if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','decisionDigest','claimId','attemptKey','successorId','requestRef','action','claimedAt','expiresAt'])||!nonEmpty([input.decisionId,input.claimId,input.attemptKey,input.successorId,input.requestRef]))return stop('MISSING_AUTHORITY','missing claim context');if(!actionMatches(input.action))return stop('SCOPE_CONFLICT','unsupported action')
       this.db.exec('BEGIN IMMEDIATE');try{
         const slot=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any;if(!slot){this.db.exec('ROLLBACK');return stop('MISSING_AUTHORITY','missing decision')}
-        if(slot.claim_digest){const old=this.read('claim',input.claimId);if(old.kind==='corrupt'){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','claim readback corrupt')}if(old.kind==='missing'){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','slot already consumed')}const candidate={recordKind:'claim',profileId:PROFILE_ID,profileVersion:PROFILE_VERSION,issuerId:this.config.issuerId,...input};const result=recordDigest('claim',candidate).value===slot.claim_digest?ok(old.record):stop('SCOPE_CONFLICT','changed binding replay');this.db.exec('ROLLBACK');return result}
+        if(slot.claim_digest){const old=this.read('claim',input.claimId);if(old.kind==='corrupt'){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','claim readback corrupt')}if(old.kind==='missing'){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','slot already consumed')}if((old.record.digest as Digest).value!==slot.claim_digest){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','claim readback does not match reserved slot')}const candidate={recordKind:'claim',profileId:PROFILE_ID,profileVersion:PROFILE_VERSION,issuerId:this.config.issuerId,...input};const result=recordDigest('claim',candidate).value===slot.claim_digest?ok(old.record):stop('SCOPE_CONFLICT','changed binding replay');this.db.exec('ROLLBACK');return result}
         const read=this.read('decision',input.decisionId);if(read.kind!=='ok'){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','decision readback missing or corrupt')}const decision=read.record
         const expected=recordDigest('decision',decision),clock=this.sampleClock();if(!clock.ok){this.db.exec('ROLLBACK');return clock}
         if(!digestMatches(input.decisionDigest,expected)||expected.value!==slot.decision_digest||input.requestRef!==decision.requestRef||!Number.isFinite(timestamp(input.claimedAt))||!Number.isFinite(timestamp(input.expiresAt))||timestamp(input.claimedAt)>timestamp(clock.value.wallTime)||timestamp(input.expiresAt)>timestamp(decision.expiresAt as string)||timestamp(input.expiresAt)<=timestamp(clock.value.wallTime)){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','claim bindings invalid, future-claimed or expired')}
@@ -174,7 +182,7 @@ export class LocalOwnerVerifier {
     try{for(let index=0;index<rows.length;index++){const record=JSON.parse(rows[index].record_json),expected=recordDigest('status-event',record);if(rows[index].sequence!==index||record.sequence!==index||record.previousDigest!==previous||record.targetDigest!==targetDigest||expected.value!==rows[index].digest||!digestMatches(record.digest,expected))return null;previous=rows[index].digest;last=record}return previous===head?last:null}catch{return null}
   }
   guardedStart(token:string,input:StartInput):CandidateResult<any>{
-    return this.guarded(token,input?.decisionId??'',()=>{ if(!nonEmpty([input?.decisionId,input?.claimId,input?.intentId,input?.successorId]))return stop('MISSING_AUTHORITY','missing start context')
+    return this.guarded(token,input?.decisionId??'',()=>{ if(!input||!exactKeys(input as unknown as Record<string,unknown>,['decisionId','claimId','intentId','successorId','action'])||!nonEmpty([input.decisionId,input.claimId,input.intentId,input.successorId]))return stop('MISSING_AUTHORITY','missing start context')
       this.db.exec('BEGIN IMMEDIATE');let intent:any,decision:any,claim:any,first:ClockSample,deadline:bigint
       try{
         const slot=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any
@@ -184,7 +192,15 @@ export class LocalOwnerVerifier {
         const dr=this.read('decision',input.decisionId),cr=this.read('claim',input.claimId)
         if(dr.kind!=='ok'||cr.kind!=='ok'||(cr.record.digest as Digest)?.value!==slot.claim_digest){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','missing or corrupt durable readback')}
         decision=dr.record;claim=cr.record
-        if(input.successorId!==claim.successorId||!equalJcs(input.action,FIXED_ACTION)){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','start binding conflict')}
+        if ((decision.digest as Digest).value !== slot.decision_digest
+          || !digestMatches(claim.decisionDigest, decision.digest as Digest)
+          || decision.decisionId !== input.decisionId || claim.decisionId !== input.decisionId
+          || claim.claimId !== input.claimId || decision.issuerId !== this.config.issuerId
+          || claim.issuerId !== this.config.issuerId || claim.requestRef !== decision.requestRef
+          || !actionMatches(decision.action) || !actionMatches(claim.action)) {
+          this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','durable decision/claim bindings conflict')
+        }
+        if(input.successorId!==claim.successorId||!actionMatches(input.action)){this.db.exec('ROLLBACK');return stop('SCOPE_CONFLICT','start binding conflict')}
         const ds=this.currentStatus(slot,input.decisionId,'decision'),cs=this.currentStatus(slot,input.decisionId,'claim')
         if(!ds||!cs){this.db.exec('ROLLBACK');return stop('UNVERIFIED_ASSUMPTION','status chain invalid')}
         if(ds.state!=='active'||cs.state!=='active'){this.db.exec('ROLLBACK');return stop('STALE_PACKET','revoked')}

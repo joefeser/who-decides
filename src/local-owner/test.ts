@@ -85,3 +85,88 @@ test('empty identifiers are rejected before any admission (review P2)',()=>{cons
   const badStart:any={decisionId:'d1',claimId:'',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION}
   assert.equal((s.v.guardedStart(TOKEN,badStart) as any).stop,'MISSING_AUTHORITY')
 }finally{s.v.close();rmSync(s.dir,{recursive:true})}})
+
+const startInput = () => ({ decisionId: 'd1', claimId: 'c1', intentId: 'i1', successorId: 'successor-1', action: structuredClone(FIXED_ACTION) })
+
+test('start rejects a rehashed decision that no longer matches its reserved slot', () => {
+  const a = admitted()
+  try {
+    const db = new Database(a.s.dbPath)
+    const changed = { ...a.d, expiresAt: '2101-01-01T00:00:00.000Z' }
+    const digest = recordDigest('decision', changed)
+    db.prepare("UPDATE local_owner_records SET digest=?, record_json=? WHERE kind='decision'")
+      .run(digest.value, JSON.stringify({ ...changed, digest }))
+    db.close()
+    const result = a.s.v.guardedStart(TOKEN, startInput())
+    assert.equal(result.ok, false)
+    assert.equal((a.s.v.inspect(TOKEN, 'd1') as any).value.start_intent_digest, null)
+  } finally { a.s.v.close(); rmSync(a.s.dir, { recursive: true }) }
+})
+
+test('invalid or missing durable clock checkpoint denies start before intent', () => {
+  for (const sql of ["UPDATE local_owner_clock SET wall_time='broken'", 'DELETE FROM local_owner_clock']) {
+    const a = admitted()
+    try {
+      const db = new Database(a.s.dbPath)
+      db.exec(sql)
+      db.close()
+      const result = a.s.v.guardedStart(TOKEN, startInput())
+      assert.equal(result.ok, false, sql)
+      assert.equal((a.s.v.inspect(TOKEN, 'd1') as any).value.start_intent_digest, null)
+    } finally { a.s.v.close(); rmSync(a.s.dir, { recursive: true }) }
+  }
+})
+
+test('returned action and observation cannot change the fixed operation for later calls', () => {
+  const a = admitted()
+  const payload = (a.d.action as any).parameters.payload
+  try {
+    assert.equal(Reflect.set((a.d.action as any).parameters, 'payload', 'changed'), false)
+    const result = a.s.v.guardedStart(TOKEN, startInput())
+    assert(result.ok)
+    assert.equal(Reflect.set(result.value.observation, 'payload', 'changed'), false)
+    assert.equal(result.value.observation.payload, 'HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1')
+  } finally {
+    Reflect.set((a.d.action as any).parameters, 'payload', payload)
+    a.s.v.close(); rmSync(a.s.dir, { recursive: true })
+  }
+})
+
+test('malformed scope and extra start context produce typed stops without reserving intent', () => {
+  const a = admitted()
+  try {
+    for (const input of [{ ...startInput(), action: undefined }, { ...startInput(), recovery: true }]) {
+      const result = a.s.v.guardedStart(TOKEN, input as any)
+      assert.equal(result.ok, false)
+      assert.equal((a.s.v.inspect(TOKEN, 'd1') as any).value.start_intent_digest, null)
+    }
+  } finally { a.s.v.close(); rmSync(a.s.dir, { recursive: true }) }
+})
+
+test('exact claim retry rejects a rehashed receipt outside the reserved binding', () => {
+  const a = admitted()
+  try {
+    const db = new Database(a.s.dbPath)
+    const changed = { ...a.c, successorId: 'different-successor' }
+    const digest = recordDigest('claim', changed)
+    db.prepare("UPDATE local_owner_records SET digest=?, record_json=? WHERE kind='claim'")
+      .run(digest.value, JSON.stringify({ ...changed, digest }))
+    db.close()
+    assert.equal(a.s.v.admitClaim(TOKEN, claim(a.d)).ok, false)
+  } finally { a.s.v.close(); rmSync(a.s.dir, { recursive: true }) }
+})
+
+test('unavailable database returns a typed denial from every mutation', () => {
+  const a = admitted()
+  a.s.v.close()
+  try {
+    for (const operation of [
+      () => a.s.v.recordDecision(TOKEN, decision()),
+      () => a.s.v.admitClaim(TOKEN, claim(a.d)),
+      () => a.s.v.revoke(TOKEN, 'd1', 'claim'),
+      () => a.s.v.guardedStart(TOKEN, startInput()),
+    ]) {
+      assert.equal((operation() as any).stop, 'ENVIRONMENT_BLOCKED')
+    }
+  } finally { rmSync(a.s.dir, { recursive: true }) }
+})
