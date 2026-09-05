@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/status-event.0.1-candidate.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recordKind",
+    "profileId",
+    "profileVersion",
+    "issuerId",
+    "decisionId",
+    "digest",
+    "eventId",
+    "targetKind",
+    "targetDigest",
+    "sequence",
+    "previousDigest",
+    "state",
+    "recordedAt",
+    "actorId"
+  ],
+  "properties": {
+    "recordKind": {
+      "const": "status-event"
+    },
+    "profileId": {
+      "const": "org.hacp.local-owner-continuation"
+    },
+    "profileVersion": {
+      "const": "0.1-candidate"
+    },
+    "issuerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "eventId": {
+      "type": "string"
+    },
+    "targetKind": {
+      "enum": [
+        "decision",
+        "claim"
+      ]
+    },
+    "targetDigest": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "previousDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "active",
+        "revoked"
+      ]
+    },
+    "recordedAt": {
+      "type": "string"
+    },
+    "actorId": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "domain",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonicalization": {
+          "const": "json-rfc8785-jcs"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wallTime",
+        "monotonicNanoseconds"
+      ],
+      "properties": {
+        "wallTime": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "monotonicNanoseconds": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    }
+  }
+}

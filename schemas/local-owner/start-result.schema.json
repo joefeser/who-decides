@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/start-result.0.1-candidate.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recordKind",
+    "profileId",
+    "profileVersion",
+    "issuerId",
+    "decisionId",
+    "digest",
+    "intentDigest",
+    "resultId",
+    "outcome",
+    "observedAt",
+    "observationClockSample",
+    "observationDigest"
+  ],
+  "properties": {
+    "recordKind": {
+      "const": "start-result"
+    },
+    "profileId": {
+      "const": "org.hacp.local-owner-continuation"
+    },
+    "profileVersion": {
+      "const": "0.1-candidate"
+    },
+    "issuerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "intentDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "resultId": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "completed",
+        "uncertain"
+      ]
+    },
+    "observedAt": {
+      "type": "string"
+    },
+    "observationClockSample": {
+      "$ref": "#/$defs/clock"
+    },
+    "observationDigest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "domain",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonicalization": {
+          "const": "json-rfc8785-jcs"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wallTime",
+        "monotonicNanoseconds"
+      ],
+      "properties": {
+        "wallTime": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "monotonicNanoseconds": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "uncertain"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observationDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observationDigest": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "const": "org.hacp.local-owner-continuation.observation.0.1-candidate"
+              },
+              "value": {
+                "const": "2291610e38245f88bac99efc480897600b1f322a4004d0113487033a3b13de5e"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

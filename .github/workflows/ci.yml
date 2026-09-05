@@ -20,11 +20,19 @@ jobs:
       - run: npm run test:artifacts
       - run: npm run test:live-loop
       - run: npm run test:consumption
+      - run: npm run test:local-owner
       - run: npm run scenario
       - run: npm run proof:consumption -- .tmp/consumption-proof
+      - run: npm run proof:local-owner -- .tmp/local-owner-proof
       - uses: actions/upload-artifact@v4
         with:
           name: consumption-proof-${{ github.event.pull_request.head.sha || github.sha }}
           path: .tmp/consumption-proof/result.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-owner-proof-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .tmp/local-owner-proof/result.json
           if-no-files-found: error
           retention-days: 7
