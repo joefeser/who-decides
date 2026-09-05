@@ -37,7 +37,12 @@
       "minLength": 1
     },
     "digest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.decision.0.1-candidate"
+        }
+      }
     },
     "humanEventRef": {
       "type": "string"
@@ -46,7 +51,12 @@
       "type": "string"
     },
     "baseDecisionDigest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.base-decision-reference.0.1-candidate"
+        }
+      }
     },
     "requestRef": {
       "type": "string"

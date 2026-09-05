@@ -106,7 +106,7 @@ export class LocalOwnerVerifier {
     try { const row = this.db.prepare('SELECT digest, record_json FROM local_owner_records WHERE issuer_id=? AND kind=? AND record_id=?').get(this.config.issuerId, kind, id) as { digest: string, record_json: string } | undefined
       if (!row) return { kind:'missing' as const }
       const record = JSON.parse(row.record_json) as Record<string, unknown>
-      return recordDigest(kind, record).value === row.digest ? {kind:'ok' as const,record} : {kind:'corrupt' as const}
+      const expected=recordDigest(kind,record);return expected.value===row.digest&&digestMatches(record.digest,expected)?{kind:'ok' as const,record}:{kind:'corrupt' as const}
     } catch { return {kind:'corrupt' as const} }
   }
   private appendStatus(decisionId: string, targetKind: 'decision' | 'claim', targetDigest: string, state: 'active' | 'revoked', at: string) {

@@ -38,7 +38,12 @@
       "minLength": 1
     },
     "digest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.status-event.0.1-candidate"
+        }
+      }
     },
     "eventId": {
       "type": "string"

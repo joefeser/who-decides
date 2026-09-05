@@ -39,10 +39,20 @@
       "minLength": 1
     },
     "digest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.start-intent.0.1-candidate"
+        }
+      }
     },
     "claimDigest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.claim.0.1-candidate"
+        }
+      }
     },
     "intentId": {
       "type": "string"

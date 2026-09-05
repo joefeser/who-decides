@@ -38,10 +38,20 @@
       "minLength": 1
     },
     "digest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.claim.0.1-candidate"
+        }
+      }
     },
     "decisionDigest": {
-      "$ref": "#/$defs/digest"
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "domain": {
+          "const": "org.hacp.local-owner-continuation.decision.0.1-candidate"
+        }
+      }
     },
     "claimId": {
       "type": "string"
