@@ -394,3 +394,21 @@ authority service owns the store (Postgres via the PR #7 seam). The agent
 may keep only its own session/snapshot state on the runtime's persistent
 filesystem. Direct agent→DB is technically possible and architecturally
 wrong for this contract.
+
+## Day 6 addendum — PR #9 merged: the evidence-integrity proof (v0.3 gate closed)
+
+PR #9 (receipt-bound proof inventory) merged at 9a216e9 after the full
+three-family convergence: Codex built it (receipts emitted by test bodies,
+inventory derived from receipts), GLM took over and fixed three
+receipt-MAPPING P1s (coverage claims bound to tests that genuinely exercise
+their fixtures, start-boundary action check regression-pinned, all three
+invalid-base variants), Astra final-checked (stop-code propagation on
+second-clock failure, fork/truncation history coverage, scheduler-independent
+revoke/start race) with zero new P1s. Owner override merge on the gate's
+staleness-only objection.
+
+The evidence-integrity species, now closed at three layers: static labels
+(PR #8), receipt architecture (PR #9 build), receipt mappings (PR #9 round
+2). Proof stands at 43/44 with legacy migration explicitly unclaimed —
+the one architecture decision remaining for HACP v0.3. 79 tests green on
+main; both proofs passing.
