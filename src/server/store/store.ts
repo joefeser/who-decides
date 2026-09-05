@@ -70,6 +70,8 @@ export interface RunStore {
    * submission must never drag an already-completed run back to resuming.
    * False means the run already moved on — idempotent success for callers. */
   finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean>
+  /** Persists an artifact FIRST-WRITER-WINS: committed audit artifacts are
+   * immutable — a later writer with the same (runId, name) is a no-op. */
   storeArtifact(artifact: StoredArtifact): Promise<void>
   listArtifacts(runId: string, tenantId: string): Promise<ArtifactRow[]>
   getRunRow(runId: string): Promise<FullRunRow | undefined>

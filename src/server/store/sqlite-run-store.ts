@@ -125,10 +125,12 @@ export class SqliteRunStore implements RunStore {
   }
 
   async updateRunPhase(runId: string, expectedState: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<boolean> {
+    // Live rows only: a reset that archives between the caller's read and
+    // this CAS must win — archived audit rows are never mutated (review P2).
     const result = completedAt !== undefined
-      ? this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ?, completed_at = ? WHERE id = ? AND state = ?')
+      ? this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ?, completed_at = ? WHERE id = ? AND state = ? AND archived = 0')
         .run(state, phaseChangedAt, completedAt, runId, expectedState)
-      : this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ? WHERE id = ? AND state = ?')
+      : this.db.prepare('UPDATE runs SET state = ?, phase_changed_at = ? WHERE id = ? AND state = ? AND archived = 0')
         .run(state, phaseChangedAt, runId, expectedState)
     return result.changes > 0
   }
@@ -139,14 +141,18 @@ export class SqliteRunStore implements RunStore {
 
   async finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean> {
     const result = this.db
-      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ? AND state = ?')
+      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ? AND state = ? AND archived = 0')
       .run(state, phaseChangedAt, receiptJson, effectJson, runId, expectedState)
     return result.changes > 0
   }
 
   async storeArtifact(artifact: StoredArtifact): Promise<void> {
+    // First-writer-wins: committed audit artifacts are immutable. A slower
+    // duplicate submission (whose builders may stamp different NOW() times)
+    // must never replace the winner's evidence (review P2). Missing
+    // artifacts — e.g. provisioning repair — still insert normally.
     this.db
-      .prepare('INSERT OR REPLACE INTO artifacts (run_id, tenant_id, name, kind, valid, json) VALUES (?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO artifacts (run_id, tenant_id, name, kind, valid, json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, name) DO NOTHING')
       .run(artifact.runId, artifact.tenantId, artifact.name, artifact.kind, artifact.valid ? 1 : 0, artifact.json)
   }
 
@@ -166,7 +172,7 @@ export class SqliteRunStore implements RunStore {
   }
 
   async persistReplayProbe(runId: string, replayJson: string): Promise<void> {
-    this.db.prepare('UPDATE runs SET replay_json = ? WHERE id = ?').run(replayJson, runId)
+    this.db.prepare('UPDATE runs SET replay_json = ? WHERE id = ? AND archived = 0').run(replayJson, runId)
   }
 
   async archiveTenantRuns(tenantId: string): Promise<void> {

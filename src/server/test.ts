@@ -342,3 +342,32 @@ test('a slower duplicate finalize never regresses a completed run (review P2)', 
     await cleanup(dir, engine)
   }
 })
+
+test('audit artifacts are immutable and archived rows are never mutated (review round 6)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-immutable-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('immutable')
+  try {
+    await engine.startRun()
+    agePhase(dir, 10)
+    const runId = (await engine.getState()).runId
+    const store = (engine as unknown as { runs: import('./store/store').RunStore }).runs
+
+    // First-writer-wins: a second write with different content is a no-op.
+    await store.storeArtifact({ runId, tenantId: 'immutable', name: 'audit-probe', kind: 'review-finding', valid: true, json: '{"first":true}' })
+    await store.storeArtifact({ runId, tenantId: 'immutable', name: 'audit-probe', kind: 'review-finding', valid: true, json: '{"second":false}' })
+    const persisted = await store.getArtifactJson(runId, 'audit-probe')
+    assert.equal(persisted, '{"first":true}', 'the first committed artifact survives a later writer')
+
+    // Archiving wins races: CAS transitions cannot touch archived rows.
+    assert.equal(await store.updateRunPhase(runId, 'decision_required', 'resuming', new Date().toISOString()), true, 'live CAS applies')
+    await store.archiveTenantRuns('immutable')
+    assert.equal(
+      await store.updateRunPhase(runId, 'resuming', 'completed', new Date().toISOString(), new Date().toISOString()),
+      false,
+      'archived row is untouchable by a stale poll',
+    )
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
