@@ -25,8 +25,10 @@ const CASES:Record<string,string[]>={
   'same candidate decision id under two issuers: separate slots, no cross-issuer access (review P1)':['same-id-different-issuer'],
   'happy guarded start persists intent/result and never reexecutes':['authenticated-happy-path','completed-start-replay'],
   'status revocation fails closed and remains terminal':['claim-revoked-decision-active','revoked-status-reset'],
-  'status corruption and missing durable readback deny observation':['missing-or-corrupt-durable-readback','absent-or-corrupt-status','status-gap-fork-truncation-or-wrong-head'],
-  'clock rollback, expiry at handoff and uncertain observation retain intent':['clock-rollback-or-unknown-time','expiry-between-intent-and-handoff'],
+  'status corruption and missing durable readback deny observation':['missing-or-corrupt-durable-readback','absent-or-corrupt-status'],
+  'status history rejects validly hashed gaps forks truncation and wrong heads':['status-gap-fork-truncation-or-wrong-head'],
+  'independent clock rollbacks and unavailable time retain uncertainty without retry':['clock-rollback-or-unknown-time'],
+  'expiry between intent and handoff retains uncertainty without retry':['expiry-between-intent-and-handoff'],
   'monotonic deadline denies a stalled wall clock at equality':['wall-clock-stall-crosses-monotonic-deadline'],
   'closed base record validates without candidate extension fields':['closed-base-record-remains-unchanged'],
   'closed clock shape and unknown clock fail before observation':['clock-sample-shape'],
@@ -104,7 +106,106 @@ test('status revocation fails closed and remains terminal',()=>{const b=admitted
   const final=(b.s.v.inspect(TOKEN,'d1') as any).value;assert.equal(final.decision_digest,original.decision_digest);assert.equal(final.claim_digest,original.claim_digest);assert.equal(final.claim_status_head,afterRevoke.claim_status_head);assert.equal(final.start_intent_digest,null);const verify=new Database(b.s.dbPath,{readonly:true});assert.equal((verify.prepare("select count(*) n from local_owner_records where kind in ('start-intent','start-result')").get() as any).n,0);assert.equal((verify.prepare("select count(*) n from local_owner_status where target_kind='claim'").get() as any).n,2);verify.close()
 }finally{b.s.v.close();rmSync(b.s.dir,{recursive:true})}})
 test('status corruption and missing durable readback deny observation',()=>{for(const sql of ["delete from local_owner_records where kind='claim'","update local_owner_records set record_json='{' where kind='claim'","update local_owner_records set record_json=json_set(record_json,'$.digest.domain','wrong') where kind='claim'","update local_owner_slots set claim_status_head='bad'","update local_owner_status set record_json='{' where target_kind='claim'","update local_owner_status set record_json=json_set(record_json,'$.digest.domain','wrong') where target_kind='claim'","update local_owner_status set sequence=4 where target_kind='claim'","delete from local_owner_status where target_kind='claim'","insert into local_owner_status select issuer_id,decision_id,target_kind,sequence+1,digest,record_json from local_owner_status where target_kind='claim'"]){const a=admitted();try{new Database(a.s.dbPath).exec(sql);const r=a.s.v.guardedStart(TOKEN,{decisionId:'d1',claimId:'c1',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION});assert.equal(r.ok,false);assert(['UNVERIFIED_ASSUMPTION','MISSING_AUTHORITY'].includes((r as any).stop))}finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}}})
-test('clock rollback, expiry at handoff and uncertain observation retain intent',()=>{for(const samples of [[{wallTime:'2026-09-05T00:00:00.000Z',monotonicNanoseconds:'1'},{wallTime:'2026-09-05T00:00:01.000Z',monotonicNanoseconds:'2'},{wallTime:'2026-09-05T00:00:02.000Z',monotonicNanoseconds:'4'},{wallTime:'2026-09-05T00:00:01.000Z',monotonicNanoseconds:'3'}],[{wallTime:'2026-09-05T00:00:00.000Z',monotonicNanoseconds:'1'},{wallTime:'2026-09-05T00:00:01.000Z',monotonicNanoseconds:'2'},{wallTime:'2098-01-01T00:00:00.000Z',monotonicNanoseconds:'3'},{wallTime:'2100-01-01T00:00:00.000Z',monotonicNanoseconds:'4'}]]){let i=0;const a=admitted(setup('fixture-issuer',()=>samples[Math.min(i++,samples.length-1)]));try{const r=a.s.v.guardedStart(TOKEN,{decisionId:'d1',claimId:'c1',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION});assert.equal(r.ok,false);assert.equal((a.s.v.inspect(TOKEN,'d1') as any).value.start_intent_digest!==null,true)}finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}}})
+test('status history rejects validly hashed gaps forks truncation and wrong heads', () => {
+  for (const target of ['decision', 'claim'] as const) {
+    for (const defect of ['gap', 'fork', 'truncation', 'wrong-head'] as const) {
+      const a = admitted()
+      try {
+        assert(a.s.v.revoke(TOKEN, 'd1', target).ok)
+        const db = new Database(a.s.dbPath)
+        try {
+          const rows = db.prepare('select sequence,digest,record_json from local_owner_status where target_kind=? order by sequence').all(target) as any[]
+          assert.equal(rows.length, 2)
+          if (defect === 'gap') {
+            db.prepare('delete from local_owner_status where target_kind=? and sequence=0').run(target)
+          } else if (defect === 'truncation') {
+            // Retain the slot's committed head while removing its revoked suffix.
+            db.prepare('delete from local_owner_status where target_kind=? and sequence=1').run(target)
+          } else if (defect === 'fork') {
+            // Keep a valid digest so only the broken predecessor link can deny it.
+            const record = { ...JSON.parse(rows[1].record_json), previousDigest: '0'.repeat(64) }
+            const digest = recordDigest('status-event', record)
+            db.prepare('update local_owner_status set digest=?,record_json=? where target_kind=? and sequence=1')
+              .run(digest.value, JSON.stringify({ ...record, digest }), target)
+            db.prepare(`update local_owner_slots set ${target}_status_head=?`).run(digest.value)
+          } else {
+            db.prepare(`update local_owner_slots set ${target}_status_head=?`).run(rows[0].digest)
+          }
+          for (const row of db.prepare('select digest,record_json from local_owner_status where target_kind=?').all(target) as any[]) {
+            const record = JSON.parse(row.record_json)
+            assert.deepEqual(record.digest, recordDigest('status-event', record))
+            assert.equal(row.digest, record.digest.value)
+          }
+          const result = a.s.v.guardedStart(TOKEN, startInput())
+          assert(!result.ok)
+          assert.equal(result.stop, 'UNVERIFIED_ASSUMPTION', `${target}:${defect}`)
+          assert.equal((a.s.v.inspect(TOKEN, 'd1') as any).value.start_intent_digest, null)
+          assert.equal((db.prepare("select count(*) n from local_owner_records where kind in ('start-intent','start-result')").get() as any).n, 0)
+        } finally { db.close() }
+      } finally { a.s.v.close(); rmSync(a.s.dir, { recursive: true }) }
+    }
+  }
+})
+
+function assertUncertainStart(s: ReturnType<typeof setup>, expectedStop: string) {
+  const result = s.v.guardedStart(TOKEN, startInput())
+  assert(!result.ok)
+  assert.equal(result.stop, expectedStop)
+  assert.equal(Object.hasOwn(result, 'observation'), false)
+  const slot = (s.v.inspect(TOKEN, 'd1') as any).value
+  assert(slot.start_intent_digest)
+  const db = new Database(s.dbPath, { readonly: true })
+  try {
+    const snapshot = () => db.prepare("select kind,digest,record_json from local_owner_records where kind in ('start-intent','start-result') order by kind").all() as any[]
+    const before = snapshot()
+    assert.deepEqual(before.map(row => row.kind), ['start-intent', 'start-result'])
+    assert.equal(before[0].digest, slot.start_intent_digest)
+    const durableResult = JSON.parse(before[1].record_json)
+    assert.equal(durableResult.outcome, 'uncertain')
+    assert.equal(durableResult.observationDigest, null)
+    assert.equal(durableResult.intentDigest.value, slot.start_intent_digest)
+    const retry = s.v.guardedStart(TOKEN, startInput())
+    assert(!retry.ok)
+    assert.equal(retry.stop, 'HUMAN_DECISION_REQUIRED')
+    assert.deepEqual(snapshot(), before, 'retry must not write another intent or result')
+    assert.deepEqual((s.v.inspect(TOKEN, 'd1') as any).value, slot)
+  } finally { db.close() }
+}
+
+test('independent clock rollbacks and unavailable time retain uncertainty without retry', () => {
+  for (const variant of ['wall', 'monotonic', 'unavailable'] as const) {
+    let index = 0
+    const s = setup(`clock-${variant}`, () => {
+      if (index < 3) {
+        const value = index++
+        return { wallTime: `2026-09-05T00:00:0${value}.000Z`, monotonicNanoseconds: String(value) }
+      }
+      if (variant === 'unavailable') throw Error('clock unavailable')
+      return { wallTime: variant === 'wall' ? '2026-09-05T00:00:01.000Z' : '2026-09-05T00:00:03.000Z', monotonicNanoseconds: variant === 'monotonic' ? '1' : '3' }
+    })
+    try {
+      admitted(s)
+      assertUncertainStart(s, 'UNVERIFIED_ASSUMPTION')
+    } finally { s.v.close(); rmSync(s.dir, { recursive: true }) }
+  }
+})
+
+test('expiry between intent and handoff retains uncertainty without retry', () => {
+  const samples = [
+    { wallTime: '2026-09-05T00:00:00.000Z', monotonicNanoseconds: '0' },
+    { wallTime: '2026-09-05T00:00:01.000Z', monotonicNanoseconds: '1' },
+    { wallTime: '2026-09-05T00:00:02.000Z', monotonicNanoseconds: '2' },
+    { wallTime: '2026-09-05T00:00:03.000Z', monotonicNanoseconds: '3' },
+  ]
+  let index = 0
+  const s = setup('handoff-expiry', () => samples[Math.min(index++, 3)])
+  try {
+    const d = s.v.recordDecision(TOKEN, { ...decision(), expiresAt: '2026-09-05T00:00:04.000Z' })
+    assert(d.ok)
+    assert(s.v.admitClaim(TOKEN, { ...claim(d.value), expiresAt: '2026-09-05T00:00:03.000Z' }).ok)
+    assertUncertainStart(s, 'STALE_PACKET')
+  } finally { s.v.close(); rmSync(s.dir, { recursive: true }) }
+})
 
 test('monotonic deadline denies a stalled wall clock at equality',()=>{const samples=[{wallTime:'2026-09-05T00:00:00.000Z',monotonicNanoseconds:'0'},{wallTime:'2026-09-05T00:00:01.000Z',monotonicNanoseconds:'1000000000'},{wallTime:'2026-09-05T00:00:02.000Z',monotonicNanoseconds:'2000000000'},{wallTime:'2026-09-05T00:00:02.000Z',monotonicNanoseconds:'5000000000'}];let i=0;const s=setup('fixture-issuer',()=>samples[Math.min(i++,3)]);try{const d=s.v.recordDecision(TOKEN,{...decision(),expiresAt:'2026-09-05T00:00:06.000Z'});assert(d.ok);const c=s.v.admitClaim(TOKEN,{...claim(d.value),expiresAt:'2026-09-05T00:00:05.000Z'});assert(c.ok);const r=s.v.guardedStart(TOKEN,{decisionId:'d1',claimId:'c1',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION});assert.equal((r as any).stop,'STALE_PACKET')}finally{s.v.close();rmSync(s.dir,{recursive:true})}})
 

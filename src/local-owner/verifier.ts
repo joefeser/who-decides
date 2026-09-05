@@ -217,7 +217,7 @@ export class LocalOwnerVerifier {
         intent=this.store('start-intent',input.intentId,input.decisionId,record);this.db.prepare('UPDATE local_owner_slots SET start_intent_digest=? WHERE issuer_id=? AND decision_id=?').run((intent.digest as Digest).value,this.config.issuerId,input.decisionId);this.persistClock(first);this.db.exec('COMMIT')
       }catch(error){if(this.db.inTransaction)this.db.exec('ROLLBACK');return stop('HUMAN_DECISION_REQUIRED',String(error))}
       if(this.config.test?.crashAfterIntent)process.exit(91)
-      const second=this.sampleClock();if(!second.ok)return this.recordUncertain(input,intent,first,second.detail)
+      const second=this.sampleClock();if(!second.ok)return this.recordUncertain(input,intent,first,second.detail,second.stop)
       const refreshed=this.db.prepare('SELECT * FROM local_owner_slots WHERE issuer_id=? AND decision_id=?').get(this.config.issuerId,input.decisionId) as any
       const effective=Math.min(timestamp(decision.expiresAt as string),timestamp(claim.expiresAt as string))
       if(timestamp(second.value.wallTime)>=effective||BigInt(second.value.monotonicNanoseconds)>=deadline||this.currentStatus(refreshed,input.decisionId,'decision')?.state!=='active'||this.currentStatus(refreshed,input.decisionId,'claim')?.state!=='active')return this.recordUncertain(input,intent,second.value,'stale immediately before observation','STALE_PACKET')
