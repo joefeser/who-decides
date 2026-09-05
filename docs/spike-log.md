@@ -412,3 +412,24 @@ The evidence-integrity species, now closed at three layers: static labels
 2). Proof stands at 43/44 with legacy migration explicitly unclaimed —
 the one architecture decision remaining for HACP v0.3. 79 tests green on
 main; both proofs passing.
+
+### Day 6 addendum — same-file legacy admission candidate
+
+The two-review architecture gate chose a narrow same-file-only support rule,
+not a shared registry. Candidate startup now requires one owner-bootstrapped,
+identity-pinned SQLite main database and a closed inventory of all enabled
+legacy writers. Path strings alone are rejected: canonical path, opened-main
+device/inode, persistent database ID, filesystem type, configuration
+generation, default local VFS posture, and WAL/FULL/NORMAL settings must remain
+the admitted values. Missing, separate, aliased, replaced, unknown, stale, or
+unapproved stores/writers fail closed before candidate mutation.
+
+The proof's final fixture uses independent processes and connections to force
+both real `BEGIN IMMEDIATE` winner orderings. Legacy-first leaves one immutable
+receipt and no candidate slot; candidate-first leaves one candidate slot and
+returns `profile_slot_conflict` to legacy with no receipt. Both processes close
+before independent reopen, exact byte/digest checks, union-count-one, and
+`PRAGMA integrity_check`. The receipt-bound inventory is 44/44 while preserving
+the recurring defect boundary: **EVIDENCE_INTEGRITY — proof observed labels
+outran test bodies**. This remains local, closed-world candidate evidence, not
+migration, distributed coordination, deployment, release, or owner acceptance.

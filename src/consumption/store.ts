@@ -12,6 +12,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
+import { LEGACY_CONSUMPTION_WRITER_VERSION, openAdmittedStore, rejectUnadmittedAccess, type StoreAdmission, type WriterAdmission } from '../store-admission'
+import { CONSUMPTION_TABLE_SQL } from '../store-schema'
 
 export const CONSUMPTION_SCHEMA = 'who-decides.consumption-receipt.v0'
 
@@ -41,6 +43,12 @@ export type ClaimResult =
   | { status: 'claimed', receipt: ConsumptionReceipt }
   | { status: 'replayed', receipt: ConsumptionReceipt, note: string }
   | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor' | 'profile_slot_conflict', detail: string }
+
+export type ConsumptionStoreOptions = {
+  admission?: StoreAdmission
+  writer?: WriterAdmission
+  test?: { beforeBeginImmediate?: () => void, afterBeginImmediate?: () => void }
+}
 
 /** Require a real RFC3339 calendar date, not Date.parse's rollover or
  * locale-dependent shortcuts. Fractional seconds and explicit offsets are
@@ -79,20 +87,21 @@ export function decisionDigest(decision: DecisionRecord): `sha256:${string}` {
 
 export class ConsumptionStore {
   private readonly db: Database.Database
+  private readonly options: ConsumptionStoreOptions
 
-  constructor(dbPath: string) {
-    mkdirSync(path.dirname(dbPath), { recursive: true })
-    this.db = new Database(dbPath)
-    this.db.pragma('journal_mode = WAL')
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS consumption_receipts (
-        decision_id TEXT PRIMARY KEY,
-        receipt_json TEXT NOT NULL,
-        successor_invocation_id TEXT NOT NULL,
-        decision_digest TEXT NOT NULL,
-        claimed_at TEXT NOT NULL
-      )
-    `)
+  constructor(dbPath: string, options: ConsumptionStoreOptions = {}) {
+    this.options = options
+    if (options.admission) {
+      const writer = options.writer ?? { role: 'legacy-consumption-writer', version: LEGACY_CONSUMPTION_WRITER_VERSION, insertionPath: 'ConsumptionStore.claim' }
+      this.db = openAdmittedStore(dbPath, options.admission, writer)
+    } else {
+      mkdirSync(path.dirname(dbPath), { recursive: true })
+      this.db = new Database(dbPath)
+      try { rejectUnadmittedAccess(this.db) }
+      catch (error) { this.db.close(); throw error }
+      this.db.pragma('journal_mode = WAL')
+    }
+    this.db.exec(CONSUMPTION_TABLE_SQL)
   }
 
   /** Atomic claim. Exactly one successor invocation can ever succeed per decision. */
@@ -125,8 +134,10 @@ export class ConsumptionStore {
     const insert = this.db.prepare(
       'INSERT INTO consumption_receipts (decision_id, receipt_json, successor_invocation_id, decision_digest, claimed_at) VALUES (?, ?, ?, ?, ?)',
     )
+    this.options.test?.beforeBeginImmediate?.()
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      this.options.test?.afterBeginImmediate?.()
       const candidateTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_owner_slots'").get()
       if (candidateTable && this.db.prepare('SELECT 1 FROM local_owner_slots WHERE decision_id=?').get(decision.decisionId)) {
         this.db.exec('ROLLBACK')

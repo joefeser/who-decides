@@ -1,16 +1,17 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { closeSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
-import path from 'node:path'
+import { closeSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { assertValid } from '../artifacts/schemas'
 import { FIXED_ACTION, FIXED_OBSERVATION, OBSERVATION_DIGEST_VALUE, type BaseDecision, type CandidateResult, type CandidateStop, type ClaimInput, type ClockSample, type DecisionInput, type StartInput } from './contracts'
 import { PROFILE_ID, PROFILE_VERSION, digestEnvelope, equalJcs, recordDigest, type Digest } from './jcs'
+import { admittedGuardPath, LOCAL_OWNER_WRITER_VERSION, openAdmittedStore, requireClosedWriterInventory, type StoreAdmission } from '../store-admission'
 
 export type VerifierConfig = {
   dbPath: string, issuerId: string, actorId: string, credential: string,
   selectedProfile: { id: string, version: string, status: string, pin: string },
+  storeAdmission: StoreAdmission,
   trustedHumanDecisions?: BaseDecision[],
-  test?: { clock?: () => ClockSample, holdGuardMs?: number, waitGuardMs?: number, crashAfterIntent?: boolean, uncertainObservation?: boolean },
+  test?: { clock?: () => ClockSample, beforeDecisionBeginImmediate?: () => void, holdGuardMs?: number, waitGuardMs?: number, crashAfterIntent?: boolean, uncertainObservation?: boolean },
 }
 export const APPROVED_PROFILE_PIN = 'bc02b5972c2ac1184637062b3dabf7a655ae442cb6fa22940d8d119f678483ec'
 const PROCESS_SESSION_ID = randomUUID()
@@ -34,29 +35,10 @@ export class LocalOwnerVerifier {
     if (!config.selectedProfile
       || config.selectedProfile.id !== PROFILE_ID || config.selectedProfile.version !== PROFILE_VERSION
       || config.selectedProfile.status !== 'active' || config.selectedProfile.pin !== APPROVED_PROFILE_PIN) throw new Error('PROFILE_NOT_SELECTED')
-    mkdirSync(path.dirname(config.dbPath), { recursive: true })
-    this.db = new Database(config.dbPath)
-    this.db.pragma('journal_mode = WAL')
-    this.db.pragma('synchronous = FULL')
+    this.db = openAdmittedStore(config.dbPath, config.storeAdmission, { role: 'local-owner-verifier', version: LOCAL_OWNER_WRITER_VERSION, insertionPath: 'LocalOwnerVerifier.recordDecision' })
+    try { requireClosedWriterInventory(this.db, config.storeAdmission) }
+    catch (error) { this.db.close(); throw error }
     this.credentialHash = createHash('sha256').update(config.credential).digest()
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS local_owner_slots (
-        issuer_id TEXT NOT NULL, decision_id TEXT NOT NULL, decision_digest TEXT NOT NULL,
-        claim_digest TEXT, claim_session TEXT, decision_status_head TEXT, claim_status_head TEXT,
-        start_intent_digest TEXT, PRIMARY KEY (issuer_id, decision_id));
-      CREATE TABLE IF NOT EXISTS local_owner_records (
-        issuer_id TEXT NOT NULL, kind TEXT NOT NULL, record_id TEXT NOT NULL, decision_id TEXT NOT NULL,
-        digest TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (issuer_id, kind, record_id));
-      CREATE TABLE IF NOT EXISTS local_owner_status (
-        issuer_id TEXT NOT NULL, decision_id TEXT NOT NULL, target_kind TEXT NOT NULL,
-        sequence INTEGER NOT NULL, digest TEXT NOT NULL, record_json TEXT NOT NULL,
-        PRIMARY KEY (issuer_id, decision_id, target_kind, sequence));
-      CREATE TABLE IF NOT EXISTS local_owner_clock (issuer_id TEXT PRIMARY KEY, wall_time TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS local_owner_human_acts (
-        issuer_id TEXT NOT NULL, event_ref TEXT NOT NULL, packet_ref TEXT NOT NULL,
-        digest TEXT NOT NULL, record_json TEXT NOT NULL, used_by_decision TEXT,
-        PRIMARY KEY (issuer_id, event_ref), UNIQUE (issuer_id, packet_ref));
-    `)
     this.installTrustedHumanDecisions(config.trustedHumanDecisions ?? [])
   }
 
@@ -77,7 +59,9 @@ export class LocalOwnerVerifier {
   }
   private guarded<T>(token: string, decisionId: string, operation: () => CandidateResult<T>): CandidateResult<T> {
     if (!this.authenticate(token)) return stop('MISSING_AUTHORITY', 'access denied')
-    const lockPath = `${this.config.dbPath}.${createHash('sha256').update(`${this.config.issuerId}\0${decisionId}`).digest('hex')}.guard`
+    try { requireClosedWriterInventory(this.db, this.config.storeAdmission) }
+    catch { return stop('ENVIRONMENT_BLOCKED', 'owner-admitted writer inventory is unavailable or changed') }
+    const lockPath = admittedGuardPath(this.config.storeAdmission, this.config.issuerId, decisionId)
     let descriptor: number | undefined
     const deadline = Date.now() + (this.config.test?.waitGuardMs ?? 0)
     do { try { descriptor = openSync(lockPath, 'wx'); break } catch { if (Date.now() >= deadline) break; sleep(5) } } while (true)
@@ -142,6 +126,7 @@ export class LocalOwnerVerifier {
     return this.guarded(token, input?.decisionId ?? '', () => {
       if (!input || !exactKeys(input as unknown as Record<string, unknown>, ['decisionId','humanEventRef','baseDecisionRef','baseDecisionDigest','requestRef','action','approvedAt','expiresAt']) || !nonEmpty([input.decisionId,input.humanEventRef,input.baseDecisionRef,input.requestRef])) return stop('MISSING_AUTHORITY','missing or stripped candidate context')
       if (!actionMatches(input.action)) return stop('SCOPE_CONFLICT','unsupported action')
+      this.config.test?.beforeDecisionBeginImmediate?.()
       this.db.exec('BEGIN IMMEDIATE')
       try {
         const clock=this.sampleClock();if(!clock.ok){this.db.exec('ROLLBACK');return clock}
