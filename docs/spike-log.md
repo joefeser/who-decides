@@ -363,3 +363,34 @@ hand-rolled polling. The miss cost hours; the fix is process, not memory.
 
 Devpost polish begins: gallery screenshots recaptured from merged main
 (.tmp/devpost/), README quickstart added.
+
+## Day 6 — 2026-09-05: AgentCore resource pass (pre-gate)
+
+Hackathon resources page surveyed. Relevant finding: the official "Deploy a
+Strands Agent to AgentCore Runtime" starter exists, and the judging criterion
+explicitly names AgentCore deployment alongside live demos. This upgrades the
+9/11 deploy option from raw EC2 to AgentCore Runtime hosting the live-loop
+agent. Participant count at survey: 7,709.
+
+AgentCore Runtime facts that shape the demo design (from AWS docs):
+
+- Serverless microVM per session; session ends → microVM terminated and
+  memory sanitized. Persistent filesystem across stop/resume cycles is
+  supported; Instances (multi-day EC2-backed sessions) also exist.
+- Outbound auth flows (API keys/OAuth) are first-class via AgentCore
+  Identity; inbound auth integrates Cognito/IdPs.
+- Up to 8h microVM sessions; consumption-priced.
+
+Architecture note (the M1 payoff): AgentCore's session model — terminate on
+stop, resume as a new invocation seeded with prior state — is EXACTLY the
+M1 ruling shape (terminal typed stop + seeded resume, never pause-and-hold).
+The ruling made in the governed debate turns out to be the serverless-native
+one. Chosen model if we deploy: microVM (terminate on stop), NOT Instances
+(multi-day hold would tempt the pause semantics we rejected on purpose).
+
+DB interaction stance: the agent never holds write authority over decision
+records. Agent → authenticated decision API (AgentCore Identity outbound) →
+authority service owns the store (Postgres via the PR #7 seam). The agent
+may keep only its own session/snapshot state on the runtime's persistent
+filesystem. Direct agent→DB is technically possible and architecturally
+wrong for this contract.
