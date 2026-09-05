@@ -21,6 +21,8 @@ export type DecisionIntentRow = { decision_json: string | null, invocation_b: st
 export type ArtifactRow = { name: string, kind: string, valid: number }
 
 export type NewRun = {
+  /** Runs are inserted as 'provisioning' and flip to 'running' via
+   * markProvisioned once invocation-A artifacts are durable. */
   id: string
   tenantId: string
   invocationA: string
@@ -55,22 +57,28 @@ export interface RunStore {
    * e.g. flipping a consumed run back to decision_required). Returns whether
    * the transition applied. */
   updateRunPhase(runId: string, expectedState: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<boolean>
+  /** CAS completion of provisioning: provisioning -> running, only while
+   * the run is live (not archived). False means the run was retracted. */
+  markProvisioned(runId: string): Promise<boolean>
   getDecisionIntent(runId: string): Promise<DecisionIntentRow | undefined>
   /** Atomic first-writer-wins intent acquisition: inside the exclusive write
    * slot, persists (successor, decisionJson) only if none exists and returns
    * the STORED intent — a losing concurrent submission receives the winner's
    * successor and decision, never its own stale values. */
   acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow>
-  finalizeDecision(runId: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<void>
+  /** CAS finalization (decision_required -> resuming): a slower duplicate
+   * submission must never drag an already-completed run back to resuming.
+   * False means the run already moved on — idempotent success for callers. */
+  finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean>
   storeArtifact(artifact: StoredArtifact): Promise<void>
   listArtifacts(runId: string, tenantId: string): Promise<ArtifactRow[]>
   getRunRow(runId: string): Promise<FullRunRow | undefined>
   getArtifactJson(runId: string, name: string): Promise<string | undefined>
   persistReplayProbe(runId: string, replayJson: string): Promise<void>
   archiveTenantRuns(tenantId: string): Promise<void>
-  /** Archives a single run, but ONLY while its provisioning evidence is
-   * still missing — if another caller completed/repaired provisioning, the
-   * run must survive (review P2: creator cleanup vs concurrent repair). */
-  archiveRunIfUnprovisioned(runId: string): Promise<boolean>
+  /** Retracts a run still in the provisioning state — the state machine,
+   * not artifact-existence guessing, decides (a concurrent repair flips the
+   * run to running via markProvisioned first and survives retraction). */
+  retractProvisioningRun(runId: string): Promise<boolean>
   close(): Promise<void>
 }

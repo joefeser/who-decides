@@ -76,9 +76,9 @@ export class SqliteRunStore implements RunStore {
       }
       this.db
         .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(candidate.id, 'running', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson)
+        .run(candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson)
       this.db.exec('COMMIT')
-      return { id: candidate.id, state: 'running', phase_changed_at: candidate.phaseChangedAt }
+      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt }
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err
@@ -114,7 +114,14 @@ export class SqliteRunStore implements RunStore {
   async insertRun(run: NewRun): Promise<void> {
     this.db
       .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(run.id, 'running', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson)
+      .run(run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson)
+  }
+
+  async markProvisioned(runId: string): Promise<boolean> {
+    const result = this.db
+      .prepare("UPDATE runs SET state = 'running' WHERE id = ? AND state = 'provisioning' AND archived = 0")
+      .run(runId)
+    return result.changes > 0
   }
 
   async updateRunPhase(runId: string, expectedState: string, state: string, phaseChangedAt: string, completedAt?: string): Promise<boolean> {
@@ -130,10 +137,11 @@ export class SqliteRunStore implements RunStore {
     return this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(runId) as DecisionIntentRow | undefined
   }
 
-  async finalizeDecision(runId: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<void> {
-    this.db
-      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ?')
-      .run(state, phaseChangedAt, receiptJson, effectJson, runId)
+  async finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean> {
+    const result = this.db
+      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ? AND state = ?')
+      .run(state, phaseChangedAt, receiptJson, effectJson, runId, expectedState)
+    return result.changes > 0
   }
 
   async storeArtifact(artifact: StoredArtifact): Promise<void> {
@@ -165,11 +173,10 @@ export class SqliteRunStore implements RunStore {
     this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
   }
 
-  async archiveRunIfUnprovisioned(runId: string): Promise<boolean> {
+  async retractProvisioningRun(runId: string): Promise<boolean> {
     const result = this.db
-      .prepare(`UPDATE runs SET archived = 1 WHERE id = ? AND id NOT IN
-                (SELECT run_id FROM artifacts WHERE run_id = ? AND name = 'stop-response')`)
-      .run(runId, runId)
+      .prepare("UPDATE runs SET archived = 1 WHERE id = ? AND state = 'provisioning' AND archived = 0")
+      .run(runId)
     return result.changes > 0
   }
 

@@ -306,11 +306,38 @@ test('phase transitions are compare-and-swap; cleanup respects completed provisi
     const after = await engine.getState()
     assert.equal(after.state, 'resuming', 'a lost CAS cannot regress the phase')
 
-    // Guarded cleanup: once provisioning evidence exists, the retraction
-    // no-ops (a concurrent repair must survive a creator's late failure).
+    // Guarded cleanup is state-based now: a completed provisioning ('running')
+    // run is never retracted; a stuck 'provisioning' run is.
     const runId = after.runId
-    const unprovisionedArchived = await store.archiveRunIfUnprovisioned(runId)
-    assert.equal(unprovisionedArchived, false, 'provisioned run is not archived by cleanup guard')
+    assert.equal(await store.retractProvisioningRun(runId), false, 'a running run is not retractable')
+    const db = new Database(path.join(dir, 'state.db'))
+    db.prepare("UPDATE runs SET state = 'provisioning' WHERE id = ?").run(runId)
+    db.close()
+    assert.equal(await store.retractProvisioningRun(runId), true, 'a stuck provisioning run retracts')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
+
+test('a slower duplicate finalize never regresses a completed run (review P2)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wd-cas-final-'))
+  process.env.WD_CONSOLE_DIR = dir
+  const engine = new ConsoleEngine('cas-final')
+  try {
+    await engine.startRun()
+    agePhase(dir, 10)
+    const store = (engine as unknown as { runs: import('./store/store').RunStore }).runs
+    const runId = (await engine.getState()).runId
+    // The winner finalized and a poll advanced the run to completed…
+    assert.equal(await store.finalizeDecision(runId, 'decision_required', 'resuming', new Date().toISOString(), '{}', '{}'), true, 'winner finalizes from decision_required')
+    const advanced = await store.updateRunPhase(runId, 'resuming', 'completed', new Date().toISOString(), new Date().toISOString())
+    assert.equal(advanced, true)
+    // …the slower duplicate's finalize must lose (CAS) and leave completed intact.
+    const loser = await store.finalizeDecision(runId, 'decision_required', 'resuming', new Date().toISOString(), '{}', '{}')
+    assert.equal(loser, false, 'stale finalize loses the CAS')
+    const after = await engine.getState()
+    assert.equal(after.state, 'completed', 'completed state survives the stale finalize')
+    assert.ok(after.completedAt, 'completed_at stays populated')
   } finally {
     await cleanup(dir, engine)
   }

@@ -124,7 +124,7 @@ export class ConsoleEngine {
     return this.runs.getCurrentRun(this.tenant)
   }
 
-  async startRun(): Promise<{ runId: string }> {
+  async startRun(retried = false): Promise<{ runId: string }> {
     await this.ready
     const s = loadScenario()
     const runId = `run-${randomUUID()}`
@@ -144,19 +144,28 @@ export class ConsoleEngine {
       startedAt: now, phaseChangedAt: now, milestonesJson: JSON.stringify(milestones),
     })
     if (active.id !== runId) {
-      // Another caller provisioned this run moments ago and may still be
-      // mid-write (or have failed). Provisioning is idempotent: repair any
-      // missing artifacts before handing the run back (review P2).
+      // Another caller provisioned this run moments ago. Provisioning is
+      // idempotent: repair any missing artifacts. If the run is still in its
+      // provisioning state, complete it; if it was retracted mid-repair
+      // (creator failed first), start fresh ONCE instead of returning a dead
+      // id. A run already past provisioning just needs the artifact repair.
       await this.provisionArtifacts(active.id)
-      return { runId: active.id }
+      if (active.state !== 'provisioning') return { runId: active.id }
+      if (await this.runs.markProvisioned(active.id)) return { runId: active.id }
+      if (retried) throw new Error('PROVISIONING_RETRY_EXHAUSTED')
+      return await this.startRun(true)
     }
 
     try {
       await this.provisionArtifacts(runId)
+      if (!(await this.runs.markProvisioned(runId))) {
+        throw new Error(`PROVISIONING_RETRACTED:${runId}`)
+      }
     } catch (err) {
-      // Retract the incompletely provisioned run so the next start creates
-      // a fresh one instead of inheriting a run with missing evidence.
-      await this.runs.archiveRunIfUnprovisioned(runId).catch(() => { /* best-effort cleanup */ })
+      // Retract the incompletely provisioned run (only retractable while
+      // still in the provisioning state) so the next start creates a fresh
+      // one instead of inheriting a run with missing evidence.
+      await this.runs.retractProvisioningRun(runId).catch(() => { /* best-effort cleanup */ })
       throw err
     }
     return { runId }
@@ -283,7 +292,11 @@ export class ConsoleEngine {
     assertValid('agent-report', report)
     await this.storeArtifact(run.id, 'agent-report', 'agent-report', report)
 
-    await this.runs.finalizeDecision(run.id, 'resuming', authoritativeDecidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
+    // CAS finalization: a slower same-key duplicate must never drag an
+    // already-finalized/completed run back to resuming. Losing the race is
+    // idempotent success — the winner recorded identical artifacts (the
+    // builders are deterministic) from the same claim.
+    await this.runs.finalizeDecision(run.id, 'decision_required', 'resuming', authoritativeDecidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
     return { ok: true }
   }
 
@@ -412,7 +425,10 @@ export class ConsoleEngine {
     const receipt = row.receipt_json ? JSON.parse(row.receipt_json) as { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } : null
     const effect = row.effect_json ? JSON.parse(row.effect_json) as ConsoleState['effect'] : null
     const replay = row.replay_json ? JSON.parse(row.replay_json) as ConsoleState['replayProbe'] : null
-    const state = (row.state ?? run.state) as ConsoleState['state']
+    // A run still provisioning renders as running — same console semantics;
+    // provisioning is an internal lifecycle state, not a console state.
+    const rawState = row.state ?? run.state
+    const state = (rawState === 'provisioning' ? 'running' : rawState) as ConsoleState['state']
     return {
       schema: 'who-decides.console-state.v1',
       tenantId: this.tenant,
