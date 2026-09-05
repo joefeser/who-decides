@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, realpathSync, statfsSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statfsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { CONSUMPTION_TABLE_SQL, LOCAL_OWNER_TABLES_SQL } from './store-schema'
@@ -54,10 +54,11 @@ const physicalIdentity = (dbPath: string) => {
   return { device: stat.dev.toString(), inode: stat.ino.toString(), filesystemType: fs.type.toString() }
 }
 const schemaFingerprint = (db: Database.Database) => createHash('sha256').update(JSON.stringify(
-  (db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name IN ('owner_store_admission','owner_writer_attestations','consumption_receipts','local_owner_slots','local_owner_records','local_owner_status','local_owner_clock','local_owner_human_acts') ORDER BY name").all()),
+  db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all(),
 )).digest('hex')
-const sortedWriters = (writers: WriterAdmission[]) => [...writers].sort((a, b) => a.role.localeCompare(b.role))
-const manifestPayload = (admission: Omit<StoreAdmission, 'guardDirectory'>) => JSON.stringify({
+const normalizeWriter = (writer: WriterAdmission): WriterAdmission => ({ role: writer.role, version: writer.version, insertionPath: writer.insertionPath })
+const sortedWriters = (writers: WriterAdmission[]) => writers.map(normalizeWriter).sort((a, b) => a.role.localeCompare(b.role))
+const manifestPayload = (admission: StoreAdmission) => JSON.stringify({
   schema: admission.schema,
   canonicalPath: admission.canonicalPath,
   databaseId: admission.databaseId,
@@ -70,6 +71,7 @@ const manifestPayload = (admission: Omit<StoreAdmission, 'guardDirectory'>) => J
   synchronous: admission.synchronous,
   lockingMode: admission.lockingMode,
   writers: sortedWriters(admission.writers),
+  guardDirectory: admission.guardDirectory,
 })
 export const storeAdmissionDigest = (admission: StoreAdmission) => createHash('sha256').update(manifestPayload(admission)).digest('hex')
 
@@ -93,8 +95,13 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
   const parentFilesystemType = statfsSync(path.dirname(requestedPath), { bigint: true }).type.toString()
   if (!input.approvedFilesystemTypes.includes(parentFilesystemType)) fail('filesystem type is not owner-approved for reliable local SQLite locking')
   const databaseId = randomUUID()
-  const db = new Database(requestedPath)
+  const descriptor = openSync(requestedPath, 'wx', 0o600)
+  const createdIdentity = physicalIdentity(requestedPath)
+  let db: Database.Database | undefined
   try {
+    db = new Database(requestedPath, { fileMustExist: true })
+    const openedIdentity = physicalIdentity(requestedPath)
+    if (JSON.stringify(openedIdentity) !== JSON.stringify(createdIdentity)) fail('exclusively created bootstrap target was replaced before SQLite open')
     if (String(db.pragma('journal_mode = WAL', { simple: true })).toLowerCase() !== 'wal') fail('WAL journal mode unavailable')
     db.pragma('synchronous = FULL')
     db.pragma('locking_mode = NORMAL')
@@ -108,7 +115,7 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
     db.prepare('INSERT INTO owner_store_admission VALUES (1, ?, ?, ?)').run(databaseId, input.configGeneration, digest)
     mkdirSync(admission.guardDirectory, { recursive: false })
     return admission
-  } finally { db.close() }
+  } finally { db?.close(); closeSync(descriptor) }
 }
 
 export function openAdmittedStore(dbPath: string, admission: StoreAdmission, writer: WriterAdmission): Database.Database {
@@ -119,7 +126,7 @@ export function openAdmittedStore(dbPath: string, admission: StoreAdmission, wri
   const identity = physicalIdentity(resolved)
   if (identity.device !== admission.device || identity.inode !== admission.inode || identity.filesystemType !== admission.filesystemType) fail('opened database physical identity drifted')
   const expectedWriter = admission.writers.find(candidate => candidate.role === writer.role)
-  if (!expectedWriter || JSON.stringify(expectedWriter) !== JSON.stringify(writer)) fail('writer role, version, or insertion path is unapproved')
+  if (!expectedWriter || expectedWriter.role !== writer.role || expectedWriter.version !== writer.version || expectedWriter.insertionPath !== writer.insertionPath) fail('writer role, version, or insertion path is unapproved')
   if (!existsSync(admission.guardDirectory) || realpathSync(admission.guardDirectory) !== admission.guardDirectory) fail('canonical guard directory is missing or aliased')
   const db = new Database(resolved, { fileMustExist: true })
   try {
@@ -145,7 +152,7 @@ export function requireClosedWriterInventory(db: Database.Database, admission: S
   const rows = db.prepare('SELECT role,version,insertion_path,config_generation,manifest_sha256 FROM owner_writer_attestations ORDER BY role').all() as Array<{ role: string, version: string, insertion_path: string, config_generation: string, manifest_sha256: string }>
   const digest = storeAdmissionDigest(admission)
   const actual = rows.map(row => ({ role: row.role, version: row.version, insertionPath: row.insertion_path, configGeneration: row.config_generation, manifestSha256: row.manifest_sha256 }))
-  const expected = sortedWriters(admission.writers).map(writer => ({ ...writer, configGeneration: admission.configGeneration, manifestSha256: digest }))
+  const expected = sortedWriters(admission.writers).map(writer => ({ role: writer.role, version: writer.version, insertionPath: writer.insertionPath, configGeneration: admission.configGeneration, manifestSha256: digest }))
   if (JSON.stringify(actual) !== JSON.stringify(expected)) fail('enabled writer inventory is missing, stale, or unknown')
 }
 

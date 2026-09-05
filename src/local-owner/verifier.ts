@@ -36,8 +36,6 @@ export class LocalOwnerVerifier {
       || config.selectedProfile.id !== PROFILE_ID || config.selectedProfile.version !== PROFILE_VERSION
       || config.selectedProfile.status !== 'active' || config.selectedProfile.pin !== APPROVED_PROFILE_PIN) throw new Error('PROFILE_NOT_SELECTED')
     this.db = openAdmittedStore(config.dbPath, config.storeAdmission, { role: 'local-owner-verifier', version: LOCAL_OWNER_WRITER_VERSION, insertionPath: 'LocalOwnerVerifier.recordDecision' })
-    try { requireClosedWriterInventory(this.db, config.storeAdmission) }
-    catch (error) { this.db.close(); throw error }
     this.credentialHash = createHash('sha256').update(config.credential).digest()
     this.installTrustedHumanDecisions(config.trustedHumanDecisions ?? [])
   }

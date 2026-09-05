@@ -12,7 +12,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { LEGACY_CONSUMPTION_WRITER_VERSION, openAdmittedStore, rejectUnadmittedAccess, type StoreAdmission, type WriterAdmission } from '../store-admission'
+import { LEGACY_CONSUMPTION_WRITER_VERSION, openAdmittedStore, rejectUnadmittedAccess, requireClosedWriterInventory, type StoreAdmission, type WriterAdmission } from '../store-admission'
 import { CONSUMPTION_TABLE_SQL } from '../store-schema'
 
 export const CONSUMPTION_SCHEMA = 'who-decides.consumption-receipt.v0'
@@ -42,7 +42,7 @@ export type ConsumptionReceipt = {
 export type ClaimResult =
   | { status: 'claimed', receipt: ConsumptionReceipt }
   | { status: 'replayed', receipt: ConsumptionReceipt, note: string }
-  | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor' | 'profile_slot_conflict', detail: string }
+  | { status: 'rejected', reason: 'digest_mismatch' | 'invalid_expiry' | 'expired' | 'competing_successor' | 'profile_slot_conflict' | 'environment_blocked', detail: string }
 
 export type ConsumptionStoreOptions = {
   admission?: StoreAdmission
@@ -106,6 +106,10 @@ export class ConsumptionStore {
 
   /** Atomic claim. Exactly one successor invocation can ever succeed per decision. */
   claim(decision: DecisionRecord, successorInvocationId: string, expectedDigest?: string): ClaimResult {
+    if (this.options.admission) {
+      try { requireClosedWriterInventory(this.db, this.options.admission) }
+      catch { return { status: 'rejected', reason: 'environment_blocked', detail: 'owner-admitted writer inventory is unavailable or changed' } }
+    }
     if (expectedDigest !== undefined && expectedDigest !== decisionDigest(decision)) {
       return { status: 'rejected', reason: 'digest_mismatch', detail: 'provided digest does not match the decision record' }
     }

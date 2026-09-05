@@ -45,8 +45,9 @@ async function runLegacyCandidateRace(order:'legacy-first'|'candidate-first') {
   const candidateConfig={dbPath:raceAdmission.canonicalPath,storeAdmission:raceAdmission,issuerId:'synthetic-issuer',actorId:'synthetic-human',credential:token,selectedProfile:{id:PROFILE_ID,version:PROFILE_VERSION,status:'active',pin:APPROVED_PROFILE_PIN},trustedHumanDecisions:[raceBase]}
   const legacyConfig={dbPath:raceAdmission.canonicalPath,storeAdmission:raceAdmission,writer:legacyWriter}
   const releasePath=path.join(raceDir,'release')
-  const legacy=raceChild('legacy',legacyConfig,order==='legacy-first'?releasePath:'');await legacy.wait('ready')
-  const candidate=raceChild('candidate',candidateConfig,order==='candidate-first'?releasePath:'');await candidate.wait('ready')
+  const first=order==='legacy-first'?raceChild('legacy',legacyConfig,releasePath):raceChild('candidate',candidateConfig,releasePath);await first.wait('ready')
+  const second=order==='legacy-first'?raceChild('candidate',candidateConfig):raceChild('legacy',legacyConfig);await second.wait('ready')
+  const legacy=order==='legacy-first'?first:second;const candidate=order==='candidate-first'?first:second
   const legacyDecision:DecisionRecord={decisionId:raceId,chosenOption:'start_work',rationale:'synthetic legacy collision',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:`legacy-request-${order}`,permittedAction:'legacy dry-run claim',expiresAt:'2100-01-01T00:00:00.000Z'}
   const candidateInput=decisionFor(raceId,raceBase,`candidate-request-${order}`)
   const winner=order==='legacy-first'?legacy:candidate;const loser=order==='legacy-first'?candidate:legacy
