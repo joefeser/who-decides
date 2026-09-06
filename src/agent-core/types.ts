@@ -47,8 +47,12 @@ export type StartOutput =
  * cannot fabricate this: the server constructs it only after
  * machine-auth validation succeeds, and the phase verifies the brand
  * before trusting the credential reference (review security finding). */
+/** Runtime-unforgeable brand: a module-private Symbol. A structural copy
+ * from a direct caller cannot set this property — only
+ * attestMachinePrincipal (server-side, post-authorize) constructs it. */
+declare const attestationBrand: unique symbol
 export type MachinePrincipalAttestation = {
-  readonly __brand: 'machine-principal-attestation'
+  readonly [attestationBrand]: true
   readonly credentialRef: string
 }
 

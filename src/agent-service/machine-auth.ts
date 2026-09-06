@@ -50,6 +50,20 @@ export function createMachineAuth(config: MachineAuthConfig) {
       return configured
     },
 
+    /** Validate a bare credential string (the managed-runtime payload path:
+     * the platform delivers invocation bodies, not Authorization headers).
+     * Same validation, same principal, same typed errors. */
+    authorizeCredential(credential: string): MachineAuthResult {
+      if (!configured) return { ok: false, error: 'MACHINE_AUTH_DISABLED' }
+      const supplied = createHash('sha256').update(credential).digest()
+      const expected = Buffer.from(config.tokenHash!, 'hex')
+      if (!timingSafeEqual(supplied, expected)) return { ok: false, error: 'MACHINE_AUTH_INVALID' }
+      return {
+        ok: true,
+        principal: { type: 'machine', principal: MACHINE_PRINCIPAL, credentialRef: `machine-token-${config.tokenHash!.slice(0, 16)}` },
+      }
+    },
+
     /** Validate a request's Authorization header. Accepts either a Fetch
      * Request or a Node IncomingMessage (whose headers are a plain object
      * without .get — the review P1: the cast made every invocation throw
@@ -90,8 +104,22 @@ export type MachineAuth = ReturnType<typeof createMachineAuth>
 /** The only way to construct a MachinePrincipalAttestation — server code
  * calls this AFTER authorize() returns ok, making fabricated references
  * from phase callers structurally impossible (review security finding). */
+/** The private brand — declared here and nowhere else. A direct phase
+ * caller cannot construct this object even with an identical-looking
+ * shape: the Symbol property is unrepresentable outside this module. */
+const ATTESTED: unique symbol = Symbol('machine-principal-attested')
+
 export function attestMachinePrincipal(
   result: MachineAuthResult,
 ): import('../agent-core/types').MachinePrincipalAttestation | undefined {
-  return result.ok ? { __brand: 'machine-principal-attestation' as const, credentialRef: result.principal.credentialRef } : undefined
+  if (!result.ok) return undefined
+  return { [ATTESTED]: true, credentialRef: result.principal.credentialRef } as unknown as import('../agent-core/types').MachinePrincipalAttestation
+}
+
+/** Runtime verification the phases call before trusting the attestation —
+ * the truthiness check alone accepted structural forgeries (review P2). */
+export function isAttestedMachinePrincipal(
+  value: unknown,
+): value is import('../agent-core/types').MachinePrincipalAttestation {
+  return typeof value === 'object' && value !== null && ATTESTED in value && (value as Record<symbol, unknown>)[ATTESTED] === true
 }
