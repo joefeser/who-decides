@@ -503,3 +503,23 @@ Deploy architecture (locked): Strands live-loop agent on AgentCore
 (HTTP protocol, CodeZip, short sessions) -> decision-authority API on the
 HTTPS host (Next.js console, operator-gated) -> Postgres store. The agent
 never holds DB credentials; everything crosses the authority boundary.
+
+## Day 7 addendum 2 — PR #13 merged: the public-demo foundation is on main
+
+feat/public-demo merged at 51ec886 (operator auth gate, watch mode, deploy
+assets), built by a flash session under the lane with 13 review findings
+fixed across three passes (spoof-resistant rate limiting, fail-closed
+config, authenticated session attribution threaded into decision artifacts,
+passcode-rotation invalidation, split Caddy zones, quickstart env docs).
+The evidence-integrity reflex held at the free tier: the artifacts stopped
+claiming demo-unauthenticated attribution the moment a real operator
+session existed — reviewer-caught, not self-caught, and that is the system
+working.
+
+Two honest notes on the record: (1) the packet's "scrypt" wording vs sha256
+spec discrepancy was resolved toward the explicit mechanical spec with a
+flagged follow-up for a salted slow hash if the hosted demo wants it;
+(2) a concurrent-session worktree collision occurred mid-build and was
+recovered with a dedicated worktree — the C-block collision hazard is now
+demonstrated twice, and dedicated worktrees are henceforth mandatory for
+parallel sessions in this repo.
