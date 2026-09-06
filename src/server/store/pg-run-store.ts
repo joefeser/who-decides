@@ -21,8 +21,12 @@
 import { Pool, type PoolClient } from 'pg'
 import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow } from './store'
 
-/** Connection config: explicit values win, then WD_PG_URL / DATABASE_URL,
- * then discrete WD_PG_* variables, then pg's own PG* env defaults. */
+/** Connection config: an explicit connectionString wins; otherwise the
+ * WD_PG_URL / DATABASE_URL environment is used ONLY when the caller passed
+ * no discrete fields (pg would let a connectionString override discrete
+ * fields, so honoring the URL first could silently redirect an explicit
+ * { host, database } to the ambient database); otherwise discrete fields,
+ * then pg's own PG* env defaults. */
 export type PostgresStoreConfig = {
   connectionString?: string
   host?: string
@@ -36,8 +40,13 @@ export type PostgresStoreConfig = {
 }
 
 export function resolvePostgresConfig(overrides: PostgresStoreConfig = {}): PostgresStoreConfig {
-  if (overrides.connectionString ?? process.env.WD_PG_URL ?? process.env.DATABASE_URL) {
-    return { ...overrides, connectionString: overrides.connectionString ?? process.env.WD_PG_URL ?? process.env.DATABASE_URL }
+  if (overrides.connectionString) {
+    return { ...overrides, connectionString: overrides.connectionString }
+  }
+  const hasDiscrete = overrides.host !== undefined || overrides.port !== undefined
+    || overrides.user !== undefined || overrides.password !== undefined || overrides.database !== undefined
+  if (!hasDiscrete && (process.env.WD_PG_URL ?? process.env.DATABASE_URL)) {
+    return { ...overrides, connectionString: process.env.WD_PG_URL ?? process.env.DATABASE_URL }
   }
   const host = overrides.host ?? process.env.WD_PG_HOST
   if (host) {

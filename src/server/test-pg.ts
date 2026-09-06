@@ -437,4 +437,35 @@ if (skipWhenNoPostgres('console-pg suite')) {
       else process.env.WD_STORE = previous
     }
   })
+
+  test('connection config precedence: explicit fields beat ambient URLs', async () => {
+    const { resolvePostgresConfig } = await import('./store/pg-run-store')
+    const saved = { url: process.env.WD_PG_URL, dbUrl: process.env.DATABASE_URL, host: process.env.WD_PG_HOST }
+    try {
+      process.env.WD_PG_URL = 'postgres://env-user@env-host/env-db'
+      process.env.DATABASE_URL = 'postgres://ambient@ambient-host/ambient-db'
+      delete process.env.WD_PG_HOST
+
+      // Explicit connectionString beats everything.
+      assert.equal(resolvePostgresConfig({ connectionString: 'postgres://x' }).connectionString, 'postgres://x')
+      // Environment URL applies only with no explicit connection fields.
+      assert.equal(resolvePostgresConfig().connectionString, 'postgres://env-user@env-host/env-db')
+      // Discrete overrides must NOT be silently overridden by an ambient URL
+      // (pg gives connectionString precedence over discrete fields).
+      const mixed = resolvePostgresConfig({ host: 'explicit-host', database: 'explicit-db' })
+      assert.equal(mixed.connectionString, undefined, 'ambient URL must not leak into a discrete config')
+      assert.equal(mixed.host, 'explicit-host')
+      assert.equal(mixed.database, 'explicit-db')
+      // Discrete WD_PG_* env fallbacks apply only once no URL is set
+      // (an environment URL is a complete connection and wins over them).
+      delete process.env.WD_PG_URL
+      delete process.env.DATABASE_URL
+      process.env.WD_PG_HOST = 'env-pg-host'
+      assert.equal(resolvePostgresConfig().host, 'env-pg-host')
+    } finally {
+      if (saved.url === undefined) delete process.env.WD_PG_URL; else process.env.WD_PG_URL = saved.url
+      if (saved.dbUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = saved.dbUrl
+      if (saved.host === undefined) delete process.env.WD_PG_HOST; else process.env.WD_PG_HOST = saved.host
+    }
+  })
 }
