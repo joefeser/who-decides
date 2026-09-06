@@ -522,33 +522,29 @@ test('generation sidecar closes byte-clone replacement even at a reused inode (r
     const ok = openAdmittedStore(dbPath, admission, legacyWriter)
     ok.close()
 
-    // Attack 1: byte-clone replacement of the DATABASE alone. Even if the
-    // inode is reused, admission must fail: the manifest digest no longer
-    // matches (the clone's row predates the sidecar binding) OR the
-    // physical/sidecar checks reject it. With the sidecar digest now part of
-    // the manifest, an OLD clone's manifest row cannot match.
-    // Simulated by replacing the DB with bytes saved after tampering with
-    // the manifest row (an attacker-controlled clone cannot forge the new
-    // digest without the token).
-    const db = new Database(dbPath)
-    db.prepare("UPDATE owner_store_admission SET manifest_sha256=? WHERE singleton=1").run('0'.repeat(64))
-    db.close()
+    // Attack 1 — the P1's exact scenario: a PRISTINE byte-clone recreated at
+    // the canonical path. The anchor hardlink keeps the original inode
+    // alive, so the recreation gets a NEW inode and the physical identity
+    // check fails. Inode reuse of the admitted number is impossible while
+    // the anchor exists.
     const bytes = readFileSync(dbPath)
     rmSync(dbPath)
-    writeFileSync(dbPath, bytes) // recreate — inode likely reused
-    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a tampered clone fails even at a reused inode')
+    writeFileSync(dbPath, bytes)
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /physical identity drifted|canonical admitted/, 'a pristine clone cannot present the admitted inode')
 
-    // Attack 2: deleting the sidecar fails closed regardless of DB bytes.
-    const genPath = path.join(admission.guardDirectory, 'generation')
-    rmSync(genPath)
-    // restore a pristine DB clone first so only the sidecar is wrong
+    // Attack 2: deleting the generation sidecar fails closed regardless of
+    // DB bytes (and moves the anchor ctime, failing earlier still).
     rmSync(dbPath); writeFileSync(dbPath, bytes)
-    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'missing generation sidecar fails closed')
+    const genPath = path.join(admission.anchorDirectory, 'generation')
+    rmSync(genPath)
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'anchor manipulation fails closed')
 
-    // Attack 3: recreating the sidecar with the SAME token bytes fails the
-    // sidecar physical-identity pin (new inode).
-    writeFileSync(genPath, 'forged-token')
-    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a recreated sidecar fails its identity pin')
+    // Attack 3: replacing the anchor hardlink changes the anchor ctime.
+    rmSync(dbPath); writeFileSync(dbPath, bytes)
+    writeFileSync(genPath, 'restored') // anchor entries changed again
+    rmSync(path.join(admission.anchorDirectory, 'db-identity'))
+    linkSync(dbPath, path.join(admission.anchorDirectory, 'db-identity'))
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a rebuilt anchor fails its ctime pin')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

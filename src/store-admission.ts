@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, statfsSync, statSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, statfsSync, statSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { CONSUMPTION_TABLE_SQL, LOCAL_OWNER_TABLES_SQL } from './store-schema'
@@ -38,6 +38,15 @@ export type StoreAdmission = {
   generationTokenDigest: string
   generationSidecarDevice: string
   generationSidecarInode: string
+  /** The anchor subdirectory holds the generation sidecar and a HARDLINK to
+   * the admitted database. The hardlink keeps the original inode ALIVE, so
+   * a replacement file can never reuse its inode number while the anchor
+   * exists; deleting or recreating anchor entries changes the anchor
+   * directory's ctime, which is pinned here (ctime is not settable). */
+  anchorDirectory: string
+  anchorDevice: string
+  anchorInode: string
+  anchorCtime: string
 }
 
 const ADMISSION_SQL = `
@@ -87,7 +96,11 @@ const manifestPayload = (admission: StoreAdmission) => JSON.stringify({
   guardFilesystemType: admission.guardFilesystemType,
   generationTokenDigest: admission.generationTokenDigest,
   generationSidecarDevice: admission.generationSidecarDevice,
-  generationSidecarInode: admission.generationSidecarInode
+  generationSidecarInode: admission.generationSidecarInode,
+  anchorDirectory: admission.anchorDirectory,
+  anchorDevice: admission.anchorDevice,
+  anchorInode: admission.anchorInode,
+  anchorCtime: admission.anchorCtime
 })
 export const storeAdmissionDigest = (admission: StoreAdmission) => createHash('sha256').update(manifestPayload(admission)).digest('hex')
 
@@ -128,14 +141,20 @@ export function bootstrapOwnerAdmittedStore(input: { dbPath: string, configGener
     const guardDirectory = path.join(path.dirname(canonicalPath), `.who-decides-guards-${databaseId}`)
     mkdirSync(guardDirectory, { recursive: false })
     const guardIdentity = physicalIdentity(guardDirectory)
-    const generationPath = path.join(guardDirectory, 'generation')
+    const anchorDirectory = path.join(guardDirectory, 'anchor')
+    mkdirSync(anchorDirectory, { recursive: false })
+    const generationPath = path.join(anchorDirectory, 'generation')
     const generationToken = randomUUID() + randomUUID()
     const sidecarDescriptor = openSync(generationPath, 'wx')
     try { writeSync(sidecarDescriptor, generationToken) } finally { closeSync(sidecarDescriptor) }
     const generationTokenDigest = createHash('sha256').update(generationToken).digest('hex')
     const sidecarIdentity = physicalIdentity(generationPath)
+    // Hardlink the database into the anchor: the original inode can never be
+    // freed (and its number never reused) while this link exists.
+    linkSync(canonicalPath, path.join(anchorDirectory, 'db-identity'))
+    const anchorStat = statSync(anchorDirectory, { bigint: true })
     const base = { schema: STORE_ADMISSION_SCHEMA, canonicalPath, databaseId, ...identity, schemaSha256: schemaFingerprint(db), configGeneration: input.configGeneration, journalMode: 'wal' as const, synchronous: 'full' as const, lockingMode: 'normal' as const, writers: sortedWriters(input.writers) }
-    const admission: StoreAdmission = { ...base, guardDirectory, guardDevice: guardIdentity.device, guardInode: guardIdentity.inode, guardFilesystemType: guardIdentity.filesystemType, generationTokenDigest, generationSidecarDevice: sidecarIdentity.device, generationSidecarInode: sidecarIdentity.inode }
+    const admission: StoreAdmission = { ...base, guardDirectory, guardDevice: guardIdentity.device, guardInode: guardIdentity.inode, guardFilesystemType: guardIdentity.filesystemType, generationTokenDigest, generationSidecarDevice: sidecarIdentity.device, generationSidecarInode: sidecarIdentity.inode, anchorDirectory, anchorDevice: anchorStat.dev.toString(), anchorInode: anchorStat.ino.toString(), anchorCtime: anchorStat.ctimeNs.toString() }
     const digest = storeAdmissionDigest(admission)
     db.prepare('INSERT INTO owner_store_admission VALUES (1, ?, ?, ?)').run(databaseId, input.configGeneration, digest)
     return admission
@@ -199,12 +218,20 @@ export function verifyAdmittedGuardDirectory(admission: StoreAdmission) {
   if (!existsSync(admission.guardDirectory) || realpathSync(admission.guardDirectory) !== admission.guardDirectory) fail('canonical guard directory is missing or aliased')
   const identity = physicalIdentity(admission.guardDirectory)
   if (identity.device !== admission.guardDevice || identity.inode !== admission.guardInode || identity.filesystemType !== admission.guardFilesystemType) fail('canonical guard directory physical identity drifted')
-  // Generation sidecar: the token lives outside the copyable database bytes.
-  // A database replaced by a byte-clone (even at a reused inode) cannot be
-  // admitted without this file ALSO being present, byte-identical, and at
-  // its pinned physical identity. A missing or recreated sidecar fails
-  // closed — replacement invalidates admission, whatever the bytes say.
-  const generationPath = path.join(admission.guardDirectory, 'generation')
+  // Generation anchor: the token lives outside the copyable database bytes,
+  // and the db-identity HARDLINK keeps the admitted inode alive — a replaced
+  // file can never present the pinned inode number while the anchor exists.
+  // Deleting or recreating anchor entries changes the anchor directory's
+  // ctime (not settable), so manipulation of the anchor itself is detected.
+  if (!existsSync(admission.anchorDirectory) || realpathSync(admission.anchorDirectory) !== admission.anchorDirectory) fail('admission anchor directory is missing or aliased')
+  const anchorStat = statSync(admission.anchorDirectory, { bigint: true })
+  if (anchorStat.dev.toString() !== admission.anchorDevice || anchorStat.ino.toString() !== admission.anchorInode) fail('admission anchor directory physical identity drifted')
+  if (anchorStat.ctimeNs.toString() !== admission.anchorCtime) fail('admission anchor directory changed; the anchor was modified after bootstrap')
+  const dbIdentityPath = path.join(admission.anchorDirectory, 'db-identity')
+  if (!existsSync(dbIdentityPath)) fail('admission anchor hardlink is missing; the original database inode can no longer be proven alive')
+  const hardlinkIdentity = physicalIdentity(dbIdentityPath)
+  if (hardlinkIdentity.inode !== admission.inode || hardlinkIdentity.device !== admission.device) fail('admission anchor hardlink does not point at the admitted database inode')
+  const generationPath = path.join(admission.anchorDirectory, 'generation')
   if (!existsSync(generationPath)) fail('generation sidecar is missing; the admitted file generation cannot be confirmed')
   const sidecarIdentity = physicalIdentity(generationPath)
   if (sidecarIdentity.device !== admission.generationSidecarDevice || sidecarIdentity.inode !== admission.generationSidecarInode) fail('generation sidecar physical identity drifted; the store was replaced or the sidecar was recreated')

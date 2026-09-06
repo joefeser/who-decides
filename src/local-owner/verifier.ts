@@ -29,6 +29,7 @@ export class LocalOwnerVerifier {
   private readonly db: Database.Database
   private readonly credentialHash: Buffer
   private lastMonotonic: bigint | null = null
+  private authorityInstalled = false
 
   constructor(private readonly config: VerifierConfig) {
     if (!config.issuerId || !config.actorId || config.credential.length < 16) throw new Error('INVALID_OWNER_CONFIGURATION')
@@ -43,7 +44,17 @@ export class LocalOwnerVerifier {
   close() { this.db.close() }
   private installTrustedHumanDecisions(decisions: BaseDecision[]) {
     const insert=this.db.prepare('INSERT OR IGNORE INTO local_owner_human_acts VALUES (?,?,?,?,?,NULL)')
-    this.db.transaction(()=>{verifyAdmittedStore(this.db,this.config.storeAdmission);for(const decision of decisions){assertValid('human-decision',decision)
+    // Authority is withheld, not half-installed: while the configured
+    // writer inventory is incomplete (a writer has not attested), no trusted
+    // human act is persisted. Mutations already stop ENVIRONMENT_BLOCKED;
+    // this closes the gap where authority rows persisted under an incomplete
+    // inventory would become usable the moment the missing writer attested
+    // (review P2). Construction itself remains available for inspection.
+    let inventoryClosed = true
+    try { requireClosedWriterInventory(this.db, this.config.storeAdmission) } catch { inventoryClosed = false }
+    if (!inventoryClosed) { this.authorityInstalled = false; return }
+    this.authorityInstalled = true
+    this.db.transaction(()=>{requireClosedWriterInventory(this.db,this.config.storeAdmission);for(const decision of decisions){assertValid('human-decision',decision)
       if(typeof decision.decision_id!=='string'||typeof decision.packet_id!=='string'||decision.actor_id!==this.config.actorId||decision.actor_kind!=='human'||decision.actor_verification_source!=='signed_human_attestation')throw new Error('INVALID_TRUSTED_HUMAN_DECISION')
       const digest=digestEnvelope(`${PROFILE_ID}.base-decision-reference.0.1-candidate`,decision)
       insert.run(this.config.issuerId,decision.decision_id,decision.packet_id,digest.value,JSON.stringify(decision))
@@ -128,8 +139,18 @@ export class LocalOwnerVerifier {
     return complete
   }
 
+  /** If authority was withheld at construction (incomplete writer
+   * inventory), it installs lazily inside the first authorized decision —
+   * after the closed-inventory check, before any act is read. */
+  private ensureAuthorityInstalled(): void {
+    if (this.authorityInstalled) return
+    requireClosedWriterInventory(this.db, this.config.storeAdmission)
+    this.installTrustedHumanDecisions(this.config.trustedHumanDecisions ?? [])
+  }
+
   recordDecision(token: string, input: DecisionInput): CandidateResult<Record<string, unknown>> {
     return this.guarded(token, input?.decisionId ?? '', () => {
+      this.ensureAuthorityInstalled()
       if (!input || !exactKeys(input as unknown as Record<string, unknown>, ['decisionId','humanEventRef','baseDecisionRef','baseDecisionDigest','requestRef','action','approvedAt','expiresAt']) || !nonEmpty([input.decisionId,input.humanEventRef,input.baseDecisionRef,input.requestRef])) return stop('MISSING_AUTHORITY','missing or stripped candidate context')
       if (!actionMatches(input.action)) return stop('SCOPE_CONFLICT','unsupported action')
       this.config.test?.beforeDecisionBeginImmediate?.()
