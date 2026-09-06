@@ -284,10 +284,10 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
   // credential reference — never impersonating an operator session. When it
   // did not (direct phase calls, tests), the artifact still says so plainly.
   const humanDecision = buildHumanDecision(runtimeF, runtimeDecision, evidenceDigest, {
-    channel: input.machineCredentialRef
+    channel: input.machinePrincipal
       ? {
           interaction: 'api',
-          sessionReference: `machine:agentcore-runtime:${input.machineCredentialRef}`,
+          sessionReference: `machine:agentcore-runtime:${input.machinePrincipal.credentialRef}`,
           authEventRef: 'machine-service-token',
         }
       : {

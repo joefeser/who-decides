@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Scenario } from '../artifacts/build'
 import { startPhase, resumePhase } from '../agent-core/phases'
-import { createMachineAuth } from './machine-auth'
+import { createMachineAuth, attestMachinePrincipal } from './machine-auth'
 import type { ServiceContext } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
@@ -91,7 +91,7 @@ const server = createServer(async (req, res) => {
       if (kind === 'decision-resume') {
         const choice = typeof payload.choice === 'string' ? payload.choice : ''
         const rationale = typeof payload.rationale === 'string' ? payload.rationale : ''
-        const result = await resumePhase(ctx, { tag, choice, rationale, machineCredentialRef: auth.ok ? auth.principal.credentialRef : undefined })
+        const result = await resumePhase(ctx, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) })
         const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED'
         return send(res, conflict ? 409 : 200, { ok: !conflict, result })
       }

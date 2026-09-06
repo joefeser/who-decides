@@ -50,11 +50,16 @@ export function createMachineAuth(config: MachineAuthConfig) {
       return configured
     },
 
-    /** Validate a request's Authorization header. Returns a typed result;
-     * never throws — the caller maps errors to 401s. */
-    authorize(request: Request): MachineAuthResult {
+    /** Validate a request's Authorization header. Accepts either a Fetch
+     * Request or a Node IncomingMessage (whose headers are a plain object
+     * without .get — the review P1: the cast made every invocation throw
+     * before the error handler). */
+    authorize(request: { headers: { get(name: string): string | null } } | { headers: Record<string, string | string[] | undefined> }): MachineAuthResult {
       if (!configured) return { ok: false, error: 'MACHINE_AUTH_DISABLED' }
-      const header = request.headers.get('authorization') ?? ''
+      const raw = typeof (request.headers as { get?: unknown }).get === 'function'
+        ? (request.headers as { get(name: string): string | null }).get('authorization')
+        : (request.headers as Record<string, string | string[] | undefined>).authorization
+      const header = Array.isArray(raw) ? raw[0] ?? '' : raw ?? ''
       const match = /^Bearer\s+(.+)$/i.exec(header)
       if (!match) return { ok: false, error: 'MACHINE_AUTH_REQUIRED' }
       const supplied = createHash('sha256').update(match[1]!).digest()
@@ -81,3 +86,12 @@ export function generateMachineToken(): { token: string, tokenHash: string } {
 }
 
 export type MachineAuth = ReturnType<typeof createMachineAuth>
+
+/** The only way to construct a MachinePrincipalAttestation — server code
+ * calls this AFTER authorize() returns ok, making fabricated references
+ * from phase callers structurally impossible (review security finding). */
+export function attestMachinePrincipal(
+  result: MachineAuthResult,
+): import('../agent-core/types').MachinePrincipalAttestation | undefined {
+  return result.ok ? { __brand: 'machine-principal-attestation' as const, credentialRef: result.principal.credentialRef } : undefined
+}

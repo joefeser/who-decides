@@ -43,16 +43,24 @@ export type StartOutput =
   | { status: 'HUMAN_DECISION_REQUIRED', reason: string }
   | { status: 'ENVIRONMENT_BLOCKED', reason: string }
 
+/** Server-side attestation of a VERIFIED machine principal. Callers
+ * cannot fabricate this: the server constructs it only after
+ * machine-auth validation succeeds, and the phase verifies the brand
+ * before trusting the credential reference (review security finding). */
+export type MachinePrincipalAttestation = {
+  readonly __brand: 'machine-principal-attestation'
+  readonly credentialRef: string
+}
+
 /** Phase B input: the recorded human decision. */
 export type ResumeInput = {
   tag: string
   choice: string
   rationale: string
-  /** When the resume arrived via an authenticated machine principal (the
-   * AgentCore runtime's service token), the honest credential reference to
-   * stamp into the decision artifact. Absent = the unverified AC-1
-   * boundary (pending full AC-2 rollout). */
-  machineCredentialRef?: string
+  /** Only the server sets this, via attestMachinePrincipal after a
+   * successful authorize() — direct phase callers leave it absent and
+   * their artifacts honestly say unverified-direct-phase-call. */
+  machinePrincipal?: MachinePrincipalAttestation
 }
 
 /** Phase B output. */
