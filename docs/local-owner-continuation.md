@@ -15,11 +15,37 @@ v0.1 human `start_work` decision must bind the candidate decision, packet and
 fixed action. Its detached companion digest uses the candidate's published JCS
 domain; it is not described as a native field or digest of the base format.
 
-The SQLite database uses one slot per issuer and decision ID. A legacy
-`consumption_receipts` row with the same decision ID blocks admission while the
-shared SQLite write transaction is held. Legacy bytes are never rewritten.
+The SQLite database uses one slot per issuer and decision ID. Candidate support
+is deliberately **same-file only**: an explicit owner bootstrap creates both
+schemas in one SQLite main database, pins its persistent ID, canonical path,
+device/inode, filesystem type, configuration generation, WAL/FULL/NORMAL
+posture, and a closed role/version/insertion-path inventory. Every enabled
+legacy `ConsumptionStore` writer and `LocalOwnerVerifier` must open that exact
+admitted database. Configured path-string equality is not identity evidence.
+A legacy `consumption_receipts` row with the same decision ID blocks admission
+while the shared SQLite write transaction is held. Legacy bytes are never
+rewritten.
 Claims bind every field to the slot; exact retry only returns the original
 record. A verifier instance that did not admit the claim cannot start it.
+
+Normal candidate startup never creates or relocates the store. It fails closed
+for a missing or replaced database, relative paths, symlink or hard-link
+aliases, identity/configuration drift, an unapproved filesystem, URI/VFS
+overrides, missing or unknown writer attestations, an alternate insertion path,
+or a legacy writer trying to open the admitted file without its admission
+packet. The admitted database identity also determines the cross-process guard
+directory; that directory's device/inode/filesystem identity is pinned and
+revalidated while each guard is acquired and released. Bootstrap is an
+owner-controlled provisioning action that must
+finish before any writer starts; it is not recovery, migration, or a reset.
+
+Admission is revalidated on the live connection after acquiring each SQLite
+write transaction. Schema, physical identity, configuration and writer drift
+deny further writes, including drift committed while a writer waited for the
+lock. The pre-observation check and result persistence share a second write
+transaction, and clock sampling rechecks the guard directory before handoff.
+Legacy writers attest the role, version and insertion path compiled into their
+implementation; configuration cannot relabel them as a candidate writer.
 
 Every mutation takes a per-decision exclusive filesystem guard. Start keeps the
 same guard from status/clock validation through a `synchronous=FULL` intent
@@ -36,11 +62,21 @@ records. Existing closed base schemas and product paths remain unchanged.
 This implementation does not prove remote trust, provider exactly-once effects,
 release readiness, deployment, migration, or owner acceptance.
 
+Separate legacy and candidate database files have no shared decision-ID
+namespace and are unsupported. Unlisted/direct-SQL writers, binaries without
+the reciprocal checks, database replacement, and filesystems outside the
+owner-approved reliable local locking posture invalidate candidate support.
+A future separate-store or distributed deployment requires a separately
+approved shared registry or unified-store architecture; this candidate does
+not provide one.
+
 ## Proof evidence integrity
 
-The v2 proof marks a fixture observed only when the exact fixture ID has a
+The v3 proof marks a fixture observed only when the exact fixture ID has a
 passing unit or child-process receipt. This is a regression boundary for
-`EVIDENCE_INTEGRITY — proof observed labels outran test bodies`. The current
-non-architecture gate observes 43 of 44 fixtures. It leaves
-`legacy-insert-races-profile-admission` uncovered and makes no cross-store or
-same-file migration claim while that architecture decision is under review.
+`EVIDENCE_INTEGRITY — proof observed labels outran test bodies`. It observes all
+44 fixtures. For `legacy-insert-races-profile-admission`, separate processes
+force each writer to hold `BEGIN IMMEDIATE` first once, then close before an
+independent durable readback proves exactly one row across the legacy receipt
+and candidate slot namespaces. The receipt includes both outcomes, loser-zero-
+write checks, bytes/digests, physical store identity, and `integrity_check`.

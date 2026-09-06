@@ -1,16 +1,18 @@
 import nodeTest from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import Ajv2020 from 'ajv/dist/2020'
 import addFormats from 'ajv-formats'
 import { ConsumptionStore } from '../consumption/store'
+import { openAdmittedStore } from '../store-admission'
 import { LocalOwnerVerifier } from './verifier'
 import { FIXED_ACTION, OBSERVATION_DIGEST_VALUE } from './contracts'
 import { PROFILE_ID, PROFILE_VERSION, digestEnvelope, recordDigest } from './jcs'
 import { deriveProofInventory, EVIDENCE_INTEGRITY_DEFECT } from './evidence'
+import { bootstrapOwnerAdmittedStore, LEGACY_CONSUMPTION_WRITER_VERSION, LOCAL_OWNER_WRITER_VERSION, type WriterAdmission } from '../store-admission'
 
 const TOKEN='synthetic-fixture-credential-0001'
 const PIN='bc02b5972c2ac1184637062b3dabf7a655ae442cb6fa22940d8d119f678483ec'
@@ -47,7 +49,11 @@ const CASES:Record<string,string[]>={
 }
 function test(name:string,fn:()=>void|Promise<void>){nodeTest(name,async()=>{await fn();const output=process.env.LOCAL_OWNER_CASE_RECEIPTS;if(output)for(const id of CASES[name]??[])appendFileSync(output,JSON.stringify({id,test:name,status:'passed'})+'\n')})}
 const base=(decisionId='d1',packet='packet-1')=>({hacp_version:'v0.1-draft',record_kind:'hacp.human_decision_gate',decision_id:`human-${decisionId}`,packet_id:packet,profile_id:'hacp-base-draft',profile_version:'v0.1-draft',decision_matrix_version:'0.1',from_status:'approved',to_status:'in_progress',decision:'start_work',reason:'fixture human start act',created_at:'2026-09-05T00:00:00.000Z',actor_id:'fixture-human',actor_kind:'human',actor_verification_source:'signed_human_attestation',authentication_context:{interaction_channel:'cli',auth_event_ref:`event-${decisionId}`,secret_material_present:false},forbidden_effects_confirmed:[],evidence:[`candidate-decision:${decisionId}`,`candidate-action:${recordDigest('action',FIXED_ACTION as any).value}`]})
-function setup(issuer='fixture-issuer',clock?:()=>{wallTime:string,monotonicNanoseconds:string},testConfig:Record<string,unknown>={},trustedHumanDecisions=[base(),base('legacy','packet-legacy')]){const dir=mkdtempSync(path.join(tmpdir(),'lo-'));const dbPath=path.join(dir,'store.db');const test=clock||Object.keys(testConfig).length?{...testConfig,...(clock?{clock}:{})}:undefined;const config={dbPath,issuerId:issuer,actorId:'fixture-human',credential:TOKEN,selectedProfile:{id:PROFILE_ID,version:PROFILE_VERSION,status:'active',pin:PIN},trustedHumanDecisions,test};return{dir,dbPath,config,v:new LocalOwnerVerifier(config as any)}}
+const candidateWriter:WriterAdmission={role:'local-owner-verifier',version:LOCAL_OWNER_WRITER_VERSION,insertionPath:'LocalOwnerVerifier.recordDecision'}
+const legacyWriter:WriterAdmission={role:'legacy-consumption-writer',version:LEGACY_CONSUMPTION_WRITER_VERSION,insertionPath:'ConsumptionStore.claim'}
+const filesystemType=(dir:string)=>statfsSync(dir,{bigint:true}).type.toString()
+function setup(issuer='fixture-issuer',clock?:()=>{wallTime:string,monotonicNanoseconds:string},testConfig:Record<string,unknown>={},trustedHumanDecisions=[base(),base('legacy','packet-legacy')]){const dir=mkdtempSync(path.join(tmpdir(),'lo-'));const storeAdmission=bootstrapOwnerAdmittedStore({dbPath:path.join(dir,'store.db'),configGeneration:'fixture-generation-1',writers:[candidateWriter],approvedFilesystemTypes:[filesystemType(dir)]});const dbPath=storeAdmission.canonicalPath;const test=clock||Object.keys(testConfig).length?{...testConfig,...(clock?{clock}:{})}:undefined;const config={dbPath,storeAdmission,issuerId:issuer,actorId:'fixture-human',credential:TOKEN,selectedProfile:{id:PROFILE_ID,version:PROFILE_VERSION,status:'active',pin:PIN},trustedHumanDecisions,test};return{dir,dbPath,config,v:new LocalOwnerVerifier(config as any)}}
+function setupWithLegacy(issuer='fixture-issuer'){const dir=mkdtempSync(path.join(tmpdir(),'lo-shared-'));const storeAdmission=bootstrapOwnerAdmittedStore({dbPath:path.join(dir,'store.db'),configGeneration:'fixture-shared-generation-1',writers:[candidateWriter,legacyWriter],approvedFilesystemTypes:[filesystemType(dir)]});const dbPath=storeAdmission.canonicalPath;const legacy=new ConsumptionStore(dbPath,{admission:storeAdmission,writer:legacyWriter});const config={dbPath,storeAdmission,issuerId:issuer,actorId:'fixture-human',credential:TOKEN,selectedProfile:{id:PROFILE_ID,version:PROFILE_VERSION,status:'active',pin:PIN},trustedHumanDecisions:[base(),base('legacy','packet-legacy')]};return{dir,dbPath,config,legacy,v:new LocalOwnerVerifier(config)}}
 function decision(id='d1'){const b=base(id,id==='d1'?'packet-1':`packet-${id}`);return{decisionId:id,humanEventRef:b.decision_id,baseDecisionRef:b.packet_id,baseDecisionDigest:digestEnvelope(`${PROFILE_ID}.base-decision-reference.0.1-candidate`,b),requestRef:'request-1',action:FIXED_ACTION,approvedAt:'2026-09-05T00:00:00.000Z',expiresAt:'2100-01-01T00:00:00.000Z'}}
 function claim(d:any,id='c1'){return{decisionId:d.decisionId,decisionDigest:d.digest,claimId:id,attemptKey:'attempt-1',successorId:'successor-1',requestRef:'request-1',action:FIXED_ACTION,claimedAt:'2026-09-05T00:00:01.000Z',expiresAt:'2099-01-01T00:00:00.000Z'}}
 function admitted(s=setup()){const d=s.v.recordDecision(TOKEN,decision());assert(d.ok);const c=s.v.admitClaim(TOKEN,claim(d.value));assert(c.ok);return{s,d:d.value,c:c.value}}
@@ -96,7 +102,7 @@ test('exact claim retry is read-only before and after start',()=>{const a=admitt
   const started=a.s.v.guardedStart(TOKEN,startInput());assert(started.ok);const afterStart=snapshot(),secondRetry=a.s.v.admitClaim(TOKEN,claim(a.d));assert(secondRetry.ok);assert.deepEqual(secondRetry.value,a.c);assert.equal(secondRetry.value.expiresAt,a.c.expiresAt);assert.deepEqual(snapshot(),afterStart)
   assert.equal((a.s.v.guardedStart(TOKEN,startInput()) as any).stop,'HUMAN_DECISION_REQUIRED');const db=new Database(a.s.dbPath,{readonly:true});assert.equal((db.prepare("select count(*) n from local_owner_records where kind='start-intent'").get() as any).n,1);assert.equal((db.prepare("select count(*) n from local_owner_records where kind='start-result'").get() as any).n,1);db.close()
 }finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}})
-test('issuer namespace is separate while legacy decision id blocks without rewrite',()=>{const s=setup('issuer-a');try{new ConsumptionStore(s.dbPath).claim({decisionId:'legacy',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'old');const db=new Database(s.dbPath);const bytes=(db.prepare('select receipt_json from consumption_receipts where decision_id=?').get('legacy') as any).receipt_json;db.close();assert.equal((s.v.recordDecision(TOKEN,decision('legacy')) as any).stop,'MISSING_AUTHORITY');const db2=new Database(s.dbPath);assert.equal((db2.prepare('select receipt_json from consumption_receipts where decision_id=?').get('legacy') as any).receipt_json,bytes);db2.close();const other=new LocalOwnerVerifier({...s.config,issuerId:'issuer-b'});assert(other.recordDecision(TOKEN,decision()).ok);other.close()}finally{s.v.close();rmSync(s.dir,{recursive:true})};const reverse=setup();try{assert(reverse.v.recordDecision(TOKEN,decision()).ok);const legacy=new ConsumptionStore(reverse.dbPath);const r=legacy.claim({decisionId:'d1',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'old');assert.equal(r.status,'rejected');if(r.status==='rejected')assert.equal(r.reason,'profile_slot_conflict');legacy.close()}finally{reverse.v.close();rmSync(reverse.dir,{recursive:true})}})
+test('issuer namespace is separate while legacy decision id blocks without rewrite',()=>{const s=setupWithLegacy('issuer-a');try{s.legacy.claim({decisionId:'legacy',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'old');const db=new Database(s.dbPath);const bytes=(db.prepare('select receipt_json from consumption_receipts where decision_id=?').get('legacy') as any).receipt_json;db.close();assert.equal((s.v.recordDecision(TOKEN,decision('legacy')) as any).stop,'MISSING_AUTHORITY');const db2=new Database(s.dbPath);assert.equal((db2.prepare('select receipt_json from consumption_receipts where decision_id=?').get('legacy') as any).receipt_json,bytes);db2.close();const other=new LocalOwnerVerifier({...s.config,issuerId:'issuer-b'});assert(other.recordDecision(TOKEN,decision()).ok);other.close()}finally{s.v.close();s.legacy.close();rmSync(s.dir,{recursive:true})};const reverse=setupWithLegacy();try{assert(reverse.v.recordDecision(TOKEN,decision()).ok);const r=reverse.legacy.claim({decisionId:'d1',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'old');assert.equal(r.status,'rejected');if(r.status==='rejected')assert.equal(r.reason,'profile_slot_conflict')}finally{reverse.v.close();reverse.legacy.close();rmSync(reverse.dir,{recursive:true})}})
 test('happy guarded start persists intent/result and never reexecutes',()=>{const a=admitted();try{const input={decisionId:'d1',claimId:'c1',intentId:'i1',successorId:'successor-1',action:FIXED_ACTION};const r=a.s.v.guardedStart(TOKEN,input);assert(r.ok);assert.deepEqual(r.value.observation,{operationId:'observe_fixed_payload',payload:'HACP_LOCAL_OWNER_CONTINUATION_PROBE_V1'});assert.equal(r.value.result.observationDigest.value,OBSERVATION_DIGEST_VALUE);assert.equal(r.value.intent.admittedAt,r.value.intent.clockSample.wallTime);assert.equal(r.value.result.observedAt,r.value.result.observationClockSample.wallTime);assert.equal((a.s.v.guardedStart(TOKEN,input) as any).stop,'HUMAN_DECISION_REQUIRED')}finally{a.s.v.close();rmSync(a.s.dir,{recursive:true})}})
 test('status revocation fails closed and remains terminal',()=>{const b=admitted();try{
   const original=(b.s.v.inspect(TOKEN,'d1') as any).value;const revoked=b.s.v.revoke(TOKEN,'d1','claim');assert(revoked.ok)
@@ -364,7 +370,130 @@ test('completed and uncertain observations carry outcome-specific digests',()=>{
 
 test('production surfaces cannot import the candidate verifier',()=>{const files:string[]=[];const walk=(dir:string)=>{for(const name of readdirSync(dir)){const file=path.join(dir,name);if(file.includes(`${path.sep}local-owner`))continue;const stat=statSync(file);if(stat.isDirectory())walk(file);else if(/\.(ts|tsx|mjs)$/.test(name))files.push(file)}};walk(path.resolve('app'));walk(path.resolve('src'));for(const file of files){const source=readFileSync(file,'utf8');assert.equal(/(?:from|import\()\s*['"][^'"]*local-owner/.test(source)||source.includes('LocalOwnerVerifier'),false,file)}})
 
+test('owner-admitted store rejects aliases drift unsafe paths and incomplete writer inventory',()=>{
+  const make=(writers=[candidateWriter])=>{const dir=mkdtempSync(path.join(tmpdir(),'lo-admission-'));const admission=bootstrapOwnerAdmittedStore({dbPath:path.join(dir,'store.db'),configGeneration:'admission-generation-1',writers,approvedFilesystemTypes:[filesystemType(dir)]});return{dir,admission}}
+  const unsupportedDir=mkdtempSync(path.join(tmpdir(),'lo-unsupported-fs-'));try{assert.throws(()=>bootstrapOwnerAdmittedStore({dbPath:path.join(unsupportedDir,'store.db'),configGeneration:'g',writers:[candidateWriter],approvedFilesystemTypes:['not-this-filesystem']}),/filesystem type is not owner-approved/)}finally{rmSync(unsupportedDir,{recursive:true})}
+  const configFor=(admission:any,dbPath=admission.canonicalPath)=>({dbPath,storeAdmission:admission,issuerId:'fixture-issuer',actorId:'fixture-human',credential:TOKEN,selectedProfile:{id:PROFILE_ID,version:PROFILE_VERSION,status:'active',pin:PIN},trustedHumanDecisions:[base()]})
+  const relative=make();try{assert.throws(()=>new LocalOwnerVerifier(configFor(relative.admission,path.relative(process.cwd(),relative.admission.canonicalPath))),/normal startup requires/)}finally{rmSync(relative.dir,{recursive:true})}
+  const symlink=make(),symlinkTarget=make();try{const alias=path.join(path.dirname(symlink.admission.canonicalPath),'alias.db');symlinkSync(symlink.admission.canonicalPath,alias);unlinkSync(alias);symlinkSync(symlinkTarget.admission.canonicalPath,alias);assert.throws(()=>new LocalOwnerVerifier(configFor(symlink.admission,alias)),/canonical admitted path/)}finally{rmSync(symlink.dir,{recursive:true});rmSync(symlinkTarget.dir,{recursive:true})}
+  const hardlink=make();try{const alias=path.join(path.dirname(hardlink.admission.canonicalPath),'hard.db');linkSync(hardlink.admission.canonicalPath,alias);assert.throws(()=>new LocalOwnerVerifier(configFor(hardlink.admission,alias)),/canonical admitted path/)}finally{rmSync(hardlink.dir,{recursive:true})}
+  const distinctA=make(),distinctB=make();try{assert.throws(()=>new LocalOwnerVerifier(configFor(distinctA.admission,distinctB.admission.canonicalPath)),/canonical admitted path/)}finally{rmSync(distinctA.dir,{recursive:true});rmSync(distinctB.dir,{recursive:true})}
+  const missing=make();try{assert.throws(()=>new LocalOwnerVerifier(configFor({...missing.admission,canonicalPath:path.join(path.dirname(missing.admission.canonicalPath),'missing.db')},path.join(path.dirname(missing.admission.canonicalPath),'missing.db'))),/existing pinned/)}finally{rmSync(missing.dir,{recursive:true})}
+  const drift=make();try{assert.throws(()=>new LocalOwnerVerifier(configFor({...drift.admission,databaseId:'00000000-0000-4000-8000-000000000000'})),/persistent database identity|canonical guard/);assert.throws(()=>new LocalOwnerVerifier(configFor({...drift.admission,configGeneration:'stale-generation'})),/persistent database identity/);assert.throws(()=>new LocalOwnerVerifier(configFor({...drift.admission,filesystemType:'unsupported'})),/physical identity/)}finally{rmSync(drift.dir,{recursive:true})}
+  const replaced=make();try{const old=`${replaced.admission.canonicalPath}.old`;renameSync(replaced.admission.canonicalPath,old);copyFileSync(old,replaced.admission.canonicalPath);assert.throws(()=>new LocalOwnerVerifier(configFor(replaced.admission)),/physical identity drifted/)}finally{rmSync(replaced.dir,{recursive:true})}
+  const locking=make();try{const raw=new Database(locking.admission.canonicalPath);raw.pragma('journal_mode = DELETE');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(locking.admission)),/journal posture changed/)}finally{rmSync(locking.dir,{recursive:true})}
+  const schemaDrift=make();try{const raw=new Database(schemaDrift.admission.canonicalPath);raw.exec('DROP TABLE consumption_receipts');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(schemaDrift.admission)),/schema generation changed/)}finally{rmSync(schemaDrift.dir,{recursive:true})}
+  const triggerDrift=make();try{const raw=new Database(triggerDrift.admission.canonicalPath);raw.exec('CREATE TRIGGER erase_slot AFTER INSERT ON local_owner_slots BEGIN DELETE FROM local_owner_slots WHERE decision_id=NEW.decision_id; END');raw.close();assert.throws(()=>new LocalOwnerVerifier(configFor(triggerDrift.admission)),/schema generation changed/)}finally{rmSync(triggerDrift.dir,{recursive:true})}
+  const guardDrift=make();try{const alternate=path.join(path.dirname(guardDrift.admission.canonicalPath),'alternate-guards');mkdirSync(alternate);const stat=statSync(alternate,{bigint:true}),fs=statfsSync(alternate,{bigint:true});const changed={...guardDrift.admission,guardDirectory:alternate,guardDevice:stat.dev.toString(),guardInode:stat.ino.toString(),guardFilesystemType:fs.type.toString()};assert.throws(()=>new LocalOwnerVerifier(configFor(changed)),/generation sidecar is missing|persistent database identity/)}finally{rmSync(guardDrift.dir,{recursive:true})}
+  const guardReplacement=make();try{renameSync(guardReplacement.admission.guardDirectory,`${guardReplacement.admission.guardDirectory}.old`);mkdirSync(guardReplacement.admission.guardDirectory);assert.throws(()=>new LocalOwnerVerifier(configFor(guardReplacement.admission)),/guard directory physical identity drifted/)}finally{rmSync(guardReplacement.dir,{recursive:true})}
+  const incomplete=make([candidateWriter,legacyWriter]);try{const candidate=new LocalOwnerVerifier(configFor(incomplete.admission));assert.equal((candidate.recordDecision(TOKEN,decision()) as any).stop,'ENVIRONMENT_BLOCKED');candidate.close();for(const writer of [{...legacyWriter,role:'unknown'},{...legacyWriter,version:'stale'},{...legacyWriter,insertionPath:'direct-sql'}])assert.throws(()=>new ConsumptionStore(incomplete.admission.canonicalPath,{admission:incomplete.admission,writer}),/unapproved/);assert.throws(()=>new ConsumptionStore(incomplete.admission.canonicalPath),/approved writer configuration/);const legacy=new ConsumptionStore(incomplete.admission.canonicalPath,{admission:incomplete.admission,writer:legacyWriter});const admittedCandidate=new LocalOwnerVerifier(configFor(incomplete.admission));assert(admittedCandidate.recordDecision(TOKEN,decision()).ok);admittedCandidate.close();legacy.close()}finally{rmSync(incomplete.dir,{recursive:true})}
+  const legacyMissing=make([candidateWriter,legacyWriter]);try{const legacy=new ConsumptionStore(legacyMissing.admission.canonicalPath,{admission:legacyMissing.admission,writer:legacyWriter});const result=legacy.claim({decisionId:'legacy-missing',chosenOption:'x',rationale:'x',decidedAt:'2026-09-05T00:00:00.000Z',decisionRequestId:'r',permittedAction:'x'},'successor');assert.equal(result.status,'rejected');if(result.status==='rejected')assert.equal(result.reason,'environment_blocked');legacy.close()}finally{rmSync(legacyMissing.dir,{recursive:true})}
+  const writerOrder=make([{version:LOCAL_OWNER_WRITER_VERSION,role:'local-owner-verifier',insertionPath:'LocalOwnerVerifier.recordDecision'}]);try{const verifier=new LocalOwnerVerifier(configFor(writerOrder.admission));verifier.close()}finally{rmSync(writerOrder.dir,{recursive:true})}
+  const unsafe=make();try{assert.throws(()=>new LocalOwnerVerifier(configFor(unsafe.admission,':memory:')),/existing pinned/);assert.throws(()=>new LocalOwnerVerifier(configFor(unsafe.admission,`file:${unsafe.admission.canonicalPath}?vfs=unix-none`)),/existing pinned/)}finally{rmSync(unsafe.dir,{recursive:true})}
+})
+
 test('evidence integrity never marks a case observed without its passing receipt',()=>{assert.equal(EVIDENCE_INTEGRITY_DEFECT,'EVIDENCE_INTEGRITY — proof observed labels outran test bodies');const result=deriveProofInventory([{id:'passed-case',expected:'pass'},{id:'failed-case',expected:'deny'},{id:'missing-case',expected:'unknown'}],[{id:'passed-case',test:'exact assertion',status:'passed'},{id:'failed-case',test:'failed assertion',status:'failed'}]);assert.deepEqual(result.map(x=>[x.id,x.status]),[['passed-case','observed'],['failed-case','uncovered'],['missing-case','uncovered']]);assert.throws(()=>deriveProofInventory([{id:'known',expected:'x'}],[{id:'invented',test:'bad label',status:'passed'}]),/UNKNOWN_FIXTURE_RECEIPT/)})
+
+const legacyDecision = () => ({ decisionId: 'd1', chosenOption: 'x', rationale: 'fixture', decidedAt: '2026-09-05T00:00:00.000Z', decisionRequestId: 'r', permittedAction: 'x' })
+
+test('already-open writers deny schema and configuration drift without admitting a decision', () => {
+  for (const mode of ['candidate', 'legacy']) {
+    for (const mutation of ['trigger', 'generation']) {
+      const s = setupWithLegacy()
+      try {
+        const db = new Database(s.dbPath)
+        if (mutation === 'generation') db.exec("UPDATE owner_store_admission SET config_generation='changed'")
+        else db.exec(`CREATE TRIGGER ignore_admission BEFORE INSERT ON ${mode === 'candidate' ? 'local_owner_slots' : 'consumption_receipts'} BEGIN SELECT RAISE(IGNORE); END`)
+        db.close()
+        const result = mode === 'candidate' ? s.v.recordDecision(TOKEN, decision()) : s.legacy.claim(legacyDecision(), 'successor')
+        assert(mode === 'candidate' ? !(result as any).ok : (result as any).status === 'rejected', `${mode}: ${mutation}`)
+        const check = new Database(s.dbPath, { readonly: true })
+        try {
+          for (const table of ['local_owner_slots', 'local_owner_records', 'local_owner_status', 'consumption_receipts']) {
+            assert.equal((check.prepare(`SELECT count(*) n FROM ${table}`).get() as any).n, 0, table)
+          }
+        } finally { check.close() }
+      } finally { s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+    }
+  }
+})
+
+test('user triggers resembling SQLite internal names remain in the schema fingerprint', () => {
+  const s = setupWithLegacy()
+  try {
+    const db = new Database(s.dbPath)
+    db.exec('CREATE TRIGGER sqliteXignore BEFORE INSERT ON consumption_receipts BEGIN SELECT RAISE(IGNORE); END')
+    db.close()
+    assert.throws(() => new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission }), /schema generation changed/)
+    assert.equal(s.legacy.claim(legacyDecision(), 'successor').status, 'rejected')
+  } finally { s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+})
+
+test('already-open writers reject a replaced database path', () => {
+  const s = setupWithLegacy()
+  const oldPath = `${s.dbPath}.old`
+  try {
+    renameSync(s.dbPath, oldPath)
+    copyFileSync(oldPath, s.dbPath)
+    assert.equal(s.v.recordDecision(TOKEN, decision()).ok, false)
+    assert.equal(s.legacy.claim(legacyDecision(), 'successor').status, 'rejected')
+  } finally {
+    unlinkSync(s.dbPath); renameSync(oldPath, s.dbPath)
+    s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true })
+  }
+})
+
+test('writer inventory is rechecked after entering the SQLite write boundary', () => {
+  for (const mode of ['candidate', 'legacy']) {
+    const s = setupWithLegacy()
+    const removeAttestation = () => {
+      const db = new Database(s.dbPath)
+      db.exec("DELETE FROM owner_writer_attestations WHERE role='local-owner-verifier'")
+      db.close()
+    }
+    const writer = mode === 'candidate'
+      ? new LocalOwnerVerifier({ ...s.config, test: { beforeDecisionBeginImmediate: removeAttestation } })
+      : new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission, test: { beforeBeginImmediate: removeAttestation } })
+    try {
+      const result = mode === 'candidate' ? (writer as LocalOwnerVerifier).recordDecision(TOKEN, decision()) : (writer as ConsumptionStore).claim(legacyDecision(), 'successor')
+      assert(mode === 'candidate' ? !(result as any).ok : (result as any).status === 'rejected', mode)
+      const db = new Database(s.dbPath, { readonly: true })
+      try {
+        assert.equal((db.prepare('SELECT count(*) n FROM local_owner_slots').get() as any).n, 0)
+        assert.equal((db.prepare('SELECT count(*) n FROM consumption_receipts').get() as any).n, 0)
+      } finally { db.close() }
+    } finally { writer.close(); s.v.close(); s.legacy.close(); rmSync(s.dir, { recursive: true }) }
+  }
+})
+
+test('legacy writer cannot attest as the candidate implementation', () => {
+  const s = setup()
+  let legacy: ConsumptionStore | undefined
+  try {
+    assert.throws(() => { legacy = new ConsumptionStore(s.dbPath, { admission: s.config.storeAdmission, writer: candidateWriter }) }, /unapproved/)
+  } finally { legacy?.close(); s.v.close(); rmSync(s.dir, { recursive: true }) }
+})
+
+test('start denies guard replacement during the guarded interval', () => {
+  const s = setup()
+  let samples = 0
+  const v = new LocalOwnerVerifier({ ...s.config, test: { clock: () => {
+    if (++samples === 4) {
+      renameSync(s.config.storeAdmission.guardDirectory, `${s.config.storeAdmission.guardDirectory}.old`)
+      mkdirSync(s.config.storeAdmission.guardDirectory)
+    }
+    return { wallTime: new Date().toISOString(), monotonicNanoseconds: process.hrtime.bigint().toString() }
+  } } })
+  try {
+    const d = v.recordDecision(TOKEN, decision()); assert(d.ok)
+    assert(v.admitClaim(TOKEN, claim(d.value)).ok)
+    const result = v.guardedStart(TOKEN, startInput())
+    assert.equal(result.ok, false)
+    const db = new Database(s.dbPath, { readonly: true })
+    try { assert.equal((db.prepare("SELECT count(*) n FROM local_owner_records WHERE kind='start-result' AND json_extract(record_json,'$.outcome')='completed'").get() as any).n, 0) }
+    finally { db.close() }
+  } finally { v.close(); s.v.close(); rmSync(s.dir, { recursive: true }) }
+})
 
 test('unavailable database returns a typed denial from every mutation', () => {
   const a = admitted()
@@ -379,4 +508,44 @@ test('unavailable database returns a typed denial from every mutation', () => {
       assert.equal((operation() as any).stop, 'ENVIRONMENT_BLOCKED')
     }
   } finally { rmSync(a.s.dir, { recursive: true }) }
+})
+
+const filesystemTypeOf = (p: string) => statfsSync(path.dirname(p), { bigint: true }).type.toString()
+
+test('generation sidecar closes byte-clone replacement even at a reused inode (review P1)', () => {
+  // Bootstrap a fresh admitted store, then exercise the replacement family.
+  const dir = mkdtempSync(path.join(tmpdir(), 'lo-gen-'))
+  const dbPath = path.join(realpathSync(dir), 'store.db')
+  const admission = bootstrapOwnerAdmittedStore({ dbPath, configGeneration: 'g1', writers: [legacyWriter], approvedFilesystemTypes: [filesystemTypeOf(dbPath)] })
+  try {
+    // The sidecar exists with the pinned identity and matching token.
+    const ok = openAdmittedStore(dbPath, admission, legacyWriter)
+    ok.close()
+
+    // Attack 1 — the P1's exact scenario: a PRISTINE byte-clone recreated at
+    // the canonical path. The anchor hardlink keeps the original inode
+    // alive, so the recreation gets a NEW inode and the physical identity
+    // check fails. Inode reuse of the admitted number is impossible while
+    // the anchor exists.
+    const bytes = readFileSync(dbPath)
+    rmSync(dbPath)
+    writeFileSync(dbPath, bytes)
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /physical identity drifted|canonical admitted/, 'a pristine clone cannot present the admitted inode')
+
+    // Attack 2: deleting the generation sidecar fails closed regardless of
+    // DB bytes (and moves the anchor ctime, failing earlier still).
+    rmSync(dbPath); writeFileSync(dbPath, bytes)
+    const genPath = path.join(admission.anchorDirectory, 'generation')
+    rmSync(genPath)
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'anchor manipulation fails closed')
+
+    // Attack 3: replacing the anchor hardlink changes the anchor ctime.
+    rmSync(dbPath); writeFileSync(dbPath, bytes)
+    writeFileSync(genPath, 'restored') // anchor entries changed again
+    rmSync(path.join(admission.anchorDirectory, 'db-identity'))
+    linkSync(dbPath, path.join(admission.anchorDirectory, 'db-identity'))
+    assert.throws(() => openAdmittedStore(dbPath, admission, legacyWriter), /OWNER_STORE_ADMISSION_FAILED/, 'a rebuilt anchor fails its ctime pin')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
