@@ -15,9 +15,11 @@ This file is a status record; implementation evidence lives in
 - **Bedrock gate** — the 7-item commit-or-pivot gate passed: COMMIT on
   `global.anthropic.claude-sonnet-4-6` at ~$0.054/run vs the $5 ceiling;
   AgentCore recorded as a disclosed stretch, never load-bearing.
-- **Artifact spine** — five HACP v0.1-draft artifact families vendored and
-  attributed, ajv validation pipeline, fixture scenario, deterministic
-  end-to-end runner, and tamper-rejection tests.
+- **Artifact spine** — six HACP v0.1-draft artifact families vendored and
+  attributed (`task-packet`, `human-decision`, `agent-report`,
+  `review-finding`, `stop-response`, `evidence-set`), ajv validation
+  pipeline, fixture scenario, deterministic end-to-end runner, and
+  tamper-rejection tests.
 - **Decision console** (PR #1) — three-state human decision console wired to
   the spine; only the approved branch ever executes.
 - **Live loop** (PR #4) — a real Strands agent on Bedrock end to end: typed
@@ -29,7 +31,8 @@ This file is a status record; implementation evidence lives in
 - **Local-owner verifier** (PRs #8–#10) — authenticated local continuation
   guard, receipt-bound evidence-integrity proof, and same-file legacy
   admission enforced; the proof inventory closed at 44/44.
-- **ACK lane** (PR #5) — main-only PR-loop lane proposal and startup guide.
+- **ACK lane** (PR #5) — the main-only PR-review loop lane, active on main
+  (`.agent-control/lanes/pr-review-loop.yaml`), with the startup guide.
 
 ## What's next
 
