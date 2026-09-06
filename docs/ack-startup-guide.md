@@ -63,8 +63,9 @@ delegating work.
   `git diff --check`. CI on main additionally runs `npm run proof:consumption`
   with artifact upload — run it locally whenever consumption-store behavior
   changes.
-  **Do not use `npm test` — it is still the failing placeholder** (`package.json`
-  on main). Fixing it is a separate small PR Joe can approve.
+  **`npm test` runs the full offline suite stack** (console, artifacts,
+  consumption, live-loop, local-owner — PR #11); use it as the one-command
+  check.
 
 ## Boundaries carried from the recommendation
 
