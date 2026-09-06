@@ -1,0 +1,146 @@
+/* Operator passcode gate — mutations are operator-only; /api/state stays
+ * public for watch mode.
+ *
+ * Passcode verification: WD_OPERATOR_PASSCODE_HASH holds the sha256 hex of
+ * the operator passcode. The candidate is hashed and compared timing-safe.
+ * Missing or malformed hash FAILS CLOSED — every login and every guarded
+ * route rejects while the env is unset. Generate the hash with:
+ *
+ *   printf '%s' 'choose-a-long-passcode' | sha256sum       # Linux
+ *   printf '%s' 'choose-a-long-passcode' | shasum -a 256   # macOS
+ *
+ * (The passcode hash is a plain sha256 by contract — it protects a demo
+ * console, and rotation is re-running the command. It is NOT a password
+ * database; do not reuse a password you use elsewhere.)
+ *
+ * Sessions: a successful login returns a random 32-byte token ONCE; only
+ * its sha256 is persisted, in the operator_sessions table of the console's
+ * SQLite via the SessionStore seam. Session TTL is 12 hours. The browser
+ * keeps the token in a Secure/HttpOnly/SameSite=Strict cookie — never in
+ * localStorage.
+ *
+ * Login rate limit: 5 failed attempts per 15 minutes per client IP,
+ * in-memory per process (fine for the single-process demo; Caddy fronts
+ * the public deployment). A successful login clears that IP's failures. */
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import path from 'node:path'
+import { SqliteSessionStore } from './store/sqlite-session-store'
+import type { SessionStore } from './store/store'
+
+export const OPERATOR_COOKIE_NAME = 'wd_operator_session'
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000
+const SESSION_TTL_SECONDS = SESSION_TTL_MS / 1000
+const RATE_WINDOW_MS = 15 * 60 * 1000
+const RATE_MAX_FAILURES = 5
+
+export function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+export function verifyPasscode(candidate: string): boolean {
+  const expected = process.env.WD_OPERATOR_PASSCODE_HASH ?? ''
+  // Fail closed on unset or malformed env; the shape guard also guarantees
+  // both buffers are 32 bytes, so timingSafeEqual cannot throw on length.
+  if (!/^[0-9a-fA-F]{64}$/.test(expected)) return false
+  return timingSafeEqual(Buffer.from(sha256Hex(candidate), 'hex'), Buffer.from(expected, 'hex'))
+}
+
+/* Lazily-bound default store: WD_CONSOLE_DIR is read at first use, so tests
+ * can bind a scratch directory before anything touches sessions. */
+let cachedStore: SessionStore | undefined
+function defaultSessionStore(): SessionStore {
+  if (!cachedStore) {
+    cachedStore = new SqliteSessionStore(process.env.WD_CONSOLE_DIR ?? path.resolve(process.cwd(), '.tmp/console'))
+  }
+  return cachedStore
+}
+
+/** Test seam: drop the cached store so a new WD_CONSOLE_DIR binds. */
+export function resetSessionsForTests(): void {
+  cachedStore?.close().catch(() => {})
+  cachedStore = undefined
+}
+
+export type LoginResult = { ok: true, token: string } | { ok: false }
+
+export async function loginOperator(candidate: string, store: SessionStore = defaultSessionStore()): Promise<LoginResult> {
+  if (!verifyPasscode(candidate)) return { ok: false }
+  const token = randomBytes(32).toString('hex')
+  const now = Date.now()
+  await store.createSession(sha256Hex(token), new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString())
+  await store.purgeExpiredSessions(new Date(now).toISOString()).catch(() => { /* best-effort tidy */ })
+  return { ok: true, token }
+}
+
+export async function isOperatorSessionValid(token: string | undefined, store: SessionStore = defaultSessionStore()): Promise<boolean> {
+  if (!token) return false
+  const row = await store.getSession(sha256Hex(token))
+  if (!row) return false
+  return row.expires_at > new Date().toISOString()
+}
+
+export async function revokeOperatorSession(token: string | undefined, store: SessionStore = defaultSessionStore()): Promise<void> {
+  if (!token) return
+  await store.revokeSession(sha256Hex(token))
+}
+
+export function readOperatorCookie(request: Request): string | undefined {
+  const header = request.headers.get('cookie')
+  if (!header) return undefined
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === OPERATOR_COOKIE_NAME) return part.slice(eq + 1).trim()
+  }
+  return undefined
+}
+
+/** Guard for mutation routes: true only with a valid, unexpired session. */
+export async function requireOperator(request: Request): Promise<boolean> {
+  return isOperatorSessionValid(readOperatorCookie(request))
+}
+
+export function operatorSessionCookie(token: string): string {
+  return `${OPERATOR_COOKIE_NAME}=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}`
+}
+
+export const OPERATOR_COOKIE_CLEARED = `${OPERATOR_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`
+
+export function clientIp(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0]!.trim()
+  return request.headers.get('x-real-ip') ?? 'unknown'
+}
+
+/** In-memory sliding-window limiter: RATE_MAX_FAILURES failed logins per
+ * RATE_WINDOW_MS per client IP. Reset only for tests. */
+export class LoginRateLimiter {
+  private readonly failures = new Map<string, number[]>()
+
+  isBlocked(ip: string, now = Date.now()): boolean {
+    return this.recent(ip, now).length >= RATE_MAX_FAILURES
+  }
+
+  recordFailure(ip: string, now = Date.now()): void {
+    const recent = this.recent(ip, now)
+    recent.push(now)
+    this.failures.set(ip, recent)
+  }
+
+  clear(ip: string): void {
+    this.failures.delete(ip)
+  }
+
+  reset(): void {
+    this.failures.clear()
+  }
+
+  private recent(ip: string, now: number): number[] {
+    const stamps = (this.failures.get(ip) ?? []).filter(t => now - t < RATE_WINDOW_MS)
+    if (stamps.length === 0) this.failures.delete(ip)
+    else this.failures.set(ip, stamps)
+    return stamps
+  }
+}
+
+export const loginRateLimiter = new LoginRateLimiter()

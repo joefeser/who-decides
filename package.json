@@ -21,9 +21,10 @@
     "console": "next dev -p 3100",
     "console:build": "next build",
     "proof:consumption": "node --import tsx scripts/consumption-proof.mjs",
-    "test:live-loop": "tsx --test src/live-loop/test.ts"
-    ,"test:local-owner": "tsx --test src/local-owner/test.ts",
-    "proof:local-owner": "tsx scripts/local-owner-proof.ts"
+    "test:live-loop": "tsx --test src/live-loop/test.ts",
+    "test:local-owner": "tsx --test src/local-owner/test.ts",
+    "proof:local-owner": "tsx scripts/local-owner-proof.ts",
+    "test:auth": "tsx --test src/server/auth.test.ts"
   },
   "repository": {
     "type": "git",
