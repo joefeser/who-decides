@@ -473,3 +473,33 @@ eligible deployment; real-effect semantics separately specified and proven).
 who-decides' evidence is pinned in the packet at exact heads and proof SHAs
 (e47515f / c6677da, 44/44 receipts). The flywheel's first full turn took
 eight months of concept + two days of receipts.
+
+## Day 7 addendum — AgentCore spike findings (deploy shape decided)
+
+Sub-agent research against AWS docs + the agentcore-samples repo:
+
+- AgentCore Runtime is a per-session, AUTHENTICATED invocation service
+  (SigV4/OAuth on every protocol; clients call InvokeAgentRuntime, never
+  the agent's port directly). It is NOT a public web host. The intended
+  split is exactly ours: agent on AgentCore, public surface on a plain
+  HTTPS host.
+- microVM per runtimeSessionId; terminate-on-end, memory sanitized;
+  idle timeout default 900s; max 8h; /mnt sessionStorage survives
+  same-session resume only — durable state lives in OUR store via the
+  decision API, never inside the runtime. This is M1's terminal-stop +
+  seeded-resume ruling, natively.
+- Outbound HTTPS unrestricted by default (networkMode PUBLIC); execution
+  roleArn + AgentCore Identity for credentials. Our live-loop agent calls
+  the decision-authority API directly — no special config.
+- Deploy: new `agentcore` CLI scaffolds Strands Agents ("recommended"),
+  deploys CodeZip via CDK. TS path exists (Strands TS + Express, Node 22,
+  /ping + /invocations) — sample 07-direct-code-deploy-typescript.
+- Pricing: microVM $0.0895/vCPU-hr actual-CPU + $0.00945/GB-hr peak
+  memory (128MB floor); idle-open sessions accrue until the 15-min idle
+  kill. Our pattern (short invocations, terminate between) is the cheap
+  shape.
+
+Deploy architecture (locked): Strands live-loop agent on AgentCore
+(HTTP protocol, CodeZip, short sessions) -> decision-authority API on the
+HTTPS host (Next.js console, operator-gated) -> Postgres store. The agent
+never holds DB credentials; everything crosses the authority boundary.

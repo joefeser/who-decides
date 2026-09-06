@@ -32,6 +32,16 @@ export type RunState = 'running' | 'decision_required' | 'resuming' | 'completed
 
 export type Milestone = { label: string, detail: string, at: string }
 
+type DecisionChannel = { sessionReference: string, authEventRef: string }
+type StoredDecision = {
+  choice: string
+  rationale: string
+  decidedAt: string
+  idempotencyKey: string | null
+  // Absent on legacy/unauthenticated intents; never infer from a retry.
+  channel?: DecisionChannel
+}
+
 export type ConsoleState = {
   schema: 'who-decides.console-state.v1'
   tenantId: string
@@ -213,7 +223,12 @@ export class ConsoleEngine {
     }
   }
 
-  async submitDecision(choice: string, rationale: string, idempotencyKey?: string): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
+  /** `channel` carries the authenticated operator's session metadata (from
+   * the passcode gate) into the human-decision audit artifact — an
+   * authenticated console decision must never be recorded with the
+   * unauthenticated demo defaults. Engine-level callers (tests, scenario,
+   * CLI) omit it and keep the honest demo defaults. */
+  async submitDecision(choice: string, rationale: string, idempotencyKey?: string, channel?: DecisionChannel): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
     const run = await this.currentRun()
     if (!run) return { ok: false, error: 'NO_RUN' }
     await this.advancePhases(run)
@@ -221,7 +236,7 @@ export class ConsoleEngine {
     // object — a lost CAS race here means the run already moved on.
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
     const runState = row.state!
-    const prior = row.decision_json ? JSON.parse(row.decision_json) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null } : null
+    const prior = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
     const rowInvocationB = row.invocation_b
 
     // Idempotent recovery, matched strictly: only the SAME submission (key +
@@ -254,9 +269,9 @@ export class ConsoleEngine {
     const stored = await this.runs.acquireDecisionIntent(
       run.id,
       invocationB,
-      JSON.stringify({ choice: prior?.choice ?? choice, rationale: prior?.rationale ?? rationale, decidedAt, idempotencyKey: idempotencyKey ?? null }),
+      JSON.stringify({ choice: prior?.choice ?? choice, rationale: prior?.rationale ?? rationale, decidedAt, idempotencyKey: idempotencyKey ?? null, channel: prior ? prior.channel : channel }),
     )
-    const storedDecision = JSON.parse(stored.decision_json!) as { choice: string, rationale: string, decidedAt: string, idempotencyKey: string | null }
+    const storedDecision = JSON.parse(stored.decision_json!) as StoredDecision
     if (storedDecision.choice !== choice || storedDecision.idempotencyKey !== (idempotencyKey ?? null)) {
       return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
     }
@@ -280,7 +295,12 @@ export class ConsoleEngine {
       rationale: effectiveRationale,
       decidedAt: authoritativeDecidedAt,
     }
-    const humanDecision = buildHumanDecision(s, runtimeDecision, await this.evidenceDigest(run.id))
+    // Attribution belongs to the winning durable intent, just like its
+    // choice and rationale. A retry may arrive under a different session.
+    const decisionChannel = storedDecision.channel
+    const humanDecision = buildHumanDecision(s, runtimeDecision, await this.evidenceDigest(run.id), decisionChannel
+      ? { channel: { interaction: 'web_ui', ...decisionChannel } }
+      : undefined)
     assertValid('human-decision', humanDecision)
     await this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     await this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)
@@ -421,7 +441,10 @@ export class ConsoleEngine {
     const s = loadScenario()
     const artifacts = (await this.runs.listArtifacts(run.id, this.tenant))
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
-    const decision = row.decision_json ? JSON.parse(row.decision_json) as ConsoleState['decision'] : null
+    const storedDecision = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
+    const decision = storedDecision
+      ? { choice: storedDecision.choice, rationale: storedDecision.rationale, decidedAt: storedDecision.decidedAt }
+      : null
     const receipt = row.receipt_json ? JSON.parse(row.receipt_json) as { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } : null
     const effect = row.effect_json ? JSON.parse(row.effect_json) as ConsoleState['effect'] : null
     const replay = row.replay_json ? JSON.parse(row.replay_json) as ConsoleState['replayProbe'] : null

@@ -47,12 +47,44 @@ HACP schemas. See [docs/roadmap.md](docs/roadmap.md) and
 
 ```sh
 npm install
+```
 
-# Decision console (no model needed — deterministic demo of the full loop)
-npm run console          # http://localhost:3100
+The decision console is deterministic and needs no model credentials. It
+starts in public, read-only watch mode; running the demo requires operator
+sign-in.
 
+1. Choose a long operator passcode and generate its SHA-256 hash. Replace the
+   placeholder below with your chosen passcode (this command works on macOS
+   and Linux with Node installed):
+
+   ```sh
+   node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' 'your-long-operator-passcode'
+   ```
+
+2. Add the following to `.env.local` in the repository root, replacing the
+   placeholder with the generated 64-character hash. This file is gitignored;
+   store the hash here, not the passcode itself. Next.js loads it automatically.
+
+   ```dotenv
+   WD_OPERATOR_PASSCODE_HASH=<paste-the-generated-hash>
+   ```
+
+3. Start the console:
+
+   ```sh
+   npm run console
+   ```
+
+4. Open **http://localhost:3100**, expand **Operator sign-in**, enter the
+   original passcode, and select **Sign in**. **Run the demo** then appears.
+   Use `localhost` for local browser access; the session cookie is `Secure`.
+   Restart the console after changing `.env.local`. Without a valid hash,
+   sign-in fails closed and the console stays read-only.
+
+```sh
 # Tests (all offline; CI runs the same plus the contention proof)
 npx tsc --noEmit
+npm run test:auth        # operator sessions, mutation guards, login rate limit
 npm run test:console     # engine: branches, idempotency, crash recovery, reset
 npm run test:artifacts   # schema validation incl. tamper-rejection
 npm run test:consumption # consume-once claims, races, expiry, replay
@@ -85,16 +117,20 @@ human-mediated.
 
 ## Demo boundaries (honest scope)
 
-The decision console (`npm run console`, port 3100) is a **local, single-operator
-demo** and says so plainly:
+The decision console (`npm run console`, port 3100) is a **single-operator
+demo with public watch mode**:
 
-- The HTTP API has **no authentication** and no session binding. Whoever can
-  reach the port can submit a decision. Binding decisions to an authenticated
-  operator session is tracked as real follow-up work, not pretended here.
-- The HACP human-decision artifacts therefore carry demo attribution: the
-  v0.1-draft vocabulary has no "unauthenticated local console" actor
-  verification value, so the artifact's free-text session references say
-  `demo-unauthenticated-local-console` rather than fabricating a real session.
+- State is publicly readable. Starting runs, submitting decisions, resetting
+  the console, and probing duplicate resumes require a server-side operator
+  session issued after passcode sign-in. Sessions expire after 12 hours;
+  the browser carries a `Secure`, `HttpOnly`, `SameSite=Strict` cookie.
+- Authenticated console decisions record the originating operator session in
+  the HACP human-decision artifact. This is shared-passcode authentication,
+  not individual user accounts. Engine/CLI callers without an authenticated
+  channel retain explicit `demo-unauthenticated-local-console` attribution.
+- Public hosting requires HTTPS and the reverse proxy setup in
+  [deploy/PROVISION.md](deploy/PROVISION.md). `npm run console` is the local
+  development server; the hosted deployment uses a production build.
 - The prepared effect is always a **dry-run**: the exact payload is recorded and
   shown, and no external mutation is performed in any branch.
 - Resetting the console archives the current run; completed run records and

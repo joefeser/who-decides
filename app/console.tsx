@@ -2,7 +2,12 @@
 
 /* The three-state console (RULING M3). States change hierarchy, not badges:
  * running → progress dominates; decision_required → the decision dominates;
- * resuming/completed → proof dominates. Wording per RULING M1: never "paused". */
+ * resuming/completed → proof dominates. Wording per RULING M1: never "paused".
+ *
+ * Watch mode: visitors get every state rendered read-only — no run/decide/
+ * reset/probe affordances — plus a small operator sign-in disclosure. The
+ * server decides (`authenticated` on /api/state); the browser never stores
+ * tokens (cookie only, same-origin fetch). */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 type Milestone = { label: string, detail: string, at: string }
@@ -30,6 +35,7 @@ type ConsoleState = {
   artifacts: Array<{ name: string, kind: string, valid: boolean }>
   heading: string
   subheading: string
+  authenticated: boolean
 }
 
 const STATE_TONE: Record<ConsoleState['state'], string> = {
@@ -38,6 +44,64 @@ const STATE_TONE: Record<ConsoleState['state'], string> = {
   decision_required: 'border-amber-600 bg-amber-950/30',
   resuming: 'border-sky-700 bg-sky-950/30',
   completed: 'border-emerald-700 bg-emerald-950/30',
+}
+
+function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
+  const [passcode, setPasscode] = useState('')
+  const [signingIn, setSigningIn] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function signIn(event: React.FormEvent) {
+    event.preventDefault()
+    if (!passcode || signingIn) return
+    setSigningIn(true)
+    setError(null)
+    try {
+      const response = await fetch('/api/operator/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ passcode }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
+        setError(body.error === 'RATE_LIMITED'
+          ? 'Too many attempts — wait a few minutes and try again'
+          : 'Sign-in failed — check the operator passcode')
+        return
+      }
+      setPasscode('')
+      await onSignedIn()
+    } catch {
+      setError('NETWORK_ERROR: could not reach the console server')
+    } finally {
+      setSigningIn(false)
+    }
+  }
+
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Operator sign-in</summary>
+      <form onSubmit={signIn} className="mt-2 flex flex-wrap items-center gap-2">
+        <input
+          type="password"
+          value={passcode}
+          onChange={e => setPasscode(e.target.value)}
+          aria-label="Operator passcode"
+          placeholder="Operator passcode"
+          autoComplete="off"
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
+        />
+        <button
+          type="submit"
+          disabled={signingIn || !passcode}
+          className="rounded-lg border border-slate-600 px-4 py-1.5 text-sm hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {signingIn ? 'Signing in…' : 'Sign in'}
+        </button>
+        {error && <p className="w-full text-sm text-red-400" role="alert">Stopped: {error}</p>}
+      </form>
+    </details>
+  )
 }
 
 export default function Console() {
@@ -51,22 +115,39 @@ export default function Console() {
 
   const refresh = useCallback(async () => {
     const response = await fetch('/api/state', { cache: 'no-store' })
+    if (response.status === 401) {
+      // Defensive: /api/state is public; treat an unexpected 401 as watch mode.
+      setState(null)
+      return
+    }
     if (response.ok) setState(await response.json())
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
 
-  // Poll only while the server is actively transitioning (RULING M3).
+  // Watch mode is server-decided. While loading (state === null) the console
+  // is conservatively read-only; the sign-in disclosure only renders once a
+  // real state response confirms the visitor role.
+  const readOnly = !state?.authenticated
+
+  // Poll while anything can change under the viewer (RULING M3): operators
+  // poll fast through active transitions; visitors poll slower in EVERY
+  // state — they cannot trigger state changes themselves, and must still
+  // see an operator's run start and advance.
   useEffect(() => {
+    if (readOnly) {
+      const timer = setInterval(() => { void refresh() }, 2000)
+      return () => clearInterval(timer)
+    }
     const active = state?.state === 'running' || state?.state === 'resuming'
     if (!active) return
     const timer = setInterval(() => { void refresh() }, 800)
     return () => clearInterval(timer)
-  }, [state?.state, refresh])
+  }, [readOnly, state?.state, refresh])
 
   useEffect(() => {
-    if (state?.state === 'decision_required') choiceRef.current?.focus()
-  }, [state?.state])
+    if (state?.state === 'decision_required' && state?.authenticated) choiceRef.current?.focus()
+  }, [state?.state, state?.authenticated])
 
   async function startRun() {
     setError(null)
@@ -91,6 +172,12 @@ export default function Console() {
       })
       if (!response.ok) {
         const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
+        if (response.status === 401) {
+          // The session expired or was revoked mid-decision — refetch so the
+          // console flips to watch mode and exposes operator sign-in.
+          await refresh()
+          return
+        }
         setError(body.error ?? 'UNKNOWN')
         return
       }
@@ -125,6 +212,15 @@ export default function Console() {
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
 
+  const watchNotice = (
+    <div className="space-y-4">
+      <p className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200" role="note">
+        Awaiting the operator&rsquo;s decision — this console is read-only for visitors.
+      </p>
+      <OperatorSignIn onSignedIn={refresh} />
+    </div>
+  )
+
   const canSubmit = state.state === 'decision_required' && choice !== '' && rationale.trim().length > 0 && !submitting
 
   return (
@@ -144,15 +240,19 @@ export default function Console() {
             The demo seeds a bounded task packet: a security patch whose runtime floor moves —
             a real judgment call the agent cannot own.
           </p>
-          <button
-            onClick={startRun}
-            className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
-          >
-            Run the demo
-          </button>
-          <p className="text-xs text-slate-500">
-            One click starts invocation A. It never preselects your decision.
-          </p>
+          {readOnly ? watchNotice : (
+            <>
+              <button
+                onClick={startRun}
+                className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
+              >
+                Run the demo
+              </button>
+              <p className="text-xs text-slate-500">
+                One click starts invocation A. It never preselects your decision.
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -167,11 +267,12 @@ export default function Console() {
               </li>
             ))}
           </ol>
+          {readOnly && watchNotice}
         </div>
       )}
 
       {state.state === 'decision_required' && state.decisionRequest && (
-        <form onSubmit={submitDecision} className="space-y-5">
+        <div className="space-y-5">
           <p className="font-mono text-xs text-slate-400">
             invocation A · {state.invocationA} — ended. No PR created.
           </p>
@@ -181,50 +282,57 @@ export default function Console() {
             <p className="mt-2 text-sm text-amber-300/90">Who is affected: {state.decisionRequest.whoIsAffected}</p>
             <p className="mt-1 font-mono text-xs text-slate-500">evidence: {state.decisionRequest.tradeoffFindingId}</p>
           </div>
-          <fieldset ref={choiceRef} tabIndex={-1} className="space-y-2" aria-label="Your decision">
-            <legend className="mb-2 text-sm font-medium text-slate-200">Your decision — nothing is selected for you:</legend>
-            {state.decisionRequest.options.map(option => (
-              <label key={option} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2.5 hover:border-slate-500 has-checked:border-amber-500">
-                <input
-                  type="radio"
-                  name="decision"
-                  value={option}
-                  checked={choice === option}
-                  onChange={() => setChoice(option)}
-                  className="h-4 w-4 accent-amber-500"
+          {readOnly ? watchNotice : (
+            <form onSubmit={submitDecision} className="space-y-5">
+              <fieldset ref={choiceRef} tabIndex={-1} className="space-y-2" aria-label="Your decision">
+                <legend className="mb-2 text-sm font-medium text-slate-200">Your decision — nothing is selected for you:</legend>
+                {state.decisionRequest.options.map(option => (
+                  <label key={option} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2.5 hover:border-slate-500 has-checked:border-amber-500">
+                    <input
+                      type="radio"
+                      name="decision"
+                      value={option}
+                      checked={choice === option}
+                      onChange={() => setChoice(option)}
+                      className="h-4 w-4 accent-amber-500"
+                    />
+                    <span className="font-mono text-sm">{option}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <div>
+                <label htmlFor="rationale" className="mb-1 block text-sm font-medium text-slate-200">
+                  Rationale (required — recorded on the decision artifact)
+                </label>
+                <textarea
+                  id="rationale"
+                  value={rationale}
+                  onChange={e => setRationale(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
+                  placeholder="Why this call is yours and why you chose it"
                 />
-                <span className="font-mono text-sm">{option}</span>
-              </label>
-            ))}
-          </fieldset>
-          <div>
-            <label htmlFor="rationale" className="mb-1 block text-sm font-medium text-slate-200">
-              Rationale (required — recorded on the decision artifact)
-            </label>
-            <textarea
-              id="rationale"
-              value={rationale}
-              onChange={e => setRationale(e.target.value)}
-              rows={3}
-              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
-              placeholder="Why this call is yours and why you chose it"
-            />
-          </div>
-          {error && <p className="text-sm text-red-400" role="alert">Stopped: {error}</p>}
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="rounded-lg bg-amber-600 px-5 py-2.5 font-medium hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {submitting ? 'Recording decision…' : 'Record decision'}
-          </button>
-        </form>
+              </div>
+              {error && <p className="text-sm text-red-400" role="alert">Stopped: {error}</p>}
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="rounded-lg bg-amber-600 px-5 py-2.5 font-medium hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {submitting ? 'Recording decision…' : 'Record decision'}
+              </button>
+            </form>
+          )}
+        </div>
       )}
 
       {state.state === 'resuming' && (
-        <p className="animate-pulse text-sm text-sky-300" role="status">
-          Starting new invocation… claiming the decision exactly once…
-        </p>
+        <div className="space-y-4">
+          <p className="animate-pulse text-sm text-sky-300" role="status">
+            Starting new invocation… claiming the decision exactly once…
+          </p>
+          {readOnly && watchNotice}
+        </div>
       )}
 
       {state.state === 'completed' && (
@@ -268,28 +376,34 @@ export default function Console() {
             </p>
           )}
 
-          <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">
-            <h3 className="mb-2 text-sm font-semibold text-slate-200">Prove the gate: attempt a duplicate resume</h3>
-            <p className="mb-3 text-xs text-slate-400">
-              A second invocation tries to claim the same decision. It must fail closed.
-            </p>
-            <button
-              onClick={attemptDuplicate}
-              disabled={replaying}
-              className="rounded-lg border border-slate-600 px-4 py-2 text-sm hover:border-slate-400 disabled:opacity-40"
-            >
-              {replaying ? 'Attempting…' : 'Attempt duplicate resume'}
-            </button>
-            {state.replayProbe && (
-              <p className={`mt-3 rounded-lg px-3 py-2 font-mono text-xs ${state.replayProbe.result.startsWith('REJECTED') ? 'bg-red-950/60 text-red-300' : 'bg-red-950/80 text-red-200'}`} role="alert">
-                {state.replayProbe.result} — {state.replayProbe.detail}
+          {(state.replayProbe || !readOnly) && (
+            <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">Prove the gate: attempt a duplicate resume</h3>
+              <p className="mb-3 text-xs text-slate-400">
+                A second invocation tries to claim the same decision. It must fail closed.
               </p>
-            )}
-          </div>
+              {!readOnly && (
+                <button
+                  onClick={attemptDuplicate}
+                  disabled={replaying}
+                  className="rounded-lg border border-slate-600 px-4 py-2 text-sm hover:border-slate-400 disabled:opacity-40"
+                >
+                  {replaying ? 'Attempting…' : 'Attempt duplicate resume'}
+                </button>
+              )}
+              {state.replayProbe && (
+                <p className={`mt-3 rounded-lg px-3 py-2 font-mono text-xs ${state.replayProbe.result.startsWith('REJECTED') ? 'bg-red-950/60 text-red-300' : 'bg-red-950/80 text-red-200'}`} role="alert">
+                  {state.replayProbe.result} — {state.replayProbe.detail}
+                </p>
+              )}
+            </div>
+          )}
 
-          <button onClick={resetConsole} className="text-xs text-slate-500 underline hover:text-slate-300">
-            Reset demo
-          </button>
+          {readOnly ? watchNotice : (
+            <button onClick={resetConsole} className="text-xs text-slate-500 underline hover:text-slate-300">
+              Reset demo
+            </button>
+          )}
         </div>
       )}
     </section>

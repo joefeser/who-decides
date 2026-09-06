@@ -1,0 +1,32 @@
+# who-decides console systemd unit.
+#
+# Install (see deploy/PROVISION.md for the full sequence):
+#   sudo cp deploy/who-decides.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now who-decides
+#
+# Secrets come from /etc/who-decides.env (0600, read by systemd as root
+# before dropping privileges — the service user never needs to read it).
+
+[Unit]
+Description=who-decides console (Next.js on localhost:3100)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=who-decides
+Group=who-decides
+WorkingDirectory=/opt/who-decides
+EnvironmentFile=/etc/who-decides.env
+ExecStart=/usr/bin/npm run console:start
+Restart=always
+RestartSec=3
+
+# Light hardening: the console writes only to its WD_CONSOLE_DIR.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

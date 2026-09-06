@@ -1,0 +1,71 @@
+# who-decides public demo — Caddy reverse proxy with automatic HTTPS.
+#
+# The rate_limit directive needs Caddy built with the rate-limit module
+# (mholt/caddy-ratelimit). Build once on the host:
+#
+#   xcaddy build --with github.com/mholt/caddy-ratelimit
+#
+# Environment (exported in the Caddy service environment, never committed):
+#   WD_DEMO_DOMAIN  e.g. demo.example.com  — the site's public DNS name
+#   ACME_EMAIL      address for Let's Encrypt account + expiry notices
+#
+# Rate limiting note: caddy-ratelimit zones are in-memory per Caddy instance
+# (a second layer in front of the app's own per-IP login limit in
+# src/server/auth.ts, not a distributed limiter).
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$WD_DEMO_DOMAIN} {
+	encode gzip
+
+	# Rate limits are SPLIT by surface (review P1): one shared /api/* budget
+	# starved the public watch-mode poller (~30 req/min per tab against a
+	# 30/min zone) and 429'd state refreshes.
+	#
+	# - operator_login: the only unauthenticated-sensitive surface; Caddy
+	#   10/min per IP is a second layer over the app's 5 failures/15 min
+	#   (src/server/auth.ts).
+	# - public_state_poll: /api/state is public watch-mode traffic
+	#   (30/min per tab at the 2s visitor poll); 120/min per IP gives a
+	#   couple of tabs / small NAT headroom.
+	# - Mutations (/api/run|decision|replay, DELETE /api/state) are
+	#   operator-gated at the app and deliberately NOT Caddy-limited.
+	rate_limit {
+		zone operator_login {
+			match {
+				path /api/operator/login
+				method POST
+			}
+			key {remote_host}
+			events 10
+			window 1m
+		}
+		zone public_state_poll {
+			match {
+				path /api/state
+			}
+			key {remote_host}
+			events 120
+			window 1m
+		}
+	}
+
+	reverse_proxy localhost:3100
+	# Trust note: Caddy treats direct clients as untrusted by default, so it
+	# replaces any client-supplied X-Forwarded-For with the real client IP
+	# before proxying. The app's rate limiter keys on the LAST forwarded
+	# address (src/server/auth.ts clientIp), which is the proxy-appended
+	# client IP — spoofed prefixes cannot spread login attempts across
+	# identities. Keep :3100 firewalled from the internet (PROVISION.md).
+
+	header {
+		# HSTS: after the first HTTPS visit, browsers refuse plain HTTP for
+		# one year (including subdomains).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
