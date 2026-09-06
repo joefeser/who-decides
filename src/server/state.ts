@@ -20,9 +20,8 @@ import { decisionDigest } from '../consumption/store'
 import type { DecisionRecord } from '../consumption/store'
 import { readFileSync } from 'node:fs'
 import type { RunStore } from './store/store'
-import { SqliteRunStore } from './store/sqlite-run-store'
+import { createDefaultStores } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
-import { SqliteReceiptStore } from './store/sqlite-receipt-store'
 
 const DB_DIR = process.env.WD_CONSOLE_DIR ?? path.resolve(process.cwd(), '.tmp/console')
 const RUN_RUNNING_MS = 2600
@@ -122,8 +121,12 @@ export class ConsoleEngine {
   constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore }) {
     this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
-    this.runs = stores?.runs ?? new SqliteRunStore(dir)
-    this.receipts = stores?.receipts ?? new SqliteReceiptStore(path.join(dir, 'consumption.db'))
+    // Backend selection (WD_STORE=sqlite|postgres) lives in the factory;
+    // the engine itself never branches on the storage backend. Defaults are
+    // skipped entirely when a caller injects both stores.
+    const defaults = stores?.runs && stores?.receipts ? undefined : createDefaultStores(dir)
+    this.runs = stores?.runs ?? defaults!.runs
+    this.receipts = stores?.receipts ?? defaults!.receipts
     // The provider seam's initialize() is async (a Postgres adapter must be);
     // the engine bridges that with a ready-promise so constructors stay sync.
     this.ready = this.runs.initialize()

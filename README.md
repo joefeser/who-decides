@@ -92,6 +92,27 @@ npm run test:live-loop   # the live script's decision flow (synthetic runtime)
 npm run scenario         # end-to-end artifact spine, deterministic
 ```
 
+### Postgres backend (optional)
+
+The console stores runs and consumption receipts in SQLite by default
+(zero-config local demo). Setting `WD_STORE=postgres` swaps in the Postgres
+adapters for the hosted demo — engine logic is unchanged:
+
+```dotenv
+WD_STORE=postgres
+WD_PG_URL=postgres://user:password@host:5432/database   # or DATABASE_URL
+# Discrete fallbacks: WD_PG_HOST / WD_PG_PORT / WD_PG_USER / WD_PG_PASSWORD / WD_PG_DATABASE
+```
+
+Both stores live in the same database; the adapter creates its tables
+idempotently on first use (`initialize`). The Postgres suites mirror the
+SQLite contract — claims and contention semantics included — and run against
+any disposable database, skipping green when unset:
+
+```sh
+WD_TEST_PG_URL=postgres://postgres@127.0.0.1:55440/wd_test npm run test:pg
+```
+
 ### Real-model pass (Bedrock)
 
 ```sh
