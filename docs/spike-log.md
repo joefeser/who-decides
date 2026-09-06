@@ -523,3 +523,21 @@ flagged follow-up for a salted slow hash if the hosted demo wants it;
 recovered with a dedicated worktree — the C-block collision hazard is now
 demonstrated twice, and dedicated worktrees are henceforth mandatory for
 parallel sessions in this repo.
+
+## Day 7 addendum 3 — HACP conformance package landed; qualification ruled
+
+HACP PR #46 merged (122bfde): the executable v0.3-candidate conformance
+package — seven closed JSON Schema 2020-12 contracts, reproducible RFC 8785
+JCS digest vectors (compute-vectors.mjs, one-command check
+hacp:v03-candidate), a seven-record valid chain and 22 negative fixtures
+covering the full failure taxonomy WITS's B1 report demanded. Provenance
+table honestly maps which shapes derive from who-decides's proven
+local-owner contracts. Both REVIEW-REQUIRED items were correctly held for
+the owner.
+
+Owner ruling (recorded as HACP issue #47): second-implementation
+qualification = Option 1, independent production + cross-validation with
+who-decides (no runtime imports). Bidirectional production (Option 2) is
+reserved as the future RELEASE gate — logged for later, not lost. WITS
+Interworking Proof v0 may proceed under Option 1 semantics. Digest-domain
+strings remain REVIEW-REQUIRED (normative; change = contract change).
