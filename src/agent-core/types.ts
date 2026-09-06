@@ -48,6 +48,11 @@ export type ResumeInput = {
   tag: string
   choice: string
   rationale: string
+  /** When the resume arrived via an authenticated machine principal (the
+   * AgentCore runtime's service token), the honest credential reference to
+   * stamp into the decision artifact. Absent = the unverified AC-1
+   * boundary (pending full AC-2 rollout). */
+  machineCredentialRef?: string
 }
 
 /** Phase B output. */

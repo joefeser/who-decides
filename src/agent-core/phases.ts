@@ -279,16 +279,22 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
   // fixture produced a digest of bytes that were never written).
   const persistedStop = readFileSync(path.join(runDir(ctx, input.tag), '03-stop-response.json'), 'utf8')
   const evidenceDigest = createHash('sha256').update(persistedStop).digest('hex')
-  // AC-1 boundary: this service surface does NOT yet verify an operator
-  // (that is AC-2's machine-principal auth). The artifact says so — an
-  // unverified API submission, honestly labeled, never impersonating a
-  // verified operator session (review P1).
+  // Channel honesty (AC-2): when the resume arrived through the machine
+  // principal's verified service token, the artifact records the machine
+  // credential reference — never impersonating an operator session. When it
+  // did not (direct phase calls, tests), the artifact still says so plainly.
   const humanDecision = buildHumanDecision(runtimeF, runtimeDecision, evidenceDigest, {
-    channel: {
-      interaction: 'api',
-      sessionReference: `agentcore-service:${input.tag}`,
-      authEventRef: 'unverified-api-pending-ac2',
-    },
+    channel: input.machineCredentialRef
+      ? {
+          interaction: 'api',
+          sessionReference: `machine:agentcore-runtime:${input.machineCredentialRef}`,
+          authEventRef: 'machine-service-token',
+        }
+      : {
+          interaction: 'api',
+          sessionReference: `agentcore-service:${input.tag}`,
+          authEventRef: 'unverified-direct-phase-call',
+        },
   })
   assertValid('human-decision', humanDecision)
 
