@@ -461,3 +461,15 @@ owner gate exists exactly for this: convergence is a judgment, and today it
 was made by the human. Residual risk named on the record: an adversary who
 can recreate the pinned guard-directory identity AND anchor contents has
 full local filesystem control — the owner trust boundary itself.
+
+## Day 7 — 2026-09-06: HACP v0.3.0-candidate PUBLISHED
+
+HACP PR #45 merged to main at db47da2 (12:33): the v0.3.0-candidate protocol
+packet is live, closing the loop — debate → spike → proof → candidate
+standard. Publication label decided by the owner on my recommendation:
+CANDIDATE, not release, with three explicit promotion criteria (second
+independent implementation; same-file legacy migration exercised in a real
+eligible deployment; real-effect semantics separately specified and proven).
+who-decides' evidence is pinned in the packet at exact heads and proof SHAs
+(e47515f / c6677da, 44/44 receipts). The flywheel's first full turn took
+eight months of concept + two days of receipts.
