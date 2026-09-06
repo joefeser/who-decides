@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop",
     "start": "tsx src/console/server.ts",
     "smoke": "tsx src/smoke.ts",
     "preflight": "tsx src/preflight.ts",
