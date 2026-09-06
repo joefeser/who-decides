@@ -541,3 +541,20 @@ who-decides (no runtime imports). Bidirectional production (Option 2) is
 reserved as the future RELEASE gate — logged for later, not lost. WITS
 Interworking Proof v0 may proceed under Option 1 semantics. Digest-domain
 strings remain REVIEW-REQUIRED (normative; change = contract change).
+
+## Day 7 addendum 4 — PR #15 merged: the Postgres adapters are on main
+
+feat/store-postgres merged at 79968fb after the full three-family
+convergence: Codex x2 (8 findings incl. the expired-claim fast-path
+replay), owner disposition of the engine-level reset-mid-submit seam gap
+(issue #16 — with the SQLite counterpart's missing archived guard noted),
+Astra independent pass (9 findings, 1 P1: waiting claimants replaying
+after expiry; plus a 260-line review suite pinning its own findings).
+Verified 88/88 SQLite + 49/49 Postgres on a fresh disposable cluster.
+WD_STORE=sqlite|postgres; local demo byte-identical on the default.
+
+The demo block's construction is complete: A2 architecture (AgentCore
+agent/host split), A3 adapter, A4/A5/A6 auth/watch/deploy — all merged,
+all three-family reviewed. One operational note: pg is a runtime dep on
+main now (fresh clones need npm install before tsc — noted after my own
+false alarm).
