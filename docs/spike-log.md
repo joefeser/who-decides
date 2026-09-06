@@ -586,3 +586,13 @@ origin/dev includes PR #1364; its next step is repinning the interworking
 spec to new HACP main, reconciling the #48 disposition, two independent
 reviews, then Tasks 1.1–1.6 (the continuation-approval act and projection).
 All three repos are moving simultaneously on the same ladder.
+
+## Day 7 addendum 7 — HACP #51 closed (second contract gap surfaced and fixed)
+
+HACP #51 (stop_response vs started-successor contradiction — the second
+gap the WITS second implementation surfaced, after #48) closed via PR #53
+(50741e30 on main): "Correct v0.3 candidate branch conformance." WITS's
+UPSTREAM_CONTRACT_AMBIGUITY stop is lifted; its next step is repinning to
+this HACP main and running the digest-verified dual-review round it queued.
+The ladder's scorecard: two gaps, both caught at gates, zero improvised
+work, both resolved upstream by the standard's owners.
