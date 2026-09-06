@@ -13,9 +13,11 @@ export async function POST(request: NextRequest) {
   if (loginRateLimiter.isBlocked(ip)) {
     return NextResponse.json({ ok: false, error: 'RATE_LIMITED' }, { status: 429 })
   }
+  // Reserve this attempt before yielding: concurrent requests must see
+  // in-flight attempts in the budget. A successful login clears it below.
+  loginRateLimiter.recordFailure(ip)
   const result = await loginOperator(body.passcode)
   if (!result.ok) {
-    loginRateLimiter.recordFailure(ip)
     return NextResponse.json({ ok: false, error: 'OPERATOR_AUTH_REQUIRED' }, { status: 401 })
   }
   loginRateLimiter.clear(ip)

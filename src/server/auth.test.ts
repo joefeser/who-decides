@@ -174,6 +174,15 @@ test('the rate-limit identity is the LAST forwarded address, not the client-supp
   assert.equal(clientIp(first), clientIp(second))
 })
 
+test('concurrent failed logins share the five-attempt budget', async () => {
+  loginRateLimiter.reset()
+  const responses = await Promise.all(Array.from({ length: 10 }, () =>
+    postLogin(loginRequest({ passcode: 'wrong-concurrent-passcode' }))))
+  assert.equal(responses.filter(response => response.status === 401).length, 5)
+  assert.equal(responses.filter(response => response.status === 429).length, 5)
+  assert.equal((await postLogin(loginRequest({ passcode: PASSCODE }))).status, 429)
+})
+
 test('removing or corrupting the passcode hash fails existing sessions closed', async () => {
   loginRateLimiter.reset()
   const cookie = await login()

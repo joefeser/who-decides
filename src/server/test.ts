@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { ConsoleEngine } from './state'
+import { SqliteReceiptStore } from './store/sqlite-receipt-store'
 
 function freshEngine(): { engine: ConsoleEngine, dir: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'wd-console-test-'))
@@ -141,6 +142,43 @@ test('crash between claim and state-write recovers with the same successor (no c
     assert.equal((await engine.getState()).state, 'completed')
   } finally {
     await cleanup(dir, engine)
+  }
+})
+
+test('claim recovery preserves the original decision session across a restart', async () => {
+  for (const originalChannel of [
+    { sessionReference: 'original-operator-session', authEventRef: 'original-login' },
+    undefined,
+  ]) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wd-session-recovery-'))
+    process.env.WD_CONSOLE_DIR = dir
+    const receipts = new SqliteReceiptStore(path.join(dir, 'consumption.db'))
+    let engine = new ConsoleEngine('default', { receipts: {
+      async claim(...args) {
+        await receipts.claim(...args)
+        throw new Error('simulated crash after durable claim')
+      },
+      close: () => receipts.close(),
+    } })
+    try {
+      await runToDecision(engine, dir)
+      await assert.rejects(engine.submitDecision('defer', 'original rationale', 'session-recovery', originalChannel), /simulated crash/)
+      await engine.close()
+      engine = new ConsoleEngine()
+      const result = await engine.submitDecision('defer', 'retry rationale', 'session-recovery', {
+        sessionReference: 'retrying-operator-session', authEventRef: 'later-login',
+      })
+      assert.equal(result.ok, true)
+      const artifact = readArtifact(dir, 'human-decision')
+      const actor = artifact.actor as { authentication_context: { session_reference: string, auth_event_ref: string } }
+      assert.equal(actor.authentication_context.session_reference,
+        originalChannel?.sessionReference ?? 'demo-unauthenticated-local-console')
+      if (originalChannel) assert.equal(actor.authentication_context.auth_event_ref, originalChannel.authEventRef)
+      assert.equal(artifact.reason, 'original rationale')
+      assert.deepEqual(Object.keys((await engine.getState()).decision!).sort(), ['choice', 'decidedAt', 'rationale'])
+    } finally {
+      await cleanup(dir, engine)
+    }
   }
 })
 
