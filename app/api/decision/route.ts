@@ -20,17 +20,22 @@ export async function POST(request: NextRequest) {
   // AC-3: after the decision records locally, dispatch invocation B to the
   // deployed agent (the console's operator decision drives the live run).
   // The engine's result stands regardless of the agent's dispatch outcome.
+  // The dispatch carries the AUTHORITATIVE stored decision — on an
+  // idempotent retry the request body may carry a different rationale,
+  // but the recorded one is what was consumed (review P1).
   const dispatcher = getAgentDispatcher()
   let agent: Record<string, unknown> | undefined
   if (dispatcher.isEnabled()) {
     const state = await engine.getState()
-    const dispatched = await dispatcher.dispatch({
-      kind: 'decision-resume',
-      sessionId: state.runId,
-      choice: body.choice,
-      rationale: body.rationale,
-    })
-    agent = { ok: dispatched.ok, transport: dispatched.dispatch.transport, result: dispatched.result, error: dispatched.error }
+    if (state.decision) {
+      const dispatched = await dispatcher.dispatch({
+        kind: 'decision-resume',
+        sessionId: state.runId,
+        choice: state.decision.choice,
+        rationale: state.decision.rationale,
+      })
+      agent = { ok: dispatched.ok, transport: dispatched.dispatch.transport, result: dispatched.result, error: dispatched.error }
+    }
   }
 
   return NextResponse.json({ ...result, agent })

@@ -35,14 +35,26 @@ export function getAgentDispatcher(): AgentDispatcher {
     const aws = new mod.BedrockAgentCoreClient({ region: process.env.WD_AWS_REGION ?? 'us-east-1' })
     client = {
       invoke: async (payload) => {
+        // Send the dispatcher's reported session id (the prefixed form),
+        // not the bare business id — live diagnostics must correlate with
+        // the metadata the console surfaces (review P2).
+        const runtimeSessionId = `wd-console-${payload.sessionId}`
         const command = new mod.InvokeAgentRuntimeCommand({
           agentRuntimeArn: endpoint,
-          runtimeSessionId: payload.sessionId,
+          runtimeSessionId,
           payload: JSON.stringify(payload),
           contentType: 'application/json',
         })
         const response = await aws.send(command)
-        return response
+        // The SDK returns the agent payload as a streaming body — collect
+        // and parse it before returning, so route JSON serialization never
+        // sees a Node stream (review P1).
+        const body = response.response ?? response.payload ?? response.body
+        if (body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'function') {
+          const text = await (body as { text: () => Promise<string> }).text()
+          try { return JSON.parse(text) as Record<string, unknown> } catch { return { rawResponse: text } }
+        }
+        return response as Record<string, unknown>
       },
     }
   } catch (err) {
