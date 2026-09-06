@@ -70,6 +70,9 @@ commands. **Values below are placeholders; fill them in on the host only.**
 #   printf '%s' '<choose-a-long-passcode>' | sha256sum       # Linux
 #   printf '%s' '<choose-a-long-passcode>' | shasum -a 256   # macOS
 WD_OPERATOR_PASSCODE_HASH=<64-hex sha256 of the operator passcode>
+# Agent dispatch (optional — set both to enable the live agent):
+# WD_AGENTCORE_ENDPOINT=<runtime ARN>
+# WD_MACHINE_TOKEN=<service token>
 
 # --- Console storage ------------------------------------------------------
 # Data directory for the SQLite stores (state.db with runs + operator

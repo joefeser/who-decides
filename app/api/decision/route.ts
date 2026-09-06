@@ -12,6 +12,11 @@ export async function POST(request: NextRequest) {
   if (!body?.choice || typeof body.rationale !== 'string') {
     return NextResponse.json({ ok: false, error: 'VALIDATION_ERROR' }, { status: 400 })
   }
+  // Capture the run BEFORE the decision records — a concurrent reset +
+  // restart could move getState() to a new run, and invocation B must
+  // resume the run the decision was recorded on (review finding).
+  const preState = await engine.getState()
+  const targetRunId = preState.runId
   const result = await engine.submitDecision(body.choice, body.rationale, body.idempotencyKey, session)
   if (!result.ok) {
     return NextResponse.json(result, { status: 409 })
@@ -25,12 +30,14 @@ export async function POST(request: NextRequest) {
   // but the recorded one is what was consumed (review P1).
   const dispatcher = getAgentDispatcher()
   let agent: Record<string, unknown> | undefined
-  if (dispatcher.isEnabled()) {
+  if (dispatcher.isEnabled() && targetRunId) {
+    // Read the decision back from the TARGET run (the one the decision was
+    // recorded on), not whatever run getState() surfaces now.
     const state = await engine.getState()
-    if (state.decision) {
+    if (state.runId === targetRunId && state.decision) {
       const dispatched = await dispatcher.dispatch({
         kind: 'decision-resume',
-        sessionId: state.runId,
+        sessionId: targetRunId,
         choice: state.decision.choice,
         rationale: state.decision.rationale,
       })

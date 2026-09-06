@@ -10,6 +10,16 @@
 import { createAgentDispatcher, type AgentDispatcher, type InvokeAgentRuntimeClient } from './agent-dispatch'
 
 let cached: AgentDispatcher | undefined
+let cachedError: Error | undefined
+
+/** Call once at server startup (before any route can create a run): a
+ * configured-but-missing SDK fails HERE, not after a run exists (review
+ * finding — the first route call previously paid the ENVIRONMENT_BLOCKED
+ * cost mid-request). Routes calling getAgentDispatcher after a failed init
+ * receive the typed disabled stop, never a mid-request throw. */
+export function initAgentDispatcher(): void {
+  try { getAgentDispatcher() } catch (err) { cachedError = err as Error }
+}
 
 export function getAgentDispatcher(): AgentDispatcher {
   if (cached) return cached
@@ -17,6 +27,13 @@ export function getAgentDispatcher(): AgentDispatcher {
   const machineToken = process.env.WD_MACHINE_TOKEN
 
   if (!endpoint || !machineToken) {
+    cached = createAgentDispatcher({})
+    return cached
+  }
+  if (cachedError) {
+    // A previous init failed (SDK missing). Routes get the typed disabled
+    // stop; the error is reported via the health endpoint, not thrown
+    // into an in-flight request.
     cached = createAgentDispatcher({})
     return cached
   }
@@ -70,4 +87,9 @@ export function getAgentDispatcher(): AgentDispatcher {
 
   cached = createAgentDispatcher({ endpoint, machineToken }, client)
   return cached
+}
+
+/** The startup error, if init failed — surfaced by the health endpoint. */
+export function agentDispatcherError(): Error | undefined {
+  return cachedError
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import engine from '../../../src/server/state'
+import { agentDispatcherError } from '../../../src/server/agent-dispatch-wiring'
 import { requireOperator } from '../../../src/server/auth'
 
 /** Watch mode: the state itself is public; `authenticated` tells the console
