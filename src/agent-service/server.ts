@@ -16,7 +16,9 @@ import type { ServiceContext } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
 const DATA_DIR = process.env.WD_AGENT_DATA_DIR ?? path.resolve(process.cwd(), '.tmp/agent-service')
-const CLAIM_DB = process.env.WD_AGENT_CLAIM_DB ?? path.resolve(process.cwd(), '.tmp/agent-service/consumption.db')
+// The claim DB defaults INSIDE the data directory so a single WD_AGENT_DATA_DIR
+// configuration keeps claims with the run state they protect (review finding).
+const CLAIM_DB = process.env.WD_AGENT_CLAIM_DB ?? path.join(DATA_DIR, 'consumption.db')
 
 function loadFixture(): Scenario {
   return JSON.parse(
@@ -30,9 +32,11 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
+    let overflowed = false
     req.on('data', (chunk: Buffer) => {
+      if (overflowed) return // stop accumulating; drain without destroying so the 400 can be sent
       size += chunk.length
-      if (size > 1024 * 1024) { reject(new Error('PAYLOAD_TOO_LARGE')); req.destroy(); return }
+      if (size > 1024 * 1024) { overflowed = true; reject(new Error('PAYLOAD_TOO_LARGE')); return }
       chunks.push(chunk)
     })
     req.on('end', () => {

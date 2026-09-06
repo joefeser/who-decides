@@ -30,11 +30,21 @@ export function syncDir(dir: string): void {
   }
 }
 
-/** Durable directory creation: fsync the parent's entry too, so power loss
- * cannot discard the just-created directory and everything inside it. */
+/** Durable directory creation: fsync every directory entry created on the
+ * way down, so power loss cannot discard any level of a recursive create
+ * (review finding: the immediate parent alone is not enough when multiple
+ * levels were created). */
 export function mkdirDurable(dir: string): void {
+  const missing: string[] = []
+  let current = dir
+  while (!existsSync(current)) {
+    missing.unshift(current)
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
   mkdirSync(dir, { recursive: true })
-  syncDir(path.dirname(dir))
+  for (const level of missing) syncDir(path.dirname(level))
 }
 
 /** Permanent O_EXCL reservation — existing reservations (including dead or
@@ -45,8 +55,11 @@ export function reserveExclusive(filePath: string): boolean {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw err
   }
-  try { writeSync(fd, JSON.stringify({ holderPid: process.pid, acquiredAt: new Date().toISOString() })) }
-  finally { closeSync(fd) }
+  try {
+    writeSync(fd, JSON.stringify({ holderPid: process.pid, acquiredAt: new Date().toISOString() }))
+    fsyncSync(fd)
+  } finally { closeSync(fd) }
+  syncDir(path.dirname(filePath))
   return true
 }
 

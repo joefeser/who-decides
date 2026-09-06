@@ -16,6 +16,9 @@ export type RunState = {
   invocationB: string
   receiptId?: string
   outcome?: string
+  /** sha256 of the scenario fixture at phase A — resume refuses if it
+   * differs (the run's data cannot change mid-flight). */
+  fixtureDigest?: string
 }
 
 /** Injectable runtime seam — tests supply a synthetic agent; production

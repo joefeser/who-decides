@@ -146,6 +146,7 @@ export async function startPhase(ctx: ServiceContext, input: StartInput, runtime
     choice: '', rationale: '', decidedAt: '',
     invocationA,
     invocationB: `inv-${randomUUID()}`,
+    fixtureDigest: createHash('sha256').update(JSON.stringify(ctx.fixture)).digest('hex'),
   }
   saveRunState(stateFile(ctx, input.tag), state)
 
@@ -175,6 +176,13 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
     return { status: 'HUMAN_DECISION_REQUIRED', reason: `run is ${prior.phase}; automatic recovery is disabled` }
   }
   const f = ctx.fixture
+  // The resume runs against the SAME fixture phase A validated — a restart
+  // with a changed fixture must not silently resume under different data
+  // (review finding).
+  const currentFixtureDigest = createHash('sha256').update(JSON.stringify(f)).digest('hex')
+  if (prior.fixtureDigest && prior.fixtureDigest !== currentFixtureDigest) {
+    return { status: 'STATE_CONFLICT', reason: 'FIXTURE_CHANGED: the scenario differs from the one phase A started under' }
+  }
   if (!f.decision_request.options.includes(input.choice)) {
     return { status: 'INVALID_INPUT', reason: `INVALID_CHOICE:${input.choice}` }
   }
@@ -188,7 +196,14 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
     return { status: 'STATE_CONFLICT', reason: `tag already holds a ${prior.phase} decision (${prior.choice})` }
   }
 
-  // ── Claim BEFORE resume — the claim gates execution ─────────────────────
+  // ── Decision lock: one resume transition at a time per tag (review
+  // finding — two concurrent decision POSTs must not both pass the
+  // awaiting_decision check and race the state write).
+  const decisionLock = path.join(ctx.dataDir, `decision-lock-${input.tag}.lock`)
+  mkdirDurable(ctx.dataDir)
+  if (!reserveExclusive(decisionLock)) {
+    return { status: 'HUMAN_DECISION_REQUIRED', reason: 'a concurrent decision submission is in progress' }
+  }
   const decidedAt = new Date().toISOString()
   const state: ServiceRunState = { ...prior, phase: 'claimed', choice: input.choice, rationale, decidedAt }
   saveRunState(stateFile(ctx, input.tag), state)
