@@ -67,13 +67,13 @@ prLoopPacket:
       requestAllowed: policy
       requestRetryCeiling: 2
       retryCooldownSeconds: 120
+    # Qodo sunset 2026-09-07 (owner decision): the reviewer is leaving the
+    # platform. Disabled rather than removed so the lane's history and the
+    # bot's past reviews remain legible. Codex is now the sole required
+    # reviewer; the batch invariant applies to it alone.
     qodo:
-      requirement: required
-      waitUntilReturnedBeforeProcessing: true
-      waitTimeoutSeconds: 1200
-      requestAllowed: explicit_only
-      requestRetryCeiling: 0
-      retryCooldownSeconds: 0
+      requirement: disabled
+      waitUntilReturnedBeforeProcessing: false
     gemini:
       requirement: disabled
       waitUntilReturnedBeforeProcessing: false
