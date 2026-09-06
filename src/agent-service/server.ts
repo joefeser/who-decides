@@ -11,7 +11,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Scenario } from '../artifacts/build'
-import { startPhase, resumePhase, defaultRuntimeFactory } from '../agent-core/phases'
+import { startPhase, resumePhase } from '../agent-core/phases'
+import { createMachineAuth, attestMachinePrincipal } from './machine-auth'
 import type { ServiceContext } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
@@ -27,6 +28,7 @@ function loadFixture(): Scenario {
 }
 
 const ctx: ServiceContext = { dataDir: DATA_DIR, claimDb: CLAIM_DB, fixture: loadFixture() }
+const machineAuth = createMachineAuth({ tokenHash: process.env.WD_MACHINE_TOKEN_HASH })
 
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -58,13 +60,27 @@ const server = createServer(async (req, res) => {
     return send(res, 200, { ok: true, service: 'who-decides-agent', dataDir: DATA_DIR })
   }
   if (req.method === 'POST' && req.url === '/invocations') {
+    // Machine-principal gate (AC-2, review round-2 P1): the documented
+    // AgentCore deployment authenticates at the PLATFORM boundary
+    // (SigV4/OAuth on InvokeAgentRuntime) — the shared service token
+    // travels INSIDE the invocation payload, which the platform delivers,
+    // not as an Authorization header. Both paths authenticate the same
+    // principal: header (direct/test deployments) or body.credential
+    // (managed-runtime deployments). /ping stays open for health checks.
     let payload: Record<string, unknown>
     try { payload = await readJson(req) }
     catch (err) { return send(res, 400, { ok: false, error: String((err as Error).message ?? err) }) }
     if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
       return send(res, 400, { ok: false, error: 'INVALID_BODY: expected a JSON object' })
     }
-
+    const bodyCredential = typeof payload.credential === 'string' ? payload.credential : undefined
+    const auth = bodyCredential !== undefined
+      ? machineAuth.authorizeCredential(bodyCredential)
+      : machineAuth.authorize(req as unknown as Request)
+    if (!auth.ok) {
+      const status = auth.error === 'MACHINE_AUTH_REQUIRED' || auth.error === 'MACHINE_AUTH_INVALID' ? 401 : 503
+      return send(res, status, { ok: false, error: auth.error })
+    }
     const kind = payload.kind
     const tag = typeof payload.sessionId === 'string' ? payload.sessionId : ''
     // Malformed session ids are client errors, not service failures
@@ -80,7 +96,7 @@ const server = createServer(async (req, res) => {
       if (kind === 'decision-resume') {
         const choice = typeof payload.choice === 'string' ? payload.choice : ''
         const rationale = typeof payload.rationale === 'string' ? payload.rationale : ''
-        const result = await resumePhase(ctx, { tag, choice, rationale })
+        const result = await resumePhase(ctx, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) })
         const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED'
         return send(res, conflict ? 409 : 200, { ok: !conflict, result })
       }

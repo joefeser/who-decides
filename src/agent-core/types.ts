@@ -43,11 +43,28 @@ export type StartOutput =
   | { status: 'HUMAN_DECISION_REQUIRED', reason: string }
   | { status: 'ENVIRONMENT_BLOCKED', reason: string }
 
+/** Server-side attestation of a VERIFIED machine principal. Callers
+ * cannot fabricate this: the server constructs it only after
+ * machine-auth validation succeeds, and the phase verifies the brand
+ * before trusting the credential reference (review security finding). */
+/** Runtime-unforgeable brand: a module-private Symbol. A structural copy
+ * from a direct caller cannot set this property — only
+ * attestMachinePrincipal (server-side, post-authorize) constructs it. */
+declare const attestationBrand: unique symbol
+export type MachinePrincipalAttestation = {
+  readonly [attestationBrand]: true
+  readonly credentialRef: string
+}
+
 /** Phase B input: the recorded human decision. */
 export type ResumeInput = {
   tag: string
   choice: string
   rationale: string
+  /** Only the server sets this, via attestMachinePrincipal after a
+   * successful authorize() — direct phase callers leave it absent and
+   * their artifacts honestly say unverified-direct-phase-call. */
+  machinePrincipal?: MachinePrincipalAttestation
 }
 
 /** Phase B output. */
