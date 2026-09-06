@@ -20,9 +20,8 @@ import { decisionDigest } from '../consumption/store'
 import type { DecisionRecord } from '../consumption/store'
 import { readFileSync } from 'node:fs'
 import type { RunStore } from './store/store'
-import { SqliteRunStore } from './store/sqlite-run-store'
+import { createDefaultRunStore, createDefaultReceiptStore } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
-import { SqliteReceiptStore } from './store/sqlite-receipt-store'
 
 const DB_DIR = process.env.WD_CONSOLE_DIR ?? path.resolve(process.cwd(), '.tmp/console')
 const RUN_RUNNING_MS = 2600
@@ -122,8 +121,12 @@ export class ConsoleEngine {
   constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore }) {
     this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
-    this.runs = stores?.runs ?? new SqliteRunStore(dir)
-    this.receipts = stores?.receipts ?? new SqliteReceiptStore(path.join(dir, 'consumption.db'))
+    // Backend selection (WD_STORE=sqlite|postgres) lives in the factory;
+    // the engine itself never branches on the storage backend. Each missing
+    // store is defaulted independently, so partial injection never builds
+    // an unused adapter that close() could not reach.
+    this.runs = stores?.runs ?? createDefaultRunStore(dir)
+    this.receipts = stores?.receipts ?? createDefaultReceiptStore(dir)
     // The provider seam's initialize() is async (a Postgres adapter must be);
     // the engine bridges that with a ready-promise so constructors stay sync.
     this.ready = this.runs.initialize()
@@ -161,14 +164,14 @@ export class ConsoleEngine {
       // id. A run already past provisioning just needs the artifact repair.
       await this.provisionArtifacts(active.id)
       if (active.state !== 'provisioning') return { runId: active.id }
-      if (await this.runs.markProvisioned(active.id)) return { runId: active.id }
+      if (await this.completeProvisioning(active.id)) return { runId: active.id }
       if (retried) throw new Error('PROVISIONING_RETRY_EXHAUSTED')
       return await this.startRun(true)
     }
 
     try {
       await this.provisionArtifacts(runId)
-      if (!(await this.runs.markProvisioned(runId))) {
+      if (!(await this.completeProvisioning(runId))) {
         throw new Error(`PROVISIONING_RETRACTED:${runId}`)
       }
     } catch (err) {
@@ -179,6 +182,16 @@ export class ConsoleEngine {
       throw err
     }
     return { runId }
+  }
+
+  /** A lost provisioning CAS can mean another caller finished the same
+   * work. Network I/O lets repair overtake the creator, so distinguish that
+   * success from retraction without changing markProvisioned's CAS result. */
+  private async completeProvisioning(runId: string): Promise<boolean> {
+    if (await this.runs.markProvisioned(runId)) return true
+    const row = await this.runs.getRunRow(runId)
+    return row !== undefined && Number(row.archived) === 0
+      && ['running', 'decision_required', 'resuming', 'completed'].includes(row.state ?? '')
   }
 
   /** Writes the invocation-A artifacts idempotently — the builders are
@@ -408,9 +421,16 @@ export class ConsoleEngine {
   }
 
   async close(): Promise<void> {
-    await this.ready
-    await this.receipts.close()
-    await this.runs.close()
+    // Initialization may fail after opening a pool, and either store's
+    // close can reject. Attempt both cleanups while preserving the original
+    // initialization/close error for the caller.
+    const initialized = await Promise.allSettled([this.ready])
+    const closed = await Promise.allSettled([
+      Promise.resolve().then(() => this.receipts.close()),
+      Promise.resolve().then(() => this.runs.close()),
+    ])
+    const failure = [...initialized, ...closed].find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
   }
 
   private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', artifact: unknown): Promise<void> {
