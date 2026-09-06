@@ -53,9 +53,11 @@ export function resolvePostgresConfig(overrides: PostgresStoreConfig = {}): Post
   return overrides
 }
 
-/** Advisory-lock class id namespacing this app's locks so they cannot
- * collide with other advisory users in a shared cluster. */
+/** Advisory-lock class ids namespacing this app's locks so they cannot
+ * collide with other advisory users in a shared cluster. LOCK_MIGRATE
+ * (plain 0 member) serializes schema DDL; the receipt store shares it. */
 const LOCK_ENSURE_ACTIVE = 7001
+const LOCK_MIGRATE = 7003
 
 export class PostgresRunStore implements RunStore {
   private readonly pool: Pool
@@ -69,38 +71,46 @@ export class PostgresRunStore implements RunStore {
   async initialize(): Promise<void> {
     // Same tables/columns as sqlite-run-store's initialize(), Postgres DDL.
     // Additive in place: pre-column databases gain the columns without a
-    // rewrite (Postgres supports ADD COLUMN IF NOT EXISTS).
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY,
-        state TEXT NOT NULL,
-        tenant_id TEXT NOT NULL DEFAULT 'default',
-        invocation_a TEXT,
-        invocation_b TEXT,
-        started_at TEXT,
-        completed_at TEXT,
-        phase_changed_at TEXT NOT NULL,
-        decision_json TEXT,
-        receipt_json TEXT,
-        effect_json TEXT,
-        replay_json TEXT,
-        milestones_json TEXT,
-        archived INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS artifacts (
-        run_id TEXT NOT NULL,
-        tenant_id TEXT NOT NULL DEFAULT 'default',
-        name TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        valid INTEGER NOT NULL,
-        json TEXT NOT NULL,
-        seq BIGINT GENERATED ALWAYS AS IDENTITY,
-        PRIMARY KEY (run_id, name)
-      );
-      ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
-      ALTER TABLE runs ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0;
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
-    `)
+    // rewrite (Postgres supports ADD COLUMN IF NOT EXISTS). All DDL runs
+    // under the shared database-wide migration lock (LOCK_MIGRATE): CREATE
+    // TABLE IF NOT EXISTS is not race-free across concurrent first-starts,
+    // and a lost catalog race would reject an engine's ready promise.
+    await this.withTx(async client => {
+      await client.query('SELECT pg_advisory_xact_lock($1, 0)', [LOCK_MIGRATE])
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS runs (
+          id TEXT PRIMARY KEY,
+          state TEXT NOT NULL,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
+          invocation_a TEXT,
+          invocation_b TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          phase_changed_at TEXT NOT NULL,
+          decision_json TEXT,
+          receipt_json TEXT,
+          effect_json TEXT,
+          replay_json TEXT,
+          milestones_json TEXT,
+          archived INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          run_id TEXT NOT NULL,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          valid INTEGER NOT NULL,
+          json TEXT NOT NULL,
+          seq BIGINT GENERATED ALWAYS AS IDENTITY,
+          PRIMARY KEY (run_id, name)
+        );
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+        -- Insertion order for pre-identity tables: backfills existing rows.
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS seq BIGINT GENERATED ALWAYS AS IDENTITY;
+      `)
+    })
   }
 
   /** Run `body` on one client inside a real transaction, rolling back on
@@ -146,8 +156,11 @@ export class PostgresRunStore implements RunStore {
     // Atomic first-writer-wins in a single statement: the winner's UPDATE
     // matches decision_json IS NULL; every loser's matches nothing and
     // re-reads the STORED intent (MVCC makes check-then-act one step).
+    // Live rows only (invariant: archived rows are never mutated) — a reset
+    // that archives between the caller's read and this write must not
+    // persist an intent onto an archived audit row.
     const won = await this.pool.query(
-      'UPDATE runs SET invocation_b = $2, decision_json = $3 WHERE id = $1 AND decision_json IS NULL',
+      'UPDATE runs SET invocation_b = $2, decision_json = $3 WHERE id = $1 AND decision_json IS NULL AND archived = 0',
       [runId, invocationB, decisionJson],
     )
     if ((won.rowCount ?? 0) > 0) return { decision_json: decisionJson, invocation_b: invocationB }

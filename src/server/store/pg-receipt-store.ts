@@ -26,8 +26,11 @@ import type { DecisionRecord, ClaimResult, ConsumptionReceipt } from '../../cons
 import type { ReceiptStore } from './sqlite-receipt-store'
 import { resolvePostgresConfig, type PostgresStoreConfig } from './pg-run-store'
 
-/** Same advisory-lock namespace rule as pg-run-store; distinct class id. */
+/** Same advisory-lock namespace rule as pg-run-store; distinct class id.
+ * LOCK_MIGRATE (0 member) is shared with the run store's initialize: one
+ * database-wide migration slot so concurrent first-starts cannot race DDL. */
 const LOCK_CLAIM = 7002
+const LOCK_MIGRATE = 7003
 
 /** Copied verbatim from the frozen src/consumption/store.ts (private there).
  * Require a real RFC3339 calendar date, not Date.parse's rollover or
@@ -60,17 +63,24 @@ export class PostgresReceiptStore implements ReceiptStore {
 
   /** Idempotent, lazy (the ReceiptStore seam has no initialize; the engine
    * only awaits the run store's). Memoized so concurrent first claims race
-   * on one promise, not on duplicate DDL. */
+   * on one promise, not on duplicate DDL. The DDL itself runs under a
+   * database-wide advisory lock (LOCK_MIGRATE, shared with the run store):
+   * CREATE TABLE IF NOT EXISTS is not race-free across concurrent
+   * processes on a fresh database, and a lost catalog race would fail the
+   * loser's claim. */
   private ensureSchema(): Promise<void> {
-    this.schemaReady ??= this.pool.query(`
-      CREATE TABLE IF NOT EXISTS consumption_receipts (
-        decision_id TEXT PRIMARY KEY,
-        receipt_json TEXT NOT NULL,
-        successor_invocation_id TEXT NOT NULL,
-        decision_digest TEXT NOT NULL,
-        claimed_at TEXT NOT NULL
-      )
-    `).then(() => undefined)
+    this.schemaReady ??= this.withTx(async client => {
+      await client.query('SELECT pg_advisory_xact_lock($1, 0)', [LOCK_MIGRATE])
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS consumption_receipts (
+          decision_id TEXT PRIMARY KEY,
+          receipt_json TEXT NOT NULL,
+          successor_invocation_id TEXT NOT NULL,
+          decision_digest TEXT NOT NULL,
+          claimed_at TEXT NOT NULL
+        )
+      `)
+    }).then(() => undefined)
     return this.schemaReady
   }
 
@@ -83,6 +93,22 @@ export class PostgresReceiptStore implements ReceiptStore {
     try {
       await client.query('BEGIN')
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [LOCK_CLAIM, decisionId])
+      const value = await body(client)
+      await client.query('COMMIT')
+      return value
+    } catch (err) {
+      try { await client.query('ROLLBACK') } catch { /* connection already broken */ }
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  /** Plain transaction (no claim lock): used for schema DDL. */
+  private async withTx<T>(body: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
       const value = await body(client)
       await client.query('COMMIT')
       return value
@@ -133,6 +159,12 @@ export class PostgresReceiptStore implements ReceiptStore {
       const validity = validateExpiry(decision.expiresAt)
       if (!validity.ok) return { status: 'rejected', reason: 'invalid_expiry', detail: validity.detail }
       expiresAtTime = validity.time
+      // Frozen ordering: an expired decision is rejected BEFORE any replay
+      // evaluation — a lapsed approval can never be resurrected by a retry,
+      // even an identical one (review round: expired-claim replay).
+      if (expiresAtTime <= Date.now()) {
+        return { status: 'rejected', reason: 'expired', detail: `decision expired at ${decision.expiresAt}` }
+      }
     }
 
     // Fast path: an existing claim is decided without touching the write
@@ -187,8 +219,11 @@ export class PostgresReceiptStore implements ReceiptStore {
   }
 
   /** Not part of the ReceiptStore seam; provided for tests and parity with
-   * ConsumptionStore.getReceipt. */
+   * ConsumptionStore.getReceipt (which reads a table its constructor made).
+   * The lazy schema is ensured here so a fresh empty database yields
+   * undefined, not a missing-relation error. */
   async getReceipt(decisionId: string): Promise<ConsumptionReceipt | undefined> {
+    await this.ensureSchema()
     const result = await this.pool.query('SELECT receipt_json FROM consumption_receipts WHERE decision_id = $1', [decisionId])
     const row = result.rows[0] as { receipt_json: string } | undefined
     return row ? (JSON.parse(row.receipt_json) as ConsumptionReceipt) : undefined

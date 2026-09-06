@@ -90,6 +90,28 @@ if (skipWhenNoPostgres('consumption-pg suite')) {
     await store.close()
   })
 
+  test('expiry order: a claim that later expires cannot be replayed by an identical retry', async () => {
+    // Frozen ordering: expiry is judged BEFORE the replay read, so a lapsed
+    // approval can never be resurrected via the replay path (review finding).
+    const store = freshStore()
+    const decision = sampleDecision({ expiresAt: new Date(Date.now() + 350).toISOString() })
+    const first = await store.claim(decision, 'inv-b')
+    assert.equal(first.status, 'claimed')
+    await new Promise(r => setTimeout(r, 400))
+    const retry = await store.claim(decision, 'inv-b')
+    assert.equal(retry.status, 'rejected')
+    if (retry.status === 'rejected') assert.equal(retry.reason, 'expired')
+    // History is preserved byte-for-byte; rejection does not mutate it.
+    if (first.status === 'claimed') assert.deepEqual(await store.getReceipt(decision.decisionId), first.receipt)
+    await store.close()
+  })
+
+  test('getReceipt on a fresh empty store returns undefined, not a missing-relation error', async () => {
+    const store = freshStore()
+    assert.equal(await store.getReceipt('no-such-decision'), undefined)
+    await store.close()
+  })
+
   test('restart survival: a fresh store on the same database preserves the claim', async () => {
     const store = freshStore()
     const decision = sampleDecision()
