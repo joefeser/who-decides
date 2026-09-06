@@ -4,6 +4,7 @@
  * are synchronous, so our own statements can never race each other within
  * one process). Only sha256 token hashes cross this boundary — never raw
  * tokens or passcodes. Methods are async per the seam, like the RunStore. */
+import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import type { SessionStore, OperatorSessionRow } from './store'
@@ -13,6 +14,10 @@ export class SqliteSessionStore implements SessionStore {
   private readonly ready: Promise<void>
 
   constructor(dir: string, dbFilename = 'state.db') {
+    // Login can be the first endpoint a fresh instance serves — before the
+    // engine's run store has created the directory — so mirror the run
+    // store and create the directory here.
+    mkdirSync(dir, { recursive: true })
     this.db = new Database(path.join(dir, dbFilename))
     this.db.pragma('journal_mode = WAL')
     // Bridge the async seam the same way the engine does: each method awaits

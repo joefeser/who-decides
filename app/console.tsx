@@ -125,13 +125,25 @@ export default function Console() {
 
   useEffect(() => { void refresh() }, [refresh])
 
-  // Poll only while the server is actively transitioning (RULING M3).
+  // Watch mode is server-decided. While loading (state === null) the console
+  // is conservatively read-only; the sign-in disclosure only renders once a
+  // real state response confirms the visitor role.
+  const readOnly = !state?.authenticated
+
+  // Poll while anything can change under the viewer (RULING M3): operators
+  // poll fast through active transitions; visitors poll slower in EVERY
+  // state — they cannot trigger state changes themselves, and must still
+  // see an operator's run start and advance.
   useEffect(() => {
+    if (readOnly) {
+      const timer = setInterval(() => { void refresh() }, 2000)
+      return () => clearInterval(timer)
+    }
     const active = state?.state === 'running' || state?.state === 'resuming'
     if (!active) return
     const timer = setInterval(() => { void refresh() }, 800)
     return () => clearInterval(timer)
-  }, [state?.state, refresh])
+  }, [readOnly, state?.state, refresh])
 
   useEffect(() => {
     if (state?.state === 'decision_required' && state?.authenticated) choiceRef.current?.focus()
@@ -160,6 +172,12 @@ export default function Console() {
       })
       if (!response.ok) {
         const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
+        if (response.status === 401) {
+          // The session expired or was revoked mid-decision — refetch so the
+          // console flips to watch mode and exposes operator sign-in.
+          await refresh()
+          return
+        }
         setError(body.error ?? 'UNKNOWN')
         return
       }
@@ -194,7 +212,6 @@ export default function Console() {
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
 
-  const readOnly = !state.authenticated
   const watchNotice = (
     <div className="space-y-4">
       <p className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200" role="note">
@@ -250,6 +267,7 @@ export default function Console() {
               </li>
             ))}
           </ol>
+          {readOnly && watchNotice}
         </div>
       )}
 
@@ -309,9 +327,12 @@ export default function Console() {
       )}
 
       {state.state === 'resuming' && (
-        <p className="animate-pulse text-sm text-sky-300" role="status">
-          Starting new invocation… claiming the decision exactly once…
-        </p>
+        <div className="space-y-4">
+          <p className="animate-pulse text-sm text-sky-300" role="status">
+            Starting new invocation… claiming the decision exactly once…
+          </p>
+          {readOnly && watchNotice}
+        </div>
       )}
 
       {state.state === 'completed' && (

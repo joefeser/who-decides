@@ -156,3 +156,51 @@ test('five failed logins trip the rate limit for the IP', async () => {
   const otherIp = await postLogin(loginRequest({ passcode: PASSCODE }, '198.51.100.9'))
   assert.equal(otherIp.status, 200, 'rate limiting is per client IP')
 })
+
+test('the rate-limit identity is the LAST forwarded address, not the client-supplied first', async () => {
+  loginRateLimiter.reset()
+  const { clientIp } = await import('./auth')
+  const forwarded = new Request('http://localhost/api/operator/login', {
+    headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' },
+  })
+  assert.equal(clientIp(forwarded), '5.6.7.8', 'leftmost XFF values are client-controlled; the nearest proxy appends the real IP')
+  // A client cannot spread failures by varying its own spoofed prefix: two
+  // requests with different first values but the same last value share one
+  // limiter identity.
+  const first = new Request('http://localhost/api/operator/login', { headers: { 'x-forwarded-for': 'fake-a, 9.9.9.9' } })
+  const second = new Request('http://localhost/api/operator/login', { headers: { 'x-forwarded-for': 'fake-b, 9.9.9.9' } })
+  assert.equal(clientIp(first), clientIp(second))
+})
+
+test('removing or corrupting the passcode hash fails existing sessions closed', async () => {
+  loginRateLimiter.reset()
+  const cookie = await login()
+  assert.equal((await postRun(runRequest(cookie))).status, 200, 'sanity: valid session before the config breaks')
+  process.env.WD_OPERATOR_PASSCODE_HASH = 'not-a-real-hash'
+  const corrupted = await postRun(runRequest(cookie))
+  assert.equal(corrupted.status, 401, 'a malformed hash invalidates ISSUED sessions too')
+  assert.equal((await postLogin(loginRequest({ passcode: PASSCODE }))).status, 401, 'a malformed hash also blocks new logins')
+  delete process.env.WD_OPERATOR_PASSCODE_HASH
+  const removed = await postRun(runRequest(cookie))
+  assert.equal(removed.status, 401, 'an unset hash invalidates ISSUED sessions too')
+  process.env.WD_OPERATOR_PASSCODE_HASH = sha256Hex(PASSCODE)
+  assert.equal((await postRun(runRequest(cookie))).status, 200, 'restoring the config re-enables the still-valid session')
+})
+
+test('login works on a fresh console directory that does not exist yet', async () => {
+  loginRateLimiter.reset()
+  const freshRoot = mkdtempSync(path.join(tmpdir(), 'wd-auth-fresh-'))
+  const freshDir = path.join(freshRoot, 'console', 'nested')
+  process.env.WD_CONSOLE_DIR = freshDir
+  resetSessionsForTests()
+  try {
+    const response = await postLogin(loginRequest({ passcode: PASSCODE }, '198.51.100.10'))
+    assert.equal(response.status, 200, 'session storage initializes its own directory')
+    const followup = await postRun(runRequest(cookieFrom(response)))
+    assert.equal(followup.status, 200, 'the issued session passes the guards')
+  } finally {
+    process.env.WD_CONSOLE_DIR = DIR
+    resetSessionsForTests()
+    rmSync(freshRoot, { recursive: true, force: true })
+  }
+})

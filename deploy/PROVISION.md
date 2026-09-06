@@ -117,8 +117,10 @@ sudo systemctl enable --now who-decides
 systemctl status who-decides --no-pager
 ```
 
-The unit runs `npm run console` (Next.js on `localhost:3100`) as
-`who-decides`, and restarts it automatically on failure.
+The unit runs `npm run console:start` (`next start -p 3100` serving the
+production build from step 5) as `who-decides`, and restarts it
+automatically on failure. (`npm run console` remains the local development
+server and is not used on the public host.)
 
 ## 8. Install Caddy with the rate-limit module
 
@@ -131,6 +133,8 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --d
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update && sudo apt-get install -y caddy
 sudo apt-get install -y golang git
+# xcaddy is a separate executable from Caddy — install it before invoking it:
+sudo env GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 xcaddy build --with github.com/mholt/caddy-ratelimit --output /tmp/caddy
 sudo install -m 0755 /tmp/caddy /usr/bin/caddy
 caddy list-modules | grep rate_limit   # expect http.handlers.rate_limit
@@ -146,7 +150,10 @@ sudo systemctl edit caddy   # add:
 #   [Service]
 #   Environment=WD_DEMO_DOMAIN=demo.example.com
 #   Environment=ACME_EMAIL=ops@example.com
-sudo systemctl reload caddy   # or: sudo systemctl enable --now caddy
+# RESTART (not reload): the package install already started the stock Caddy
+# daemon, and reloading does not replace a running binary — only a restart
+# brings up the rate-limit-enabled build:
+sudo systemctl restart caddy   # first install without a running service: sudo systemctl enable --now caddy
 ```
 
 Caddy obtains the certificate on first start (watch

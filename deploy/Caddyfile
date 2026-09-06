@@ -33,6 +33,12 @@
 	}
 
 	reverse_proxy localhost:3100
+	# Trust note: Caddy treats direct clients as untrusted by default, so it
+	# replaces any client-supplied X-Forwarded-For with the real client IP
+	# before proxying. The app's rate limiter keys on the LAST forwarded
+	# address (src/server/auth.ts clientIp), which is the proxy-appended
+	# client IP — spoofed prefixes cannot spread login attempts across
+	# identities. Keep :3100 firewalled from the internet (PROVISION.md).
 
 	header {
 		# HSTS: after the first HTTPS visit, browsers refuse plain HTTP for

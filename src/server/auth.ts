@@ -37,11 +37,18 @@ export function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
+/** True only when WD_OPERATOR_PASSCODE_HASH is present and well-formed.
+ * BOTH login and session validation gate on this — removing or corrupting
+ * the env must shut the operator gate, not just future logins. */
+export function passcodeConfigured(): boolean {
+  return /^[0-9a-fA-F]{64}$/.test(process.env.WD_OPERATOR_PASSCODE_HASH ?? '')
+}
+
 export function verifyPasscode(candidate: string): boolean {
-  const expected = process.env.WD_OPERATOR_PASSCODE_HASH ?? ''
   // Fail closed on unset or malformed env; the shape guard also guarantees
   // both buffers are 32 bytes, so timingSafeEqual cannot throw on length.
-  if (!/^[0-9a-fA-F]{64}$/.test(expected)) return false
+  if (!passcodeConfigured()) return false
+  const expected = process.env.WD_OPERATOR_PASSCODE_HASH!
   return timingSafeEqual(Buffer.from(sha256Hex(candidate), 'hex'), Buffer.from(expected, 'hex'))
 }
 
@@ -73,6 +80,10 @@ export async function loginOperator(candidate: string, store: SessionStore = def
 }
 
 export async function isOperatorSessionValid(token: string | undefined, store: SessionStore = defaultSessionStore()): Promise<boolean> {
+  // Fail closed with the passcode config, not just at login: a hash that is
+  // removed or corrupted mid-deployment must invalidate ISSUED sessions too
+  // (they would otherwise stay valid for up to the full 12h TTL).
+  if (!passcodeConfigured()) return false
   if (!token) return false
   const row = await store.getSession(sha256Hex(token))
   if (!row) return false
@@ -106,9 +117,18 @@ export function operatorSessionCookie(token: string): string {
 
 export const OPERATOR_COOKIE_CLEARED = `${OPERATOR_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`
 
+/** Rate-limit identity for an untrusted request. The LEFTMOST
+ * X-Forwarded-For value is client-controlled (any caller can send one), so
+ * the LAST value is used — the nearest trusted proxy (Caddy) appends the
+ * real client IP there. Direct exposure without a proxy yields no usable
+ * identity and falls back to a single shared 'unknown' bucket, which is
+ * the conservative direction for a limiter. */
 export function clientIp(request: Request): string {
   const forwarded = request.headers.get('x-forwarded-for')
-  if (forwarded) return forwarded.split(',')[0]!.trim()
+  if (forwarded) {
+    const parts = forwarded.split(',').map(p => p.trim()).filter(p => p.length > 0)
+    if (parts.length > 0) return parts[parts.length - 1]!
+  }
   return request.headers.get('x-real-ip') ?? 'unknown'
 }
 

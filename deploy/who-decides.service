@@ -19,7 +19,7 @@ User=who-decides
 Group=who-decides
 WorkingDirectory=/opt/who-decides
 EnvironmentFile=/etc/who-decides.env
-ExecStart=/usr/bin/npm run console
+ExecStart=/usr/bin/npm run console:start
 Restart=always
 RestartSec=3
 

@@ -19,6 +19,7 @@
     "scenario": "tsx src/scenario/run.ts",
     "test:artifacts": "tsx --test src/artifacts/test.ts",
     "console": "next dev -p 3100",
+    "console:start": "next start -p 3100",
     "console:build": "next build",
     "proof:consumption": "node --import tsx scripts/consumption-proof.mjs",
     "test:live-loop": "tsx --test src/live-loop/test.ts",
