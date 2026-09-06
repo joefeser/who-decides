@@ -83,9 +83,14 @@ export function createAgentDispatcher(config: AgentDispatchConfig, client?: Invo
 
       try {
         const result = await client!.invoke(payload)
+        // The platform can transport an application-level rejection (the
+        // agent service's typed 409s) as a successful delivery — derive
+        // our ok from the agent service's own response envelope (review P2).
+        const agentOk = result.ok !== false
         return {
-          ok: true,
+          ok: agentOk,
           result,
+          error: agentOk ? undefined : String((result as { error?: unknown }).error ?? 'AGENT_REJECTED'),
           dispatch: { runtimeSessionId, dispatchedAt, durationMs: Date.now() - started, transport: 'aws-sdk' },
         }
       } catch (err) {

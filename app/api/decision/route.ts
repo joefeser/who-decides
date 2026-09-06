@@ -31,15 +31,18 @@ export async function POST(request: NextRequest) {
   const dispatcher = getAgentDispatcher()
   let agent: Record<string, unknown> | undefined
   if (dispatcher.isEnabled() && targetRunId) {
-    // Read the decision back from the TARGET run (the one the decision was
-    // recorded on), not whatever run getState() surfaces now.
-    const state = await engine.getState()
-    if (state.runId === targetRunId && state.decision) {
+    // The decision's own record is the dispatch payload — captured from the
+    // submitDecision result (the run it was recorded on), independent of
+    // whatever run getState() surfaces after a concurrent reset (review P2).
+    const decision = result.duplicate
+      ? null // duplicate retries don't re-dispatch; the first dispatch stands
+      : { choice: body.choice, rationale: body.rationale }
+    if (decision) {
       const dispatched = await dispatcher.dispatch({
         kind: 'decision-resume',
         sessionId: targetRunId,
-        choice: state.decision.choice,
-        rationale: state.decision.rationale,
+        choice: decision.choice,
+        rationale: decision.rationale,
       })
       agent = { ok: dispatched.ok, transport: dispatched.dispatch.transport, result: dispatched.result, error: dispatched.error }
     }

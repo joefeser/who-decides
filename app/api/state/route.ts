@@ -7,7 +7,9 @@ import { requireOperator } from '../../../src/server/auth'
  * whether to render operator affordances (run/decide/reset/probe). */
 export async function GET(request: NextRequest) {
   const state = await engine.getState()
-  return NextResponse.json({ ...state, authenticated: await requireOperator(request) })
+  // Health surface: a configured-but-failed dispatcher startup (SDK missing)
+  // is visible here, not silent (review P2).
+  return NextResponse.json({ ...state, authenticated: await requireOperator(request), agentDispatchError: agentDispatcherError()?.message ?? null })
 }
 
 /** Demo reset: clears run state (durable records for completed runs remain in

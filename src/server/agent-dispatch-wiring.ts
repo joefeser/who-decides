@@ -64,12 +64,20 @@ export function getAgentDispatcher(): AgentDispatcher {
         })
         const response = await aws.send(command)
         // The SDK returns the agent payload as a streaming body — collect
-        // and parse it before returning, so route JSON serialization never
-        // sees a Node stream (review P1).
+        // and parse it before returning. Handle BOTH shapes: the Node SDK
+        // augments the stream with transformToString(); some runtimes expose
+        // a Web Blob with .text() (review P1).
         const body = response.response ?? response.payload ?? response.body
-        if (body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'function') {
-          const text = await (body as { text: () => Promise<string> }).text()
-          try { return JSON.parse(text) as Record<string, unknown> } catch { return { rawResponse: text } }
+        if (body && typeof body === 'object') {
+          const b = body as { text?: unknown, transformToString?: unknown }
+          if (typeof b.transformToString === 'function') {
+            const text = await (b as { transformToString: (enc?: string) => Promise<string> }).transformToString('utf-8')
+            try { return JSON.parse(text) as Record<string, unknown> } catch { return { rawResponse: text } }
+          }
+          if (typeof b.text === 'function') {
+            const text = await (b as { text: () => Promise<string> }).text()
+            try { return JSON.parse(text) as Record<string, unknown> } catch { return { rawResponse: text } }
+          }
         }
         return response as Record<string, unknown>
       },
