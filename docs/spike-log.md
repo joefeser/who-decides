@@ -435,3 +435,29 @@ before independent reopen, exact byte/digest checks, union-count-one, and
 the recurring defect boundary: **EVIDENCE_INTEGRITY — proof observed labels
 outran test bodies**. This remains local, closed-world candidate evidence, not
 migration, distributed coordination, deployment, release, or owner acceptance.
+
+## Day 6 final — PR #10 merged: same-file admission enforced, 44/44 closed
+
+PR #10 merged at c6677da on an explicit owner override (Joe: "astra review
+and patch and merge" — the review-hell ceiling was reached and the owner
+closed it). The proof inventory now stands at 44/44 with ZERO uncovered
+cases: the last one (legacy-insert-races-profile-admission) went from
+uncovered → enforced (same-file constraint pinned with both real BEGIN
+IMMEDIATE winner orderings proven across processes).
+
+The final round added two structural defenses: the ANCHOR — a hardlink to
+the admitted database inside the pinned guard directory that keeps the
+original inode alive, making pristine byte-clone replacement impossible at
+the filesystem level (inode numbers of live inodes are never reused), with
+anchor-directory ctime pinning detecting anchor rebuilds; and authority
+withholding — trusted human acts are not persisted while the configured
+writer inventory is incomplete, installing only after the closed-inventory
+check (eagerly or lazily inside the first authorized decision).
+
+Review-lineage note for v0.3: this PR's loop (Codex ×N → GLM ×2 → Codex
+catching GLM's own test gap → structural fix) is the strongest evidence yet
+that the ceiling exists because reviewers keep finding real things. The
+owner gate exists exactly for this: convergence is a judgment, and today it
+was made by the human. Residual risk named on the record: an adversary who
+can recreate the pinned guard-directory identity AND anchor contents has
+full local filesystem control — the owner trust boundary itself.
