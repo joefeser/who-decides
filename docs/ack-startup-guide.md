@@ -16,7 +16,10 @@ recommendation: `docs/ack-onboarding-recommendation.md` on
 - **Always pass `--base main`.** Several ACK defaults assume a `dev` base; this
   repo is main-only (feature branches → PRs → main, no `dev`).
 - Reviewers confirmed installed on this repo: **codex** (chatgpt-codex connector,
-  `@codex review` dispatch) and **qodo** (initial review on PR open). Sourcery is
+  `@codex review` dispatch); **qodo** was the second required reviewer until
+  the **Qodo sunset on 2026-09-07** (left the platform; disabled in the lane
+  with its history preserved — Codex is now the sole required reviewer with
+  unchanged batch semantics and ceilings). Sourcery is
   installed but deliberately disabled in the proposed lane.
 
 ## Startup commands (stable v0.5.0 — all verified present)
@@ -45,10 +48,10 @@ delegating work.
 
 - **Branch model:** main_only. Merge method `merge_commit`, never squash; main
   is human-mediated; owner-override auto-merge disabled.
-- **Reviewers:** codex + qodo, both required, batched — no patch authority
-  before `REQUIRED_REVIEW_BATCH_SETTLED`. Qodo gets its initial return only
-  (no automatic re-tags on later heads); Codex re-requests are policy-gated
-  with a 2-request ceiling. Manual bot retags are forbidden.
+- **Reviewers:** codex, required and batched — no patch authority before
+  `REQUIRED_REVIEW_BATCH_SETTLED`. (Qodo was required until its 2026-09-07
+  sunset; now disabled with history preserved.) Codex re-requests are
+  policy-gated with a 2-request ceiling. Manual bot retags are forbidden.
 - **Fresh fix cycles:** 2 (the generator default of 1 was raised per the
   recommendation).
 - **Risky paths:** repo-accurate list in the lane YAML. The generator's
