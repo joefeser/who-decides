@@ -1,0 +1,45 @@
+# who-decides public demo — Caddy reverse proxy with automatic HTTPS.
+#
+# The rate_limit directive needs Caddy built with the rate-limit module
+# (mholt/caddy-ratelimit). Build once on the host:
+#
+#   xcaddy build --with github.com/mholt/caddy-ratelimit
+#
+# Environment (exported in the Caddy service environment, never committed):
+#   WD_DEMO_DOMAIN  e.g. demo.example.com  — the site's public DNS name
+#   ACME_EMAIL      address for Let's Encrypt account + expiry notices
+#
+# Rate limiting note: caddy-ratelimit zones are in-memory per Caddy instance
+# (a second layer in front of the app's own per-IP login limit in
+# src/server/auth.ts, not a distributed limiter).
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$WD_DEMO_DOMAIN} {
+	encode gzip
+
+	# Basic per-IP rate limit for the API (login attempts and mutations).
+	rate_limit {
+		zone api {
+			match {
+				path /api/*
+			}
+			key {remote_host}
+			events 30
+			window 1m
+		}
+	}
+
+	reverse_proxy localhost:3100
+
+	header {
+		# HSTS: after the first HTTPS visit, browsers refuse plain HTTP for
+		# one year (including subdomains).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
