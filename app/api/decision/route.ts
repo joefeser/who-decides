@@ -31,18 +31,19 @@ export async function POST(request: NextRequest) {
   const dispatcher = getAgentDispatcher()
   let agent: Record<string, unknown> | undefined
   if (dispatcher.isEnabled() && targetRunId) {
-    // The decision's own record is the dispatch payload — captured from the
-    // submitDecision result (the run it was recorded on), independent of
-    // whatever run getState() surfaces after a concurrent reset (review P2).
-    const decision = result.duplicate
-      ? null // duplicate retries don't re-dispatch; the first dispatch stands
-      : { choice: body.choice, rationale: body.rationale }
-    if (decision) {
+    // The dispatch payload is the AUTHORITATIVE STORED decision — read from
+    // the engine after the commit — so a losing same-key writer forwards
+    // the stored rationale, not its request body's, and a duplicate retry
+    // (the first dispatch failed before delivery) still re-dispatches the
+    // replay-safe resume (review P1s). Only a reset that moved the current
+    // run away from targetRunId suppresses dispatch (wrong-run guard).
+    const postState = await engine.getState()
+    if (postState.runId === targetRunId && postState.decision) {
       const dispatched = await dispatcher.dispatch({
         kind: 'decision-resume',
         sessionId: targetRunId,
-        choice: decision.choice,
-        rationale: decision.rationale,
+        choice: postState.decision.choice,
+        rationale: postState.decision.rationale,
       })
       agent = { ok: dispatched.ok, transport: dispatched.dispatch.transport, result: dispatched.result, error: dispatched.error }
     }
