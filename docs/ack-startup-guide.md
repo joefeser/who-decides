@@ -1,53 +1,60 @@
-# ACK startup guide — who-decides (proposal)
+# ACK startup guide — who-decides
 
-This guide accompanies the proposed lane at `.agent-control/lanes/pr-review-loop.yaml`.
-**Neither is active policy until Joe merges the proposal PR, `onboard doctor
---base main` passes, and the lane's `status: draft` is flipped.** Source
-recommendation: `docs/ack-onboarding-recommendation.md` on
-`origin/codex/ack-main-only-onboarding` @ `c9656c4`.
+The active lane is `.agent-control/lanes/pr-review-loop.yaml`. Version 0.2 adds
+only `dev` as the development and owner-handoff target. It does not loosen the
+human-mediated `main`, `master`, or `release/**` boundary.
 
-## Verified environment (2026-09-04)
+## Verified environment (2026-09-06)
 
-- CLI at authoring: `agent-control` 0.5.0 stable (now superseded — see update below) (`/opt/homebrew/bin/agent-control`,
-  `agent-control version --json` reports `distFresh: true`, no source build).
-- `onboard doctor --repo joefeser/who-decides --base main --json` runs clean and
-  currently reports `onboarding_doctor_attention_required` — the lane file does
-  not exist on main yet, which is the expected pre-proposal state.
-- **Always pass `--base main`.** Several ACK defaults assume a `dev` base; this
-  repo is main-only (feature branches → PRs → main, no `dev`).
+- CLI baseline: stable ACK `>=0.5.1 <0.6.0`; the lane requires the exact
+  onboarding, batching, freshness, and release-provenance capabilities it uses.
+- After the v0.2 policy PR is merged and `dev` is created from that exact
+  approved `main`, normal feature PRs pass `--base dev`.
+- Promotion to `main` remains a separate owner-mediated PR. Never treat the
+  `dev` eligibility lists as permission to merge or patch `main`.
 - Reviewers confirmed installed on this repo: **codex** (chatgpt-codex connector,
   `@codex review` dispatch); **qodo** was the second required reviewer until
   the **Qodo sunset on 2026-09-07** (left the platform; disabled in the lane
   with its history preserved — Codex is now the sole required reviewer with
   unchanged batch semantics and ceilings). Sourcery is
-  installed but deliberately disabled in the proposed lane.
+  installed but deliberately disabled in the active lane.
 
-## Startup commands (stable v0.5.0 — all verified present)
+## Startup commands
 
 ```sh
-agent-control onboard doctor  --repo joefeser/who-decides --base main --json
-agent-control onboard explain --repo joefeser/who-decides --base main --json
-agent-control onboard worker-prompt --repo joefeser/who-decides --base main
+agent-control version --json
+agent-control doctor --lane-config .agent-control/lanes/pr-review-loop.yaml --json
+agent-control onboard doctor  --repo joefeser/who-decides --base dev --json
+agent-control onboard explain --repo joefeser/who-decides --base dev --json
+agent-control onboard worker-prompt --repo joefeser/who-decides --base dev --compact --goal "one bounded objective"
 ```
 
 Per-loop handoff (after implementation, on a PR):
 
 ```sh
-agent-control pr-loop --repo joefeser/who-decides --pr NUMBER --base main \
-  --require-codex-review --quiet --json --handoff-out <path>
+agent-control pr-loop --repo joefeser/who-decides --pr NUMBER --base dev \
+  --require-codex-review --quiet --json-decision \
+  --handoff-out .agent-control/pr-loop-handoffs/pr-NUMBER.json
 ```
 
-**Update 2026-09-05:** ACK **0.5.1 is released and stable** (agent-control-kit
-#394 merged). The small-context workflow this guide anticipated is now
-available: `pr-loop --quiet --json-decision --handoff-out …` and
-`worker-prompt --compact` are stable flags. The CLI baseline for this repo is
-now `>=0.5.1 <0.6.0`; verify with `agent-control version --json` before
-delegating work.
+The policy PR itself targets `main` because `dev` does not exist yet and
+head-only policy cannot authorize itself. After Joe merges it, create `dev` in
+a separate owner-visible action from the exact post-merge `origin/main` commit:
 
-## What the proposed lane says (reconciled from the generator draft)
+```sh
+git fetch origin main --prune
+POST_MERGE_MAIN=$(git rev-parse refs/remotes/origin/main)
+git push origin "$POST_MERGE_MAIN:refs/heads/dev"
+```
 
-- **Branch model:** main_only. Merge method `merge_commit`, never squash; main
-  is human-mediated; owner-override auto-merge disabled.
+Record `POST_MERGE_MAIN` in the handoff. Do not run this bootstrap command from
+the policy PR or create `dev` from its unmerged head.
+
+## Effective lane policy
+
+- **Branch model:** feature branches target only `dev`. Merge method is
+  `merge_commit`, never squash. `main`/`master`/`release/**` remain denied for
+  overnight and owner-override handling; owner-override auto-merge is disabled.
 - **Reviewers:** codex, required and batched — no patch authority before
   `REQUIRED_REVIEW_BATCH_SETTLED`. (Qodo was required until its 2026-09-07
   sunset; now disabled with history preserved.) Codex re-requests are
