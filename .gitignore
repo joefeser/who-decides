@@ -38,3 +38,4 @@ next-env.d.ts
 # local agent-control tooling scratch (committed lane under .agent-control/lanes/ is intentional;
 # supersedes the broader .agent-control/ rule — keep only this narrow one)
 .agent-control/tmp/
+.agent-control/pr-loop-handoffs/

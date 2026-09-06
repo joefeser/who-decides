@@ -31,8 +31,9 @@ This file is a status record; implementation evidence lives in
 - **Local-owner verifier** (PRs #8–#10) — authenticated local continuation
   guard, receipt-bound evidence-integrity proof, and same-file legacy
   admission enforced; the proof inventory closed at 44/44.
-- **ACK lane** (PR #5) — the main-only PR-review loop lane, active on main
-  (`.agent-control/lanes/pr-review-loop.yaml`), with the startup guide.
+- **ACK lane** (PR #5, then v0.2) — the PR-review loop lane is active on main;
+  normal feature work targets `dev`, while promotion to `main` remains a
+  separate owner-mediated PR (`.agent-control/lanes/pr-review-loop.yaml`).
 
 ## What's next
 

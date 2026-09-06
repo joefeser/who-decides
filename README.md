@@ -129,12 +129,12 @@ via `WD_PROVIDER=openai-compatible` with `WD_BASE_URL`/`WD_MODEL`/`WD_API_KEY`.
 
 ## Review loop
 
-Pull requests are reviewed by Codex and Qodo before merge, with an
-[ACK](https://github.com/joefeser/agent-control-kit) lane proposal under
+Pull requests are reviewed by Codex under the
+[ACK](https://github.com/joefeser/agent-control-kit) lane under
 `.agent-control/lanes/pr-review-loop.yaml` (see
-[docs/ack-startup-guide.md](docs/ack-startup-guide.md) — the lane is
-committed but not yet activated). Merge commits only, never squash; main is
-human-mediated.
+[docs/ack-startup-guide.md](docs/ack-startup-guide.md)). Normal feature PRs
+target `dev`; promotion to `main` is a separate human-mediated PR. Merge
+commits only, never squash. Qodo remains disabled.
 
 ## Demo boundaries (honest scope)
 
