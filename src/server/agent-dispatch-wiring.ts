@@ -3,7 +3,7 @@
  * WD_MACHINE_TOKEN are both set, dispatch is live; otherwise the console
  * runs its deterministic engine and routes receive `agent: undefined`.
  *
- * The live AWS client is loaded lazily — @aws-sdk/client-bedrock-agent-core
+ * The live AWS client is loaded lazily — @aws-sdk/client-bedrock-agentcore
  * is an optional peer the deployer installs; its absence with the env set
  * is an ENVIRONMENT_BLOCKED condition reported at startup, not a silent
  * fallback to 'disabled'. */
@@ -43,7 +43,7 @@ export function getAgentDispatcher(): AgentDispatcher {
   let client: InvokeAgentRuntimeClient | undefined
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('@aws-sdk/client-bedrock-agent-core') as {
+    const mod = require('@aws-sdk/client-bedrock-agentcore') as {
       BedrockAgentCoreClient: new (config: { region?: string }) => {
         send: (command: unknown) => Promise<Record<string, unknown>>
       },
@@ -86,7 +86,7 @@ export function getAgentDispatcher(): AgentDispatcher {
     const message = err instanceof Error ? err.message : String(err)
     if (message.includes('Cannot find module')) {
       throw new Error(
-        `ENVIRONMENT_BLOCKED: WD_AGENTCORE_ENDPOINT is set but @aws-sdk/client-bedrock-agent-core is not installed. ` +
+        `ENVIRONMENT_BLOCKED: WD_AGENTCORE_ENDPOINT is set but @aws-sdk/client-bedrock-agentcore is not installed. ` +
         'Install it in the hosted environment or unset the endpoint to run the deterministic console.',
       )
     }

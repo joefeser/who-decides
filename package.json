@@ -69,13 +69,16 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",
-    "@aws-sdk/client-bedrock-agent-core": "^3.0.0"
+    "@aws-sdk/client-bedrock-agentcore": "^3.1127.0"
   },
   "peerDependencies": {
-    "@aws-sdk/client-bedrock-agent-core": "*"
+    "@aws-sdk/client-bedrock-agentcore": "*"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-bedrock-agent-core": {
+      "optional": true
+    },
+    "@aws-sdk/client-bedrock-agentcore": {
       "optional": true
     }
   }
