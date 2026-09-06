@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth",
+    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:dispatch",
     "start": "tsx src/console/server.ts",
     "smoke": "tsx src/smoke.ts",
     "preflight": "tsx src/preflight.ts",
@@ -32,7 +32,8 @@
     "test:auth": "tsx --test src/server/auth.test.ts",
     "test:agent-service": "tsx --test src/agent-service/test.ts",
     "agent:start": "tsx src/agent-service/server.ts",
-    "test:machine-auth": "tsx --test src/agent-service/machine-auth.test.ts"
+    "test:machine-auth": "tsx --test src/agent-service/machine-auth.test.ts",
+    "test:dispatch": "tsx --test src/server/agent-dispatch.test.ts"
   },
   "repository": {
     "type": "git",
