@@ -67,6 +67,11 @@ const server = createServer(async (req, res) => {
 
     const kind = payload.kind
     const tag = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    // Malformed session ids are client errors, not service failures
+    // (review P2): validate shape before the phases and return 400s.
+    if (!tag || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(tag)) {
+      return send(res, 400, { ok: false, error: `INVALID_SESSION_ID: must be a filename-safe slug (letters, digits, . _ -; max 64 chars), got "${String(payload.sessionId).slice(0, 24)}"` })
+    }
     try {
       if (kind === 'decision-run') {
         const result = await startPhase(ctx, { tag })

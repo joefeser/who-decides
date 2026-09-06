@@ -29,6 +29,28 @@ import { decisionTool, promptFor } from './tool'
 import { assertSafeSlug, mkdirDurable, reserveExclusive, saveRunState, syncDir, writeDurableJson } from './durable'
 import type { AgentRuntime, ResumeInput, ResumeOutput, RunState, StartInput, StartOutput } from './types'
 
+/** Returns a deep copy of the fixture with EVERY id-bearing field suffixed
+ * with the run tag — one stamping point so packets, findings, stops,
+ * decisions, and reports all join consistently within a run and never
+ * collide across runs (review P1). The scopeKeys set covers primary ids
+ * AND cross-references (packet_id/target_id/evidence_refs/report_id). */
+function scopedFixture(f: Scenario, tag: string): Scenario {
+  const scopeValue = (value: unknown): unknown => {
+    if (typeof value === 'string') return value.includes(tag) ? value : `${value}-${tag}`
+    if (Array.isArray(value)) return value.map(scopeValue)
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = ID_KEYS.has(k) && typeof v === 'string' ? `${v}-${tag}` : scopeValue(v)
+      }
+      return out
+    }
+    return value
+  }
+  return scopeValue(f) as Scenario
+}
+const ID_KEYS = new Set(['packet_id', 'target_id', 'stop_id', 'report_id', 'finding_id', 'finding_tradeoff_id', 'decision_id', 'run_id'])
+
 export type ServiceContext = {
   /** Root for all per-run state, snapshots, leases, artifacts. On the
    * AgentCore runtime this is the persistent mount (e.g. /mnt/data/agent);
@@ -117,21 +139,15 @@ export async function startPhase(ctx: ServiceContext, input: StartInput, runtime
   writeDurableJson(snapshotFile(ctx, input.tag), agent.takeSnapshot({ preset: 'session' }))
 
   // ── Spine artifacts (validated, durable, run-scoped identities) ─────────
-  // The builders bake stable fixture IDs; each service run must publish
-  // under UNIQUE identities or distinct runs collide in artifact space
-  // (review P1). Stamp every ID-bearing field with the run tag.
-  const scopeIds = (record: Record<string, unknown>, keys: string[]) => {
-    for (const key of keys) {
-      if (typeof record[key] === 'string') record[key] = `${record[key]}-${input.tag}`
-    }
-    return record
-  }
-  const packet = scopeIds(buildTaskPacket(ctx.fixture) as Record<string, unknown>, ['packet_id'])
+  // The scoped fixture stamps every id once, so all builders and every
+  // cross-reference join consistently within the run (review P1: partial
+  // suffixing left packet_id/target_id/evidence_refs unsuffixed).
+  const sf = scopedFixture(ctx.fixture, input.tag)
+  const packet = buildTaskPacket(sf)
   assertValid('task-packet', packet)
-  const findings = buildReviewFindings(ctx.fixture) as Array<Record<string, unknown>>
-  for (const finding of findings) scopeIds(finding, ['finding_id'])
+  const findings = buildReviewFindings(sf)
   for (const finding of findings) assertValid('review-finding', finding)
-  const stop = scopeIds(buildStopResponse(ctx.fixture) as Record<string, unknown>, ['stop_id', 'packet_id', 'report_id'])
+  const stop = buildStopResponse(sf)
   assertValid('stop-response', stop)
   writeArtifact(ctx, input.tag, '01-task-packet.json', packet)
   writeArtifact(ctx, input.tag, '02-review-findings.json', findings)
@@ -178,7 +194,7 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
   const f = ctx.fixture
   // The resume runs against the SAME fixture phase A validated — a restart
   // with a changed fixture must not silently resume under different data
-  // (review finding).
+  // (review finding). Builders use the scoped view; digests use the raw.
   const currentFixtureDigest = createHash('sha256').update(JSON.stringify(f)).digest('hex')
   if (prior.fixtureDigest && prior.fixtureDigest !== currentFixtureDigest) {
     return { status: 'STATE_CONFLICT', reason: 'FIXTURE_CHANGED: the scenario differs from the one phase A started under' }
@@ -255,13 +271,19 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
 
   // ── Artifacts from runtime truth ─────────────────────────────────────────
   const runtimeDecision = { decisionId: state.decisionId, choice: state.choice, rationale: state.rationale, decidedAt: state.decidedAt }
-  const stopBytes = JSON.stringify(buildStopResponse(f), null, 2)
-  const evidenceDigest = createHash('sha256').update(stopBytes).digest('hex')
+  const sf = scopedFixture(f, input.tag)
+  const runtimeF = sf
+  // Hash the EXACT scoped stop bytes this run persisted (the writeJson
+  // helper uses the same 2-space serialization), so 04's evidence
+  // reference matches 03's bytes (review P1: rebuilding from the unsuffixed
+  // fixture produced a digest of bytes that were never written).
+  const persistedStop = readFileSync(path.join(runDir(ctx, input.tag), '03-stop-response.json'), 'utf8')
+  const evidenceDigest = createHash('sha256').update(persistedStop).digest('hex')
   // AC-1 boundary: this service surface does NOT yet verify an operator
   // (that is AC-2's machine-principal auth). The artifact says so — an
   // unverified API submission, honestly labeled, never impersonating a
   // verified operator session (review P1).
-  const humanDecision = buildHumanDecision(f, runtimeDecision, evidenceDigest, {
+  const humanDecision = buildHumanDecision(runtimeF, runtimeDecision, evidenceDigest, {
     channel: {
       interaction: 'api',
       sessionReference: `agentcore-service:${input.tag}`,
@@ -280,10 +302,7 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
   }
-  const report = buildAgentReport(f, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true }) as Record<string, unknown>
-  for (const key of ['report_id', 'packet_id']) {
-    if (typeof report[key] === 'string') report[key] = `${report[key]}-${input.tag}`
-  }
+  const report = buildAgentReport(runtimeF, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
   assertValid('agent-report', report)
 
   writeArtifact(ctx, input.tag, '04-human-decision.json', humanDecision)
