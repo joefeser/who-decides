@@ -572,3 +572,17 @@ Net: the second-implementation ladder now has every rung in place —
 executable conformance package, qualification ruling, and the authority-seam
 disposition. WITS's next tranche (the continuation-approval act + projection)
 is unblocked with zero open contract questions.
+
+## Day 7 addendum 6 — AC-1 merged; parallel tracks status
+
+AC-1 (agent service, PR #25) merged into dev-agentcore at 4a32d8c after
+three review rounds (4 Codex P1/P2 + 7 Qodo H/M + 3 Codex round-3
+P1/P2 — full-spine run scoping, persisted-bytes evidence digest, decision
+lock, fixture pinning, honest unverified-pending-ac2 channel, sessionId
+400s). Unit branch healthy: tsc clean, 92/92.
+
+Parallel: WITS confirmed HACP #48 closed (main at 1b94a3a) and its
+origin/dev includes PR #1364; its next step is repinning the interworking
+spec to new HACP main, reconciling the #48 disposition, two independent
+reviews, then Tasks 1.1–1.6 (the continuation-approval act and projection).
+All three repos are moving simultaneously on the same ladder.
