@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner",
+    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service",
     "start": "tsx src/console/server.ts",
     "smoke": "tsx src/smoke.ts",
     "preflight": "tsx src/preflight.ts",
@@ -29,7 +29,9 @@
     "test:live-loop": "tsx --test src/live-loop/test.ts",
     "test:local-owner": "tsx --test src/local-owner/test.ts",
     "proof:local-owner": "tsx scripts/local-owner-proof.ts",
-    "test:auth": "tsx --test src/server/auth.test.ts"
+    "test:auth": "tsx --test src/server/auth.test.ts",
+    "test:agent-service": "tsx --test src/agent-service/test.ts",
+    "agent:start": "tsx src/agent-service/server.ts"
   },
   "repository": {
     "type": "git",
