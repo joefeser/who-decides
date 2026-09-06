@@ -164,14 +164,14 @@ export class ConsoleEngine {
       // id. A run already past provisioning just needs the artifact repair.
       await this.provisionArtifacts(active.id)
       if (active.state !== 'provisioning') return { runId: active.id }
-      if (await this.runs.markProvisioned(active.id)) return { runId: active.id }
+      if (await this.completeProvisioning(active.id)) return { runId: active.id }
       if (retried) throw new Error('PROVISIONING_RETRY_EXHAUSTED')
       return await this.startRun(true)
     }
 
     try {
       await this.provisionArtifacts(runId)
-      if (!(await this.runs.markProvisioned(runId))) {
+      if (!(await this.completeProvisioning(runId))) {
         throw new Error(`PROVISIONING_RETRACTED:${runId}`)
       }
     } catch (err) {
@@ -182,6 +182,16 @@ export class ConsoleEngine {
       throw err
     }
     return { runId }
+  }
+
+  /** A lost provisioning CAS can mean another caller finished the same
+   * work. Network I/O lets repair overtake the creator, so distinguish that
+   * success from retraction without changing markProvisioned's CAS result. */
+  private async completeProvisioning(runId: string): Promise<boolean> {
+    if (await this.runs.markProvisioned(runId)) return true
+    const row = await this.runs.getRunRow(runId)
+    return row !== undefined && Number(row.archived) === 0
+      && ['running', 'decision_required', 'resuming', 'completed'].includes(row.state ?? '')
   }
 
   /** Writes the invocation-A artifacts idempotently — the builders are
@@ -411,9 +421,16 @@ export class ConsoleEngine {
   }
 
   async close(): Promise<void> {
-    await this.ready
-    await this.receipts.close()
-    await this.runs.close()
+    // Initialization may fail after opening a pool, and either store's
+    // close can reject. Attempt both cleanups while preserving the original
+    // initialization/close error for the caller.
+    const initialized = await Promise.allSettled([this.ready])
+    const closed = await Promise.allSettled([
+      Promise.resolve().then(() => this.receipts.close()),
+      Promise.resolve().then(() => this.runs.close()),
+    ])
+    const failure = [...initialized, ...closed].find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
   }
 
   private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', artifact: unknown): Promise<void> {

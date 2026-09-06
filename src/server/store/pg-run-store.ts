@@ -18,7 +18,8 @@
  * The artifacts table adds a seq IDENTITY column: Postgres has no rowid, and
  * listArtifacts must return insertion order (the console renders the
  * timeline in write order, as SQLite's ORDER BY rowid does). */
-import { Pool, type PoolClient } from 'pg'
+import type { Pool, PoolClient } from 'pg'
+import { createPostgresPool, withPostgresTransaction } from './pg-pool'
 import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow } from './store'
 
 /** Connection config: an explicit connectionString wins; otherwise the
@@ -45,21 +46,20 @@ export function resolvePostgresConfig(overrides: PostgresStoreConfig = {}): Post
   }
   const hasDiscrete = overrides.host !== undefined || overrides.port !== undefined
     || overrides.user !== undefined || overrides.password !== undefined || overrides.database !== undefined
-  if (!hasDiscrete && (process.env.WD_PG_URL ?? process.env.DATABASE_URL)) {
-    return { ...overrides, connectionString: process.env.WD_PG_URL ?? process.env.DATABASE_URL }
+  const environmentUrl = process.env.WD_PG_URL || process.env.DATABASE_URL
+  if (!hasDiscrete && environmentUrl) {
+    return { ...overrides, connectionString: environmentUrl }
   }
-  const host = overrides.host ?? process.env.WD_PG_HOST
-  if (host) {
-    return {
-      ...overrides,
-      host,
-      port: overrides.port ?? (process.env.WD_PG_PORT ? Number(process.env.WD_PG_PORT) : undefined),
-      user: overrides.user ?? process.env.WD_PG_USER,
-      password: overrides.password ?? process.env.WD_PG_PASSWORD,
-      database: overrides.database ?? process.env.WD_PG_DATABASE,
-    }
+  // Each WD_PG_* field is independent; host may legitimately come from
+  // pg's PGHOST/default while database, user, or port comes from WD_PG_*.
+  return {
+    ...overrides,
+    host: overrides.host ?? process.env.WD_PG_HOST,
+    port: overrides.port ?? (process.env.WD_PG_PORT ? Number(process.env.WD_PG_PORT) : undefined),
+    user: overrides.user ?? process.env.WD_PG_USER,
+    password: overrides.password ?? process.env.WD_PG_PASSWORD,
+    database: overrides.database ?? process.env.WD_PG_DATABASE,
   }
-  return overrides
 }
 
 /** Advisory-lock class ids namespacing this app's locks so they cannot
@@ -74,7 +74,7 @@ export class PostgresRunStore implements RunStore {
 
   constructor(config: PostgresStoreConfig = {}) {
     const resolved = resolvePostgresConfig(config)
-    this.pool = new Pool({ ...resolved, max: resolved.max ?? 5 })
+    this.pool = createPostgresPool(resolved)
   }
 
   async initialize(): Promise<void> {
@@ -127,18 +127,7 @@ export class PostgresRunStore implements RunStore {
    * synchronous BEGIN IMMEDIATE..COMMIT blocks — the only place composite
    * atomicity can be guaranteed for a network database (store.ts header). */
   private async withTx<T>(body: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN')
-      const value = await body(client)
-      await client.query('COMMIT')
-      return value
-    } catch (err) {
-      try { await client.query('ROLLBACK') } catch { /* connection already broken */ }
-      throw err
-    } finally {
-      client.release()
-    }
+    return withPostgresTransaction(this.pool, body)
   }
 
   async ensureActiveRun(tenantId: string, candidate: NewRun): Promise<RunRow> {

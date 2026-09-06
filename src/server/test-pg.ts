@@ -7,15 +7,17 @@
 import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ConsoleEngine } from './state'
+import type { ConsoleEngine as ConsoleEngineType } from './state'
 import { PostgresRunStore } from './store/pg-run-store'
 import { PostgresReceiptStore } from './store/pg-receipt-store'
 import { createDefaultStores } from './store/factory'
 import type { RunStore } from './store/store'
 import { WD_TEST_PG_URL, skipWhenNoPostgres, pgConfig, pgQuery } from '../pg-test-env'
 
+let ConsoleEngine: typeof ConsoleEngineType
+
 interface TestEngine {
-  engine: ConsoleEngine
+  engine: ConsoleEngineType
   runs: RunStore
   tenant: string
   receipts: PostgresReceiptStore
@@ -55,6 +57,44 @@ async function readArtifact(runId: string, name: string): Promise<Record<string,
 }
 
 if (skipWhenNoPostgres('console-pg suite')) {
+  // state.ts has a default singleton: import only with the gate open and
+  // bind that singleton to the disposable test URL, never ambient config.
+  const previousStore = process.env.WD_STORE
+  const previousUrl = process.env.WD_PG_URL
+  try {
+    process.env.WD_STORE = 'postgres'
+    process.env.WD_PG_URL = WD_TEST_PG_URL
+    const state = await import('./state')
+    ConsoleEngine = state.ConsoleEngine
+    await state.default.close()
+  } finally {
+    if (previousStore === undefined) delete process.env.WD_STORE; else process.env.WD_STORE = previousStore
+    if (previousUrl === undefined) delete process.env.WD_PG_URL; else process.env.WD_PG_URL = previousUrl
+  }
+
+  test('close releases both stores after initialization or receipt-close failure', async () => {
+    for (const failInitialization of [true, false]) {
+      const failure = new Error(failInitialization ? 'initialization failed' : 'receipt close failed')
+      const runs = new PostgresRunStore(pgConfig())
+      const receipts = new PostgresReceiptStore(pgConfig())
+      let runsClosed = false
+      let receiptsClosed = false
+      const runClose = runs.close.bind(runs)
+      const receiptClose = receipts.close.bind(receipts)
+      if (failInitialization) runs.initialize = async () => { throw failure }
+      runs.close = async () => { runsClosed = true; await runClose() }
+      receipts.close = async () => {
+        receiptsClosed = true
+        await receiptClose()
+        if (!failInitialization) throw failure
+      }
+      const engine = new ConsoleEngine('shutdown', { runs, receipts })
+      await assert.rejects(engine.close(), error => error === failure)
+      assert.equal(runsClosed, true)
+      assert.equal(receiptsClosed, true)
+    }
+  })
+
   test('each choice executes only its own branch (send_back/defer never build a PR)', async () => {
     const branchMarker: Record<string, string> = {
       create_draft_pr: 'draft-PR receipt',
@@ -299,6 +339,38 @@ if (skipWhenNoPostgres('console-pg suite')) {
     } finally {
       await alpha.close()
       await beta.close().catch(() => {})
+    }
+  })
+
+  test('a repair caller may finish provisioning before the original creator', async () => {
+    const te = await freshEngine('repair-wins')
+    let creatorReached!: () => void
+    let releaseCreator!: () => void
+    const reached = new Promise<void>(resolve => { creatorReached = resolve })
+    const released = new Promise<void>(resolve => { releaseCreator = resolve })
+    const markProvisioned = te.runs.markProvisioned.bind(te.runs)
+    let first = true
+    te.runs.markProvisioned = async runId => {
+      if (first) {
+        first = false
+        creatorReached()
+        await released
+      }
+      return markProvisioned(runId)
+    }
+    const creator = te.engine.startRun()
+    const creatorResult = Promise.allSettled([creator])
+    try {
+      await reached
+      const repair = await te.engine.startRun()
+      releaseCreator()
+      assert.deepEqual(await creator, repair)
+      assert.equal((await te.engine.getState()).state, 'running')
+      assert.equal((await te.runs.listArtifacts(repair.runId, te.tenant)).length, 4)
+    } finally {
+      releaseCreator()
+      await creatorResult
+      await cleanup(te)
     }
   })
 

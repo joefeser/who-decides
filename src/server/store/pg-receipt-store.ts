@@ -20,7 +20,8 @@
  * local-owner-tooling, not part of the receipt seam's claim semantics; the
  * hosted demo has no candidate-profile slots to conflict with. */
 import { randomUUID } from 'node:crypto'
-import { Pool } from 'pg'
+import type { Pool } from 'pg'
+import { createPostgresPool, withPostgresTransaction } from './pg-pool'
 import { decisionDigest, CONSUMPTION_SCHEMA } from '../../consumption/store'
 import type { DecisionRecord, ClaimResult, ConsumptionReceipt } from '../../consumption/store'
 import type { ReceiptStore } from './sqlite-receipt-store'
@@ -58,7 +59,7 @@ export class PostgresReceiptStore implements ReceiptStore {
   private closed: Promise<void> | undefined
 
   constructor(config: PostgresStoreConfig = {}) {
-    this.pool = new Pool({ ...resolvePostgresConfig(config), max: config.max ?? 5 })
+    this.pool = createPostgresPool(resolvePostgresConfig(config))
   }
 
   /** Idempotent, lazy (the ReceiptStore seam has no initialize; the engine
@@ -80,7 +81,12 @@ export class PostgresReceiptStore implements ReceiptStore {
           claimed_at TEXT NOT NULL
         )
       `)
-    }).then(() => undefined)
+    }).catch(error => {
+      // Share an in-flight attempt, but allow recovery from transient DDL,
+      // connection, or lock failures without replacing the store instance.
+      this.schemaReady = undefined
+      throw error
+    })
     return this.schemaReady
   }
 
@@ -89,35 +95,15 @@ export class PostgresReceiptStore implements ReceiptStore {
    * (the network-database counterpart of ConsumptionStore's BEGIN
    * IMMEDIATE write slot). Auto-released at COMMIT/ROLLBACK. */
   private async withClaimSlot<T>(decisionId: string, body: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN')
+    return this.withTx(async client => {
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [LOCK_CLAIM, decisionId])
-      const value = await body(client)
-      await client.query('COMMIT')
-      return value
-    } catch (err) {
-      try { await client.query('ROLLBACK') } catch { /* connection already broken */ }
-      throw err
-    } finally {
-      client.release()
-    }
+      return body(client)
+    })
   }
 
   /** Plain transaction (no claim lock): used for schema DDL. */
   private async withTx<T>(body: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN')
-      const value = await body(client)
-      await client.query('COMMIT')
-      return value
-    } catch (err) {
-      try { await client.query('ROLLBACK') } catch { /* connection already broken */ }
-      throw err
-    } finally {
-      client.release()
-    }
+    return withPostgresTransaction(this.pool, body)
   }
 
   private async readClaim(client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }, decisionId: string) {
@@ -150,6 +136,10 @@ export class PostgresReceiptStore implements ReceiptStore {
   }
 
   async claim(decision: DecisionRecord, successorInvocationId: string, expectedDigest?: string): Promise<ClaimResult> {
+    // SQLite consumes the record synchronously. Snapshot before yielding so
+    // digest validation, expiry checks, lock key and receipt bind the same
+    // input even if the caller reuses/mutates its object during network I/O.
+    decision = { ...decision }
     await this.ensureSchema()
     if (expectedDigest !== undefined && expectedDigest !== decisionDigest(decision)) {
       return { status: 'rejected', reason: 'digest_mismatch', detail: 'provided digest does not match the decision record' }
@@ -174,16 +164,14 @@ export class PostgresReceiptStore implements ReceiptStore {
 
     try {
       return await this.withClaimSlot(decision.decisionId, async client => {
-        // Inside the slot: a claimant that committed while we waited is
-        // discovered here (the Postgres equivalent of the frozen store's
-        // UNIQUE-conflict fallback read).
-        const existing = await this.readClaim(client, decision.decisionId)
-        if (existing) return this.checkReplay(existing, decision, successorInvocationId)
         // Expiry re-sampled INSIDE the write boundary: the insert can wait
         // on the slot, so validity is judged against now-after-the-wait.
         if (expiresAtTime !== null && expiresAtTime <= Date.now()) {
           return { status: 'rejected', reason: 'expired', detail: `decision expired at ${decision.expiresAt} (rechecked after write-slot wait)` }
         }
+        // Like SQLite, try the insert after checking expiry. A concurrent
+        // winner is replayed only through the unique-conflict fallback
+        // below; no extra network read can delay receipt construction here.
         const receipt: ConsumptionReceipt = {
           schema: CONSUMPTION_SCHEMA,
           receiptId: randomUUID(),
