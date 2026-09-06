@@ -558,3 +558,17 @@ agent/host split), A3 adapter, A4/A5/A6 auth/watch/deploy — all merged,
 all three-family reviewed. One operational note: pg is a runtime dep on
 main now (fresh clones need npm install before tsc — noted after my own
 false alarm).
+
+## Day 7 addendum 5 — HACP #48 resolved: product meaning ≠ continuation authority
+
+HACP PR #49 merged (2f7580f, via dev): the WITS interworking seam is
+dispositioned. Product Decisions stay NON-AUTHORIZING (executionAuthorized:
+false is honest product state, not a gap); a WITS-native continuation
+approval act is the required bridge; the #47 qualification ruling (Option 1,
+cross-validation) is recorded. v0.3 schemas and digest domains unchanged.
+Corpus 7/29/33, evidence 44/44, regressions 23/23 — all green.
+
+Net: the second-implementation ladder now has every rung in place —
+executable conformance package, qualification ruling, and the authority-seam
+disposition. WITS's next tranche (the continuation-approval act + projection)
+is unblocked with zero open contract questions.
