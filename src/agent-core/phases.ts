@@ -116,12 +116,22 @@ export async function startPhase(ctx: ServiceContext, input: StartInput, runtime
   // identity and resumable state must survive a crash after the claim).
   writeDurableJson(snapshotFile(ctx, input.tag), agent.takeSnapshot({ preset: 'session' }))
 
-  // ── Spine artifacts (validated, durable) ────────────────────────────────
-  const packet = buildTaskPacket(ctx.fixture)
+  // ── Spine artifacts (validated, durable, run-scoped identities) ─────────
+  // The builders bake stable fixture IDs; each service run must publish
+  // under UNIQUE identities or distinct runs collide in artifact space
+  // (review P1). Stamp every ID-bearing field with the run tag.
+  const scopeIds = (record: Record<string, unknown>, keys: string[]) => {
+    for (const key of keys) {
+      if (typeof record[key] === 'string') record[key] = `${record[key]}-${input.tag}`
+    }
+    return record
+  }
+  const packet = scopeIds(buildTaskPacket(ctx.fixture) as Record<string, unknown>, ['packet_id'])
   assertValid('task-packet', packet)
-  const findings = buildReviewFindings(ctx.fixture)
+  const findings = buildReviewFindings(ctx.fixture) as Array<Record<string, unknown>>
+  for (const finding of findings) scopeIds(finding, ['finding_id'])
   for (const finding of findings) assertValid('review-finding', finding)
-  const stop = buildStopResponse(ctx.fixture)
+  const stop = scopeIds(buildStopResponse(ctx.fixture) as Record<string, unknown>, ['stop_id', 'packet_id', 'report_id'])
   assertValid('stop-response', stop)
   writeArtifact(ctx, input.tag, '01-task-packet.json', packet)
   writeArtifact(ctx, input.tag, '02-review-findings.json', findings)
@@ -232,11 +242,15 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
   const runtimeDecision = { decisionId: state.decisionId, choice: state.choice, rationale: state.rationale, decidedAt: state.decidedAt }
   const stopBytes = JSON.stringify(buildStopResponse(f), null, 2)
   const evidenceDigest = createHash('sha256').update(stopBytes).digest('hex')
+  // AC-1 boundary: this service surface does NOT yet verify an operator
+  // (that is AC-2's machine-principal auth). The artifact says so — an
+  // unverified API submission, honestly labeled, never impersonating a
+  // verified operator session (review P1).
   const humanDecision = buildHumanDecision(f, runtimeDecision, evidenceDigest, {
     channel: {
       interaction: 'api',
       sessionReference: `agentcore-service:${input.tag}`,
-      authEventRef: 'operator-session',
+      authEventRef: 'unverified-api-pending-ac2',
     },
   })
   assertValid('human-decision', humanDecision)
@@ -251,7 +265,10 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
   }
-  const report = buildAgentReport(f, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
+  const report = buildAgentReport(f, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true }) as Record<string, unknown>
+  for (const key of ['report_id', 'packet_id']) {
+    if (typeof report[key] === 'string') report[key] = `${report[key]}-${input.tag}`
+  }
   assertValid('agent-report', report)
 
   writeArtifact(ctx, input.tag, '04-human-decision.json', humanDecision)

@@ -57,6 +57,9 @@ const server = createServer(async (req, res) => {
     let payload: Record<string, unknown>
     try { payload = await readJson(req) }
     catch (err) { return send(res, 400, { ok: false, error: String((err as Error).message ?? err) }) }
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+      return send(res, 400, { ok: false, error: 'INVALID_BODY: expected a JSON object' })
+    }
 
     const kind = payload.kind
     const tag = typeof payload.sessionId === 'string' ? payload.sessionId : ''
@@ -80,7 +83,10 @@ const server = createServer(async (req, res) => {
   return send(res, 404, { ok: false, error: 'NOT_FOUND' })
 })
 
-if (process.env.NODE_ENV !== 'test') {
+// The listener starts ONLY when run directly as the service entry point —
+// never when the module is imported (tests, future host embedding). This
+// also prevents tsx --test workers from opening port 8080.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   server.listen(PORT, () => {
     console.log(`[agent-service] listening on :${PORT} data=${DATA_DIR} claim=${CLAIM_DB}`)
   })
