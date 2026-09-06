@@ -74,20 +74,50 @@ export async function loginOperator(candidate: string, store: SessionStore = def
   if (!verifyPasscode(candidate)) return { ok: false }
   const token = randomBytes(32).toString('hex')
   const now = Date.now()
-  await store.createSession(sha256Hex(token), new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString())
+  await store.createSession(sha256Hex(token), new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString(), passcodeFingerprint())
   await store.purgeExpiredSessions(new Date(now).toISOString()).catch(() => { /* best-effort tidy */ })
   return { ok: true, token }
 }
 
+/** Domain-separated fingerprint of the CONFIGURED passcode hash — stored on
+ * each session row so rotating the passcode (old hash -> new valid hash)
+ * invalidates sessions issued under the old credential. Never the raw env
+ * value. */
+function passcodeFingerprint(): string {
+  return sha256Hex(`wd-passcode-rotation:${process.env.WD_OPERATOR_PASSCODE_HASH ?? ''}`)
+}
+
 export async function isOperatorSessionValid(token: string | undefined, store: SessionStore = defaultSessionStore()): Promise<boolean> {
+  return (await operatorSession(token, store)) !== null
+}
+
+export type OperatorSessionInfo = { sessionReference: string, authEventRef: string }
+
+/** Resolve the operator session behind a request to SAFE audit metadata:
+ * a hash-prefix session reference and the login event timestamp. Returns
+ * null when anything fails closed (config missing/malformed/rotated, no
+ * cookie, unknown/revoked/expired session). */
+export async function requireOperatorSession(request: Request, store: SessionStore = defaultSessionStore()): Promise<OperatorSessionInfo | null> {
+  return operatorSession(readOperatorCookie(request), store)
+}
+
+async function operatorSession(token: string | undefined, store: SessionStore): Promise<OperatorSessionInfo | null> {
   // Fail closed with the passcode config, not just at login: a hash that is
   // removed or corrupted mid-deployment must invalidate ISSUED sessions too
   // (they would otherwise stay valid for up to the full 12h TTL).
-  if (!passcodeConfigured()) return false
-  if (!token) return false
+  if (!passcodeConfigured()) return null
+  if (!token) return null
   const row = await store.getSession(sha256Hex(token))
-  if (!row) return false
-  return row.expires_at > new Date().toISOString()
+  if (!row) return null
+  // Passcode rotation: a session issued under a DIFFERENT valid hash is dead
+  // even before its TTL. NULL fingerprints (pre-fingerprinting rows) are
+  // refused — fail closed.
+  if (row.passcode_fingerprint !== passcodeFingerprint()) return null
+  if (row.expires_at <= new Date().toISOString()) return null
+  return {
+    sessionReference: `op-session-${row.token_hash.slice(0, 16)}`,
+    authEventRef: `op-passcode-login:${row.created_at}`,
+  }
 }
 
 export async function revokeOperatorSession(token: string | undefined, store: SessionStore = defaultSessionStore()): Promise<void> {

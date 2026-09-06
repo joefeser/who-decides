@@ -33,19 +33,22 @@ export class SqliteSessionStore implements SessionStore {
         expires_at TEXT NOT NULL
       );
     `)
+    // Pre-fingerprinting databases: add the rotation column in place (same
+    // pattern as the run store's in-place ALTERs).
+    try { this.db.exec('ALTER TABLE operator_sessions ADD COLUMN passcode_fingerprint TEXT') } catch { /* column exists */ }
   }
 
-  async createSession(tokenHash: string, createdAt: string, expiresAt: string): Promise<void> {
+  async createSession(tokenHash: string, createdAt: string, expiresAt: string, passcodeFingerprint: string): Promise<void> {
     await this.ready
     this.db
-      .prepare('INSERT INTO operator_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)')
-      .run(tokenHash, createdAt, expiresAt)
+      .prepare('INSERT INTO operator_sessions (token_hash, created_at, expires_at, passcode_fingerprint) VALUES (?, ?, ?, ?)')
+      .run(tokenHash, createdAt, expiresAt, passcodeFingerprint)
   }
 
   async getSession(tokenHash: string): Promise<OperatorSessionRow | undefined> {
     await this.ready
     return this.db
-      .prepare('SELECT token_hash, created_at, expires_at FROM operator_sessions WHERE token_hash = ?')
+      .prepare('SELECT token_hash, created_at, expires_at, passcode_fingerprint FROM operator_sessions WHERE token_hash = ?')
       .get(tokenHash) as OperatorSessionRow | undefined
   }
 

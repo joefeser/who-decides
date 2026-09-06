@@ -159,7 +159,11 @@ sudo systemctl restart caddy   # first install without a running service: sudo s
 Caddy obtains the certificate on first start (watch
 `sudo journalctl -u caddy -f`) and fronts the console with HSTS,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-strict-origin-when-cross-origin`, and a 30 req/min per-IP zone on `/api/*`.
+strict-origin-when-cross-origin`, and two per-IP zones: `POST
+/api/operator/login` at 10 req/min (second layer over the app's own
+5-failures/15-min limit) and `/api/state` at 120 req/min for public
+watch-mode polling. Mutations are operator-gated at the application and
+are not Caddy-limited.
 
 ## 10. Health checks
 

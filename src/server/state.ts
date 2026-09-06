@@ -213,7 +213,12 @@ export class ConsoleEngine {
     }
   }
 
-  async submitDecision(choice: string, rationale: string, idempotencyKey?: string): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
+  /** `channel` carries the authenticated operator's session metadata (from
+   * the passcode gate) into the human-decision audit artifact — an
+   * authenticated console decision must never be recorded with the
+   * unauthenticated demo defaults. Engine-level callers (tests, scenario,
+   * CLI) omit it and keep the honest demo defaults. */
+  async submitDecision(choice: string, rationale: string, idempotencyKey?: string, channel?: { sessionReference: string, authEventRef: string }): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
     const run = await this.currentRun()
     if (!run) return { ok: false, error: 'NO_RUN' }
     await this.advancePhases(run)
@@ -280,7 +285,9 @@ export class ConsoleEngine {
       rationale: effectiveRationale,
       decidedAt: authoritativeDecidedAt,
     }
-    const humanDecision = buildHumanDecision(s, runtimeDecision, await this.evidenceDigest(run.id))
+    const humanDecision = buildHumanDecision(s, runtimeDecision, await this.evidenceDigest(run.id), channel
+      ? { channel: { interaction: 'web_ui', sessionReference: channel.sessionReference, authEventRef: channel.authEventRef } }
+      : undefined)
     assertValid('human-decision', humanDecision)
     await this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     await this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)

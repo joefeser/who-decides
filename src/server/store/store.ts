@@ -89,6 +89,11 @@ export type OperatorSessionRow = {
   token_hash: string
   created_at: string
   expires_at: string
+  /** Fingerprint of the passcode config the session was issued under —
+   * rotating the passcode invalidates rows with a different fingerprint.
+   * NULL means a pre-fingerprinting row, which validates as NOT
+   * authenticated (fail closed). */
+  passcode_fingerprint: string | null
 }
 
 /** Operator session persistence for the passcode gate (same async seam as
@@ -97,7 +102,7 @@ export type OperatorSessionRow = {
 export interface SessionStore {
   /** Ensure schema exists (idempotent). Adapter-owned migrations live here. */
   initialize(): Promise<void>
-  createSession(tokenHash: string, createdAt: string, expiresAt: string): Promise<void>
+  createSession(tokenHash: string, createdAt: string, expiresAt: string, passcodeFingerprint: string): Promise<void>
   getSession(tokenHash: string): Promise<OperatorSessionRow | undefined>
   revokeSession(tokenHash: string): Promise<void>
   /** Best-effort tidy: drop sessions that expired at or before nowIso. */

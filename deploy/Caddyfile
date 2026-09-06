@@ -20,14 +20,34 @@
 {$WD_DEMO_DOMAIN} {
 	encode gzip
 
-	# Basic per-IP rate limit for the API (login attempts and mutations).
+	# Rate limits are SPLIT by surface (review P1): one shared /api/* budget
+	# starved the public watch-mode poller (~30 req/min per tab against a
+	# 30/min zone) and 429'd state refreshes.
+	#
+	# - operator_login: the only unauthenticated-sensitive surface; Caddy
+	#   10/min per IP is a second layer over the app's 5 failures/15 min
+	#   (src/server/auth.ts).
+	# - public_state_poll: /api/state is public watch-mode traffic
+	#   (30/min per tab at the 2s visitor poll); 120/min per IP gives a
+	#   couple of tabs / small NAT headroom.
+	# - Mutations (/api/run|decision|replay, DELETE /api/state) are
+	#   operator-gated at the app and deliberately NOT Caddy-limited.
 	rate_limit {
-		zone api {
+		zone operator_login {
 			match {
-				path /api/*
+				path /api/operator/login
+				method POST
 			}
 			key {remote_host}
-			events 30
+			events 10
+			window 1m
+		}
+		zone public_state_poll {
+			match {
+				path /api/state
+			}
+			key {remote_host}
+			events 120
 			window 1m
 		}
 	}

@@ -17,6 +17,7 @@ const { OPERATOR_COOKIE_NAME, loginRateLimiter, resetSessionsForTests, sha256Hex
 const loginRoute = await import('../../app/api/operator/login/route')
 const logoutRoute = await import('../../app/api/operator/logout/route')
 const runRoute = await import('../../app/api/run/route')
+const decisionRoute = await import('../../app/api/decision/route')
 const stateRoute = await import('../../app/api/state/route')
 
 const PASSCODE = 'demo-operator-passcode'
@@ -25,6 +26,7 @@ type Handler = (request: Request) => Promise<Response>
 const postLogin = loginRoute.POST as unknown as Handler
 const postLogout = logoutRoute.POST as unknown as Handler
 const postRun = runRoute.POST as unknown as Handler
+const postDecision = decisionRoute.POST as unknown as Handler
 const postState = stateRoute.DELETE as unknown as Handler
 const getState = stateRoute.GET as unknown as Handler
 
@@ -203,4 +205,46 @@ test('login works on a fresh console directory that does not exist yet', async (
     resetSessionsForTests()
     rmSync(freshRoot, { recursive: true, force: true })
   }
+})
+
+test('rotating the passcode invalidates sessions issued under the old passcode', async () => {
+  loginRateLimiter.reset()
+  const oldCookie = await login()
+  assert.equal((await postRun(runRequest(oldCookie))).status, 200, 'sanity: valid before rotation')
+  const rotatedPasscode = 'rotated-passcode-value'
+  process.env.WD_OPERATOR_PASSCODE_HASH = sha256Hex(rotatedPasscode)
+  try {
+    const stale = await postRun(runRequest(oldCookie))
+    assert.equal(stale.status, 401, 'old-credential session is dead after rotation')
+    assert.deepEqual(await stale.json(), { ok: false, error: 'OPERATOR_AUTH_REQUIRED' })
+    const reLogin = await postLogin(loginRequest({ passcode: rotatedPasscode }, '198.51.100.11'))
+    assert.equal(reLogin.status, 200, 'the NEW passcode logs in under the rotated hash')
+  } finally {
+    process.env.WD_OPERATOR_PASSCODE_HASH = sha256Hex(PASSCODE)
+  }
+})
+
+test('an authenticated decision records operator session metadata, not the unauthenticated demo default', async () => {
+  loginRateLimiter.reset()
+  const cookie = await login()
+  const run = await postRun(runRequest(cookie))
+  assert.equal(run.status, 200)
+  // Age the wall-clock phase so the run reaches decision_required.
+  const db = new Database(path.join(DIR, 'state.db'))
+  db.prepare('UPDATE runs SET phase_changed_at = ?').run(new Date(Date.now() - 60_000).toISOString())
+  db.close()
+  const decision = await postDecision(new Request('http://localhost/api/decision', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ choice: 'defer', rationale: 'audit metadata check', idempotencyKey: 'auth-meta-test' }),
+  }))
+  assert.equal(decision.status, 200, `decision submits under a valid session: ${JSON.stringify(await decision.json().catch(() => null))}`)
+  const artifactDb = new Database(path.join(DIR, 'state.db'))
+  const row = artifactDb.prepare("SELECT json FROM artifacts WHERE name = 'human-decision' ORDER BY rowid DESC LIMIT 1").get() as { json: string }
+  artifactDb.close()
+  const artifact = JSON.parse(row.json) as { actor: { authentication_context: { session_reference: string, auth_event_ref: string } } }
+  const context = artifact.actor.authentication_context
+  assert.match(context.session_reference, /^op-session-[0-9a-f]{16}$/, 'session reference is the hash-prefix session id')
+  assert.notEqual(context.session_reference, 'demo-unauthenticated-local-console')
+  assert.match(context.auth_event_ref, /^op-passcode-login:/, 'auth event ref records the login timestamp')
 })
