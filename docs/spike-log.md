@@ -596,3 +596,29 @@ UPSTREAM_CONTRACT_AMBIGUITY stop is lifted; its next step is repinning to
 this HACP main and running the digest-verified dual-review round it queued.
 The ladder's scorecard: two gaps, both caught at gates, zero improvised
 work, both resolved upstream by the standard's owners.
+
+## Day 8 — 2026-09-07: AC-3 and AC-4 merged — the unit's build is done
+
+AC-3 (host proxy, PR #27, 7815334) merged after four review rounds (14
+findings: wrong-run dispatch race, both stream shapes, the SDK package
+name 404 caught by CI, and the final pair — dispatch the AUTHORITATIVE
+STORED decision on every submit with duplicate-retry recovery). AC-4
+(agentcore scaffold, PR #28, 8368309) merged merge-ready-strict: the
+flash session read the actual zod schemas inside @aws/agentcore@0.28.1
+and corrected the packet twice (protocol not serverProtocol, entrypoint
+not entryPoint, no build command — validate is the local gate). agentcore
+validate returns Valid.
+
+The flash session's four AC-5 prerequisites (each with doc citations,
+deferred by disposition — src/ is frozen for AC-4):
+1. /ping returns {ok,...} not the documented {"status":"Healthy"} — align
+   before first deploy.
+2. CodeZip/esbuild will likely fail on better-sqlite3's native addon —
+   externals, restructure, or Container build.
+3. server.ts reads fixtures/patch-scenario.json from CWD at import — won't
+   exist in the zip.
+4. Replace the placeholder account ID (000000000000).
+
+Unit state: dev-agentcore has AC-1 through AC-4. Remaining: AC-5 (Joe:
+IAM + first deploy, now with the four named prerequisites), AC-6 (gated
+live test + PROVISION half), then the one final PR to main.
