@@ -622,3 +622,24 @@ deferred by disposition — src/ is frozen for AC-4):
 Unit state: dev-agentcore has AC-1 through AC-4. Remaining: AC-5 (Joe:
 IAM + first deploy, now with the four named prerequisites), AC-6 (gated
 live test + PROVISION half), then the one final PR to main.
+
+## Day 8 addendum — WITS architecture gate merged; critical path now HACP #54
+
+WITS PR #1365 (the interworking spec, post-#48/#51 repin and dual review)
+merged to WITS dev at 20ed2b2. The architecture gate is complete; runtime
+implementation (Tasks 1.0–1.7) is explicitly HELD pending:
+1. HACP #54 publishes the external/supplementary bundle admission schema
+   (the cross-validation entry point for a second implementation's fixtures)
+2. WITS repins the package
+3. Joe authorizes Tasks 1.0–1.7
+4. WITS produces independent fixtures → cross-validated through HACP
+
+This ordering (schema before implementation) avoids building WITS twice
+against a changing admission contract — the same spec-follows-proof
+discipline that produced the who-decides evidence chain. WITS #1366 tracks
+post-candidate production hardening separately.
+
+All three repos' boards are now clean dependencies:
+- who-decides: AC-5 (Joe) → AC-6 → final unit PR
+- HACP: #54 (the ladder's current rung) + #52 (no-decision identity, later)
+- WITS: waiting on #54, then Joe's authorization
