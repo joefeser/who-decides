@@ -12,7 +12,7 @@ state lives in our store via the decision API, never inside the runtime.
 | File | Purpose |
 | --- | --- |
 | `agentcore.json` | Main project config: declares the `who_decides_agent` runtime (CodeZip, NODE_22, HTTP protocol, 600s idle timeout, `/mnt/data` sessionStorage, non-secret env vars). Schema-validated by the CLI. |
-| `aws-targets.json` | Deployment targets (account + region). The account is a **placeholder** (`000000000000`) — the schema requires exactly 12 digits, and JSON has no comments, so the "replace me" note lives in the target's `description` field. Replace before any deploy. |
+| `aws-targets.json` | Deployment targets (account + region). The account is a **placeholder** (`000000000000`) — the schema requires exactly 12 digits, and JSON has no comments, so the `REPLACE_BEFORE_DEPLOY` note lives in the target's `description` field. The exact field path, the real value, and the validation step are in [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md). Replace before any deploy. |
 | `.env.local.example` | Template for `.env.local` (gitignored) listing every env var the agent service reads (`server.ts`, `machine-auth.ts`, `provider.ts`). No secrets, ever. |
 | `app/who-decides-agent/main.ts` | CodeZip entry point. The CLI's Node packager bundles exactly `<codeLocation>/main.ts` with esbuild into a single CJS `main.js` (verified in `@aws/agentcore` 0.28.1, `dist/lib/packaging/node.js` — the filename is hard-coded). The glue imports the exported server from `src/agent-service/server.ts` and listens on `0.0.0.0:8080` if the module's own direct-run guard has not already started it. |
 
@@ -66,28 +66,55 @@ First deploy bootstraps CDK in the target account and takes a few minutes.
 `WD_MACHINE_TOKEN_HASH`) must be injected through a mechanism approved at
 deploy (AgentCore Identity or deploy-time env), never through git.
 
-## Known residual risks for AC-5 (evidence-backed, not fixed here)
+## Known residual risks for AC-5 (evidence-backed)
 
-`src/agent-service/` and `src/agent-core/` are frozen in AC-4 scope, so these
-are recorded, not patched:
+Status after the AC-5-prerequisites branch (ping contract + fixture bundling +
+native-addon strategy). Every claim below was verified against the pinned CLI
+(`@aws/agentcore@0.28.1`) in `node_modules/@aws/agentcore`, not guessed.
 
-1. **`/ping` body shape.** The HTTP contract documents `{"status": "Healthy"}`
-   (or `HealthyBusy`) as the ping response; the AC-1 service returns
-   `{ok: true, service: …, dataDir: …}` with HTTP 200. Endpoints, port, and
-   status code match; the body schema may need a small service change before
-   the first real deploy if the platform validates the body.
-2. **esbuild bundling of native deps.** The Node CodeZip packager bundles the
-   entry graph into one `main.js` with no external-deps mechanism, and
-   `src/consumption/store.ts` imports `better-sqlite3` (a native `.node`
-   addon). Deploy-time packaging may fail until the claim-DB access is
-   externalized or restructured.
-3. **CWD-relative fixture load.** `server.ts` reads
-   `fixtures/patch-scenario.json` relative to the process CWD at module
-   import; the CodeZip zip contains only the bundle (`main.js` +
-   `package.json`), so a deployed boot would need the fixture path to become
-   env-overridable or lazily loaded.
-4. **Account placeholder.** `aws-targets.json` account `000000000000` passes
-   the schema regex but MUST be replaced before `deploy`; the target
-   `description` carries the warning.
+1. **FIXED — `/ping` body shape.** The service now returns
+   `{"status":"Healthy","service":…,"dataDir":…}` per the runtime HTTP
+   protocol contract; asserted in `src/agent-service/test.ts`.
 
-Each is a small, well-scoped follow-up once AC-5 starts the real deploy.
+2. **BLOCKER — CodeZip packaging fails today: `@aws-sdk/client-s3` cannot
+   resolve.** Replaying the packager's exact esbuild invocation on
+   `agentcore/app/who-decides-agent/main.ts` errors with
+   `Could not resolve "@aws-sdk/client-s3"`: `@strands-agents/sdk`'s vended
+   context-offloader does `await import('@aws-sdk/client-s3')`
+   (`dist/src/vended-plugins/context-offloader/storage.js:298`), it is an
+   *optional peer* of the SDK, and it is not installed — esbuild fails the
+   whole bundle on the unresolvable specifier even though we never use
+   context offloading. This fires during the packaging step of
+   `agentcore deploy`, before any AWS API call. Decision needed before AC-5
+   (packet stop condition: document, don't improvise):
+   - install `@aws-sdk/client-s3` so the specifier resolves (simplest; the
+     unused S3 client inlines into the bundle, size cost only), or
+   - Container build (same escape hatch as risk 3).
+   Repro: `npx esbuild agentcore/app/who-decides-agent/main.ts --bundle
+   --platform=node --format=cjs --minify --target=node22 --outfile=/tmp/main.js`
+
+3. **DOCUMENTED — `better-sqlite3` native addon cannot ship in a CodeZip.**
+   The packet asked for an `externals`/`external` field in `agentcore.json`.
+   Verified against 0.28.1: **no such field exists.**
+   - `dist/schema/schemas/agentcore-project.js` — the only "external" hits
+     are comments about external knowledge bases/evaluators.
+   - `dist/lib/packaging/node.js` — both CodeZip packagers call esbuild with
+     a fixed option set (`bundle/platform/format/minify/target/banner/define`):
+     there is no config hook to add `external`.
+   - Its only escape hatch, `copyDynamicDeps`, copies a **hard-coded** list
+     (`ws`, `readable-stream`, `safe-buffer`, …) from
+     `<codeLocation>/node_modules` into `_deps/` — `better-sqlite3` and `pg`
+     are not on the list, and our repo has no `<codeLocation>/node_modules`.
+   Behavior consequence (repro above): better-sqlite3's *JS* bundles fine
+   (its binary path is built at runtime via `path.join(__dirname, …)`), but
+   the zip contains only `main.js` + `package.json`, so the runtime
+   `.node` resolution finds nothing and the store require throws at boot.
+   `pg` is pure JavaScript and bundles without issue. The store seam already
+   supports Postgres (`WD_STORE`), but restructuring the agent's claim-DB
+   path was out of scope here: **Container build** (npm install inside a
+   Linux image) is the documented fallback. No config change was made.
+
+4. **OPEN — account placeholder (Joe, AC-5).** `aws-targets.json` account
+   `000000000000` passes the schema regex but MUST be replaced before
+   `deploy`. Exact field path and value: `agentcore/DEPLOY-CHECKLIST.md`;
+   the target `description` carries the REPLACE_BEFORE_DEPLOY warning.

@@ -8,11 +8,10 @@
  * Start: WD_AGENT_DATA_DIR=/mnt/data/agent WD_AGENT_PORT=8080 npm run agent:start
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import type { Scenario } from '../artifacts/build'
 import { startPhase, resumePhase } from '../agent-core/phases'
 import { createMachineAuth, attestMachinePrincipal } from './machine-auth'
+import { patchScenario } from './fixture'
 import type { ServiceContext } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
@@ -21,13 +20,7 @@ const DATA_DIR = process.env.WD_AGENT_DATA_DIR ?? path.resolve(process.cwd(), '.
 // configuration keeps claims with the run state they protect (review finding).
 const CLAIM_DB = process.env.WD_AGENT_CLAIM_DB ?? path.join(DATA_DIR, 'consumption.db')
 
-function loadFixture(): Scenario {
-  return JSON.parse(
-    readFileSync(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-  ) as Scenario
-}
-
-const ctx: ServiceContext = { dataDir: DATA_DIR, claimDb: CLAIM_DB, fixture: loadFixture() }
+const ctx: ServiceContext = { dataDir: DATA_DIR, claimDb: CLAIM_DB, fixture: patchScenario }
 const machineAuth = createMachineAuth({ tokenHash: process.env.WD_MACHINE_TOKEN_HASH })
 
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -57,7 +50,9 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/ping') {
-    return send(res, 200, { ok: true, service: 'who-decides-agent', dataDir: DATA_DIR })
+    // AgentCore HTTP protocol contract: the platform health check reads the
+    // {"status":"Healthy"} body (spike-log Day 7; runtime-service-contract).
+    return send(res, 200, { status: 'Healthy', service: 'who-decides-agent', dataDir: DATA_DIR })
   }
   if (req.method === 'POST' && req.url === '/invocations') {
     // Machine-principal gate (AC-2, review round-2 P1): the documented

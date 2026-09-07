@@ -1,7 +1,7 @@
 [
   {
     "name": "who-decides-dev",
-    "description": "PLACEHOLDER account — replace with the real 12-digit ID before deploy (AC-5, Joe, manual; CI never calls AWS). Schema: @aws/agentcore 0.28.1 aws-targets.js.",
+    "description": "REPLACE_BEFORE_DEPLOY: account is a placeholder — set the real 12-digit ID per agentcore/DEPLOY-CHECKLIST.md before any deploy (AC-5, Joe, manual; CI never calls AWS). Schema: @aws/agentcore 0.28.1 aws-targets.js.",
     "account": "000000000000",
     "region": "us-east-1"
   }

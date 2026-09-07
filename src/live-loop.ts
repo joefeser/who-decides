@@ -23,6 +23,7 @@ import {
 } from './artifacts/build'
 import type { Scenario } from './artifacts/build'
 import { assertValid } from './artifacts/schemas'
+import { patchScenario } from './agent-service/fixture'
 import { ConsumptionStore, decisionDigest } from './consumption/store'
 import type { DecisionRecord } from './consumption/store'
 import { randomUUID, createHash } from 'node:crypto'
@@ -93,12 +94,6 @@ const RATIONALE: Record<string, string> = {
   create_draft_pr: 'Security risk outweighs the runtime-floor bump; node 20 is our target platform.',
   send_back: 'The runtime-floor bump needs an answer for node 18 consumers before we ship this; resolve that and resubmit.',
   defer: 'Not now — revisit at the next planning session; nothing should execute meanwhile.',
-}
-
-function loadFixture(): Scenario {
-  return JSON.parse(
-    readFileSync(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-  ) as Scenario
 }
 
 function decisionTool(f: Scenario): FunctionTool {
@@ -177,7 +172,7 @@ export async function main(runtimeFactory: (fixture: Scenario) => LiveRuntime = 
   return { agent: new Agent({ model, tools: [decisionTool(fixture)] }), provenance }
 }): Promise<void> {
   const started = Date.now()
-  const f = loadFixture()
+  const f = patchScenario
 
   // Validate the scripted decision BEFORE any model call or claim (fail fast).
   const HUMAN_CHOICE = process.env.WD_LIVE_CHOICE ?? 'create_draft_pr'
