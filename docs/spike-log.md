@@ -643,3 +643,25 @@ All three repos' boards are now clean dependencies:
 - who-decides: AC-5 (Joe) → AC-6 → final unit PR
 - HACP: #54 (the ladder's current rung) + #52 (no-decision identity, later)
 - WITS: waiting on #54, then Joe's authorization
+
+## Day 8 addendum 2 — AGENT DEPLOYED ON AWS (AC-5 deploy complete)
+
+The AgentCore runtime deployed successfully at 2026-09-07T22:12 UTC:
+- Runtime: whoDecides_who_decides_agent-1mF5fr45DG
+- ARN: arn:aws:bedrock-agentcore:us-east-1:937830454526:runtime/whoDecides_who_decides_agent-1mF5fr45DG
+- Stack: AgentCore-whoDecides-who-decides-dev
+- Execution role: AgentCore-whoDecides-who--ApplicationAgentWhoDecide-ZOJtpf1P647v
+
+The path there (3 deploy failures, each with a real lesson):
+1. CDK project not found — AC-4 scaffolded config but not the CDK infra;
+   fixed by generating the cdk/ tree via agentcore create --no-agent.
+2. Broken node_modules bin links from the copy — fixed with a clean
+   npm install.
+3. Entrypoint validation: the AgentCore API rejects .ts entrypoints for
+   NODE_22 runtime — compiled main.ts to a bundled main.js via esbuild
+   (359KB CJS, native addons external). The CLI validates .ts but the
+   API validates .js; the config now names the compiled output.
+
+Remaining for AC-5: attach PowerUserAccess (done), verify the runtime
+responds (invoke test), capture the endpoint for the console's
+WD_AGENTCORE_ENDPOINT env var.
