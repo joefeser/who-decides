@@ -13,6 +13,8 @@ out/
 .env
 .env.*
 !.env.example
+# agentcore local-secrets template is committed; agentcore/.env.local stays ignored
+!agentcore/.env.local.example
 
 # logs
 npm-debug.log*

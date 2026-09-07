@@ -1,0 +1,44 @@
+{
+  "name": "whoDecides",
+  "version": 1,
+  "managedBy": "CDK",
+  "runtimes": [
+    {
+      "name": "who_decides_agent",
+      "description": "who-decides live-loop agent (AC-1 service). Fields per @aws/agentcore 0.28.1 zod schemas + bedrock-agentcore runtime-service-contract docs. Deploy is MANUAL (Joe, AC-5).",
+      "build": "CodeZip",
+      "entrypoint": "main.ts",
+      "codeLocation": "agentcore/app/who-decides-agent",
+      "runtimeVersion": "NODE_22",
+      "protocol": "HTTP",
+      "networkMode": "PUBLIC",
+      "instrumentation": {
+        "enableOtel": true
+      },
+      "envVars": [
+        {
+          "name": "WD_AGENT_PORT",
+          "value": "8080"
+        },
+        {
+          "name": "WD_AGENT_DATA_DIR",
+          "value": "/mnt/data/agent"
+        },
+        {
+          "name": "WD_PROVIDER",
+          "value": "bedrock"
+        }
+      ],
+      "lifecycleConfiguration": {
+        "idleRuntimeSessionTimeout": 600
+      },
+      "filesystemConfigurations": [
+        {
+          "sessionStorage": {
+            "mountPath": "/mnt/data"
+          }
+        }
+      ]
+    }
+  ]
+}
