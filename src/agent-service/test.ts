@@ -6,15 +6,13 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Agent, InterruptResponseContent } from '@strands-agents/sdk'
-import { readFileSync as rf } from 'node:fs'
 import type { Scenario } from '../artifacts/build'
-import {} from './server'
+import { server } from './server'
+import { patchScenario } from './fixture'
 import { startPhase, resumePhase } from '../agent-core/phases'
 import type { ServiceContext } from '../agent-core/phases'
 
-const fixture: Scenario = JSON.parse(
-  rf(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-) as Scenario
+const fixture: Scenario = patchScenario
 
 /** Synthetic runtime: interrupt on A, endTurn on B, snapshot always fresh
  * (loadSnapshot is what phase B must call to reconstruct). */
@@ -132,5 +130,21 @@ test('HTTP surface: /ping health and /invocations routing with typed statuses', 
     assert.equal(state.rationale, 'send it back', 'the recorded rationale is exactly what was submitted')
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('/ping returns the AgentCore health body ({"status":"Healthy"})', async () => {
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const port = (server.address() as { port: number }).port
+    const res = await fetch(`http://127.0.0.1:${port}/ping`)
+    assert.equal(res.status, 200)
+    const body = await res.json() as Record<string, unknown>
+    // The platform health check reads the status field (runtime HTTP contract)
+    assert.equal(body.status, 'Healthy')
+    assert.equal(body.service, 'who-decides-agent')
+  } finally {
+    server.closeIdleConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })

@@ -18,7 +18,7 @@ import {
 import type { Scenario } from '../artifacts/build'
 import { decisionDigest } from '../consumption/store'
 import type { DecisionRecord } from '../consumption/store'
-import { readFileSync } from 'node:fs'
+import { patchScenario } from '../agent-service/fixture'
 import type { RunStore } from './store/store'
 import { createDefaultRunStore, createDefaultReceiptStore } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
@@ -65,12 +65,6 @@ export type ConsoleState = {
   artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', valid: boolean }>
   heading: string
   subheading: string
-}
-
-function loadScenario(): Scenario {
-  return JSON.parse(
-    readFileSync(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-  ) as Scenario
 }
 
 const HEADING: Record<ConsoleState['state'] & string, { heading: string, subheading: string }> = {
@@ -139,7 +133,7 @@ export class ConsoleEngine {
 
   async startRun(retried = false): Promise<{ runId: string }> {
     await this.ready
-    const s = loadScenario()
+    const s = patchScenario
     const runId = `run-${randomUUID()}`
     const invocationA = `inv-${randomUUID()}`
     const now = new Date().toISOString()
@@ -197,7 +191,7 @@ export class ConsoleEngine {
   /** Writes the invocation-A artifacts idempotently — the builders are
    * deterministic, so any caller can complete or repair provisioning. */
   private async provisionArtifacts(runId: string): Promise<void> {
-    const s = loadScenario()
+    const s = patchScenario
     const packet = buildTaskPacket(s)
     assertValid('task-packet', packet)
     if (await this.runs.getArtifactJson(runId, 'task-packet') === undefined) {
@@ -262,7 +256,7 @@ export class ConsoleEngine {
       if (prior) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
       return { ok: false, error: `WRONG_STATE:${run.state}` }
     }
-    const s = loadScenario()
+    const s = patchScenario
     if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
     // Idempotent reuse matches BOTH key and choice; a different key is a
@@ -401,7 +395,7 @@ export class ConsoleEngine {
   }
 
   private decisionRecord(decisionId: string, choice: string, rationale: string, decidedAt: string): DecisionRecord {
-    const s = loadScenario()
+    const s = patchScenario
     return {
       decisionId,
       chosenOption: choice,
@@ -458,7 +452,7 @@ export class ConsoleEngine {
     }
     await this.advancePhases(run)
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
-    const s = loadScenario()
+    const s = patchScenario
     const artifacts = (await this.runs.listArtifacts(run.id, this.tenant))
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
     const storedDecision = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
