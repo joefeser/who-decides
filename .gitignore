@@ -42,3 +42,5 @@ next-env.d.ts
 .agent-control/tmp/
 .agent-control/pr-loop-handoffs/
 agentcore/cdk/node_modules/
+agentcore/.cache/
+agentcore/.cli/
