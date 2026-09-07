@@ -41,3 +41,4 @@ next-env.d.ts
 # supersedes the broader .agent-control/ rule — keep only this narrow one)
 .agent-control/tmp/
 .agent-control/pr-loop-handoffs/
+agentcore/cdk/node_modules/
