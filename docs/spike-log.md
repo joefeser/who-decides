@@ -665,3 +665,88 @@ The path there (3 deploy failures, each with a real lesson):
 Remaining for AC-5: attach PowerUserAccess (done), verify the runtime
 responds (invoke test), capture the endpoint for the console's
 WD_AGENTCORE_ENDPOINT env var.
+
+## Day 8 addendum 3 — state-loss recovery + deploy prerequisites (2026-09-07)
+
+After the successful deploy, `invoke` failed with `State config file not
+found`: the post-deploy cleanup commit (763e888) gitignored
+`agentcore/.cli/` as "build/cache dirs" and the cleanup deleted
+`deployed-state.json` — which is the deployment record, not cache.
+
+Lessons, all verified live:
+1. `agentcore deploy` hard-requires `uv` (brew install uv); the dependency
+   check is unconditional on @aws/agentcore 0.28.1, no skip flag.
+2. Recovery for lost state is a plain re-run of `npx agentcore deploy`:
+   CDK adopted the existing runtime in place (runtime ID
+   whoDecides_who_decides_agent-1mF5fr45DG unchanged) and rewrote the
+   state file.
+3. `agentcore import runtime` is NOT a recovery path here — it refuses
+   because `agentcore.json` already declares `who_decides_agent`, and
+   add/remove have no runtime subcommand. Raw `cdk deploy` updates AWS
+   but never writes the state file.
+4. `agentcore status --runtime-id <id>` works without local state and is
+   the fastest way to confirm a runtime is live.
+
+DEPLOY-CHECKLIST.md restructured around these (prerequisites, deploy
+sequence, recovery, resolved blockers). aws-targets.json
+REPLACE_BEFORE_DEPLOY warning retired — account verified live.
+
+## Day 8 addendum 4 — first invoke: two boot crashes behind "deploy complete"
+
+The first real invoke (22:36 UTC) returned "Runtime initialization time
+exceeded" — AgentCore's 30s init window expired because the Node process
+crashed before binding 8080. CloudWatch logs showed the true error; the
+init-timeout message alone hides it. Lesson: read runtime logs on any
+invoke failure before touching config.
+
+Crash 1 (FIXED): `src/artifacts/schemas.ts` read the seven vendored HACP
+schema JSONs via cwd-relative `readFileSync` at module load. The CodeZip
+ships only the esbuild bundle — no payload files — so under `/var/task`
+boot hit ENOENT. Fix: static JSON imports (esbuild inlines them), the same
+pattern `agent-service/fixture.ts` already used for patch-scenario.json.
+Verified: tsc clean; test:artifacts 8/8, test:agent-service 5/5,
+test:local-owner 46/46.
+
+Crash 2 (OPEN, decision needed; resolved the same evening by the container
+repair — see Day 9): the boot graph imports better-sqlite3 at
+module load (`agent-core/phases.ts:25` → `consumption/store.ts:14`,
+`store-admission.ts` same chain). The native addon cannot ship in a
+CodeZip and the CLI has no externals field — this was checklist blocker
+"better-sqlite3 cannot ship in a CodeZip", never actually resolved; the
+17:12 "deploy complete" proved packaging only. Remedies for Joe:
+(a) Container build — the original fallback, no governed-code changes;
+(b) port the claim store to node:sqlite (available unflagged on the
+runtime's Node 22.23) — stays CodeZip but swaps the engine under the
+hardened admission contract, so it warrants dual review.
+
+Also open: the runtime env carries no `WD_MACHINE_TOKEN_HASH`, so once the
+runtime boots, invocations still fail closed with 503 MACHINE_AUTH_DISABLED
+until the secret-injection mechanism is chosen (`.env.local.example`:
+never in git). The start-of-session dev token's sha256 is the intended
+value once a mechanism exists.
+
+## Day 9 — 2026-09-08: Codex container repair (AC-5 repackage) + stash recovery
+
+Joe chose the container path. Codex's repair commit 8056d0b repackaged the
+agent as a Node 22 linux/arm64 container (agentcore/Dockerfile) with
+better-sqlite3's native addon inside the image — Crash 2 above is resolved
+by that choice, not by a node:sqlite port. The same commit fixed live
+dispatch/decision binding (runs resume only their own confirmed decision),
+the `app/api/*` live-mode routes, and added regression coverage including
+`src/server/live-dispatch.test.ts`.
+
+Local gates passed after the repair: 122 unit tests, 50 Postgres tests,
+tsc, next build, `agentcore validate`, and an ARM64 container smoke that
+boots the image and loads native SQLite. These prove the artifact, not the
+deployment: AC-6 still needs the repaired image deployed, the runtime env
+carrying `WD_MACHINE_TOKEN_HASH`, and a real A→human decision→B cycle.
+
+Stash recovery: this session's IDE rebase autostash (recovered as
+e1ca26ed after deletion) held addenda 3 and 4 above plus schema-JSON
+imports, the live account ID, and a checklist restructure. The schema and
+account changes were already incorporated by 8056d0b verbatim; the
+checklist restructure was superseded by 8056d0b's rewrite (which keeps the
+uv prerequisite, the `.cli/` state warning, and the honest
+"READY ≠ working invocation" gate). Only the two addenda were missing and
+are restored above, with Crash 2's status annotated.
+
