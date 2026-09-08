@@ -137,6 +137,52 @@ Pull requests are reviewed by Codex under the
 target `dev`; promotion to `main` is a separate human-mediated PR. Merge
 commits only, never squash. Qodo remains disabled.
 
+## How this was built
+
+The build is a human-gated multi-agent loop: implementation sessions do the
+work, independent bot and agent reviewers attack each PR, and the human
+owner triages, dispositions, and merges. Everything below is sourced from
+[docs/spike-log.md](docs/spike-log.md) — the day-by-day evidence record;
+claims without a recorded measurement are marked TODO rather than guessed.
+
+**Models (roles).** Bedrock `global.anthropic.claude-sonnet-4-6`
+(us-east-1) is the documented default agent model, adopted after a
+measured commit-or-pivot gate (spike-log Day 2b). An OpenAI-compatible
+endpoint (gpt-4o, smoke-tested Day 1) remains the escape hatch via
+`WD_PROVIDER=openai-compatible`. The decision console itself calls no
+model — it replays a fixture deterministically.
+
+**Prices (only what was measured).** The Day 2b gate recorded 7,206 input
+/ 2,152 output tokens ≈ **$0.054** per full run at the then-listed $3/$15
+per-million-token rates, against a $5 ceiling. The Day 4 end-to-end pass
+(both invocations, 5.6 s) was "in line with" that measurement; no exact
+figure was recorded for it. AgentCore Runtime was surveyed (Day 7) at
+$0.0895/vCPU-hour + $0.00945/GB-hour with a 128 MB floor. TODO: later
+passes recorded no per-run cost measurements, and total spend is not
+tracked in this repository.
+
+**Review claims (what actually converged).** Not every PR converged
+cleanly, and the log says so. Convergence examples with receipts: PR #1
+(console) — 11 bot findings triaged, 8 patched in the PR. PR #4 (live
+loop) — eleven review rounds across Codex/Qodo passes, including two
+reviews wrongly called clean before the real findings landed; the loop
+produced the claim-first restructure, durable crash recovery, and the
+no-takeover reservation posture. PR #13 (public demo) — 13 findings
+across three passes. PR #15 (Postgres adapters) — two Codex rounds plus
+an independent second-family pass, verified 88/88 SQLite + 49/49
+Postgres. AC-1 (agent service) — three review rounds. PR #10 merged only
+by explicit owner override after repeated rounds kept surfacing real
+findings — the ceiling on review is the human's, by design.
+
+**Deployed-agent evidence.** The AgentCore packaging repair (Node 22
+ARM64 container, native SQLite) is validated by local gates only: unit
+suites, build, `agentcore validate`, and a container smoke test. The
+live A → decision → B cycle on the deployed runtime is gated by
+`npm run test:agentcore-live` (see
+[deploy/PROVISION.md](deploy/PROVISION.md) and
+[agentcore/DEPLOY-CHECKLIST.md](agentcore/DEPLOY-CHECKLIST.md)) and had
+not been run when this section was written.
+
 ## Demo boundaries (honest scope)
 
 The decision console (`npm run console`, port 3100) is a **single-operator

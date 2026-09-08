@@ -1,8 +1,9 @@
 # Provisioning the public who-decides demo
 
-Numbered steps for a single EC2 host running the console behind Caddy with
-automatic HTTPS. Placeholders (`<...>`) are filled in on the host only —
-**no secret ever belongs in this repository**.
+Numbered steps 1–10 provision a single EC2 host running the console behind
+Caddy with automatic HTTPS. Step 11 wires that console to the deployed
+AgentCore agent runtime (live mode). Placeholders (`<...>`) are filled in
+on the host only — **no secret ever belongs in this repository**.
 
 Target topology:
 
@@ -70,9 +71,11 @@ commands. **Values below are placeholders; fill them in on the host only.**
 #   printf '%s' '<choose-a-long-passcode>' | sha256sum       # Linux
 #   printf '%s' '<choose-a-long-passcode>' | shasum -a 256   # macOS
 WD_OPERATOR_PASSCODE_HASH=<64-hex sha256 of the operator passcode>
-# Agent dispatch (optional — set both to enable the live agent):
+# Agent dispatch (live mode — set BOTH, or neither):
 # WD_AGENTCORE_ENDPOINT=<runtime ARN>
-# WD_MACHINE_TOKEN=<service token>
+# WD_MACHINE_TOKEN=<the agent runtime's service token>
+# Setting only one is an error: the console fails closed with
+# ENVIRONMENT_BLOCKED instead of silently picking a mode.
 
 # --- Console storage ------------------------------------------------------
 # Data directory for the SQLite stores (state.db with runs + operator
@@ -191,3 +194,86 @@ Expected: `/api/state` always answers (watch mode stays public), every
 mutation returns `401 {"ok":false,"error":"OPERATOR_AUTH_REQUIRED"}`
 without a valid session cookie, and five failed logins trip the 15-minute
 per-IP rate limit.
+
+## 11. Live agent dispatch (AgentCore runtime, AC-6)
+
+Steps 1–10 provision the console host. This section wires it to the real
+agent runtime on AWS AgentCore. Until both live variables are set, the
+console runs the deterministic fixture demo.
+
+### Runtime deployment (manual — Joe's steps, Joe's authorization)
+
+The runtime is a separate deployment from this host; the runbook is
+[`agentcore/DEPLOY-CHECKLIST.md`](../agentcore/DEPLOY-CHECKLIST.md) and the
+packaging rationale is [`agentcore/README.md`](../agentcore/README.md).
+Current shape: a **Linux ARM64 Node 22 container** (`agentcore/Dockerfile`)
+carrying the native `better-sqlite3` addon, HTTP protocol on 8080, with
+run state on the `/mnt/data` session mount.
+
+Deployment history, stated precisely:
+
+- *Local experiments* (Bedrock gate, live-loop passes, 2026-09-03/04)
+  ran real models on a laptop — they never exercised a deployed runtime.
+- *Deployed revision* 2026-09-07 22:12 UTC: the runtime deployed as a
+  CodeZip ("deploy complete" proved packaging only). The first real
+  invoke timed out; CloudWatch showed two boot crashes behind it
+  (missing schema files; the native SQLite addon could not ship in the
+  CodeZip at all).
+- *Verified outcome so far*: Codex's repair (8056d0b) repackages the
+  agent as a container and passes the local gates — tests, Next build,
+  `agentcore validate`, and an ARM64 container smoke that boots the image
+  and loads native SQLite. **The repaired image is not yet deployed.**
+  The deployment record on file predates the repair, and a READY status
+  in the AWS console would not prove the runtime contains this code.
+  Until a post-repair deploy is followed by a verified live cycle
+  (AC-6), treat the runtime as unverified.
+
+### Token setup
+
+One machine service token, two derived configurations — the token itself
+never lands in git or in this file:
+
+- Mint it once, on the host or locally, and keep it in a password manager:
+  `openssl rand -hex 32`. Its SHA-256 is what the runtime checks.
+
+- Console host (this host): `WD_MACHINE_TOKEN=<token>` in
+  `/etc/who-decides.env` (step 6).
+- Agent runtime: `WD_MACHINE_TOKEN_HASH=<sha256(token)>`, validated
+  timing-safely by the agent service. The tracked runtime config
+  (`agentcore/agentcore.json`) commits only non-secret env vars, so the
+  hash must reach the runtime through a deployment-time mechanism.
+  **TODO(owner): the injection mechanism is still an open decision** —
+  until it is chosen and applied, every live invocation fails closed
+  with `MACHINE_AUTH_DISABLED`.
+- Regenerating the token requires updating both sides; a mismatch fails
+  closed with 401, never open.
+
+### Endpoint wiring and the live gate
+
+- `WD_AGENTCORE_ENDPOINT` is the runtime **ARN**
+  (`arn:aws:bedrock-agentcore:us-east-1:...:runtime/...`), captured from
+  the deployment — `npx agentcore status` prints it, and
+  `npx agentcore status --runtime-id <id>` works even where the local
+  CLI state file was lost.
+- Set BOTH `WD_AGENTCORE_ENDPOINT` and `WD_MACHINE_TOKEN`, then restart
+  the console (step 7). Partial configuration fails closed.
+- The live gate is
+  `WD_AGENTCORE_ENDPOINT=... WD_MACHINE_TOKEN=... npm run test:agentcore-live`
+  run from the repo. It skips with a stated reason when no endpoint is
+  configured, and FAILS on missing token, credential, permission,
+  transport, or malformed-response problems. It passes only on a real
+  run → human decision → resume cycle with bound decision/receipt
+  evidence. A skip is "not verified", not a pass.
+
+### Mode switching is explicit, never a silent fallback
+
+There is no safe-automatic rollback to deterministic mode: **deleting or
+breaking the runtime does not fall back cleanly — configured live runs
+surface the failure** (a failed dispatch keeps the run blocked with its
+dispatch error; it does not advance to completion by timer or retry).
+To deliberately run new runs in deterministic mode, unset BOTH live
+variables and restart the console; that is an explicit configuration
+choice for new runs, and existing runs keep the execution mode they
+started under. If a live resume's outcome is uncertain, inspect the run
+and the runtime logs before touching anything — there is no automatic
+claim takeover or reexecution.
