@@ -750,3 +750,33 @@ uv prerequisite, the `.cli/` state warning, and the honest
 "READY ≠ working invocation" gate). Only the two addenda were missing and
 are restored above, with Crash 2's status annotated.
 
+## Day 9 addendum — deployed runtime verified still broken (2026-09-08)
+
+With the AWS session restored, the live prerequisites were verified
+read-only against the control plane and CloudWatch:
+
+- Runtime `whoDecides_who_decides_agent-1mF5fr45DG` is READY, but its
+  artifact is still the pre-repair CodeZip: S3 CDK asset
+  `cd2ccbcf…zip` (hash-identical to the local pre-repair
+  `agentcore/cdk/cdk.out` asset), entryPoint `main.js`,
+  `lastUpdatedAt 2026-09-07T22:13:36Z` — before the repair commit
+  (2026-09-08T02:23Z). The repaired container is NOT deployed.
+- The newest CloudWatch boot attempt still crashes with addendum 4's
+  Crash 1 verbatim: `ENOENT /var/task/schemas/hacp/v0.1-draft/
+  task-packet.schema.json` under `/var/task`. Any invoke today burns
+  the 30s init window; READY is proof of nothing.
+- Runtime `environmentVariables` carry only WD_AGENT_DATA_DIR,
+  WD_AGENT_PORT, WD_PROVIDER — no `WD_MACHINE_TOKEN_HASH`, so even a
+  healthy boot would fail every invocation closed with
+  `MACHINE_AUTH_DISABLED`.
+- The account session (root-equivalent) covers the manual gate's AWS
+  permissions. The EC2 console host's env (`WD_AGENTCORE_ENDPOINT`,
+  `WD_MACHINE_TOKEN`) is not verifiable from a laptop and remains
+  Joe's on-host check.
+
+Blockers to a real AC-6 cycle, in order: (1) owner decision on the
+`WD_MACHINE_TOKEN_HASH` injection mechanism, (2) authorized redeploy of
+the repaired container (`deploy --dry-run` diff review first), (3) console
+host env config, (4) `npm run test:agentcore-live` from a credentialed
+host.
+
