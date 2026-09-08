@@ -49,5 +49,5 @@ jobs:
         with:
           node-version: 22
       - uses: docker/setup-qemu-action@v3
-      - run: docker build --platform linux/arm64 -f agentcore/Dockerfile -t who-decides:ac5-repair .
+      - run: docker build --platform linux/arm64 -f Dockerfile -t who-decides:ac5-repair .
       - run: npm run test:container

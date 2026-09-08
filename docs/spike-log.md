@@ -780,3 +780,30 @@ the repaired container (`deploy --dry-run` diff review first), (3) console
 host env config, (4) `npm run test:agentcore-live` from a credentialed
 host.
 
+## Day 9 addendum 2 — synth recursion found and fixed; dry-run clean (2026-09-08)
+
+Joe decided blocker (1): the hash is installed **post-deploy** via
+`aws bedrock-agentcore-control update-agent-runtime --environment-variables`
+(no secret in tracked config; must be re-applied after every deploy
+because a tracked-config deploy drops it — checklist step 3 records this).
+
+Then the authorized `deploy --dry-run` failed: CDK synth died with
+ENAMETOOLONG. Root cause: the container source asset stages the repo-root
+build context into `cdk.out/asset.<hash>`, and `ContainerSourceAsset`
+appends force-keep patterns for the Dockerfile's ancestor directories
+AFTER the user `.dockerignore` — with `agentcore/Dockerfile`, the
+`!agentcore` ancestor negation re-included the `agentcore` subtree in
+CDK's DOCKER ignore matcher, so the staging swept `agentcore/cdk/cdk.out`
+into itself and nested until paths overflowed (one synth run went 8+ deep;
+the old cdk.out had accumulated 9 levels / 2.3 GB). Fix: move the
+Dockerfile to the context root (`agentcore.json` `dockerfile: "Dockerfile"`),
+so force-keep emits only `!Dockerfile` and the `agentcore/cdk` exclusion
+holds. After the move: clean cdk.out, `agentcore validate` Valid, dry-run
+and `--diff` both green.
+
+Diff review (read-only): the CodeZip → Container move updates
+`AWS::BedrockAgentCore::Runtime` IN PLACE (`CodeConfiguration` →
+`ContainerConfiguration`, runtime ID unchanged, no replacement); all else
+is additive (ECR repo + KMS key, CodeBuild project, Lambda build trigger,
+ECR-pull/KMS-decrypt grants). Real deploy awaits Joe's authorization.
+

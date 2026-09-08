@@ -208,7 +208,8 @@ configuration that fails closed with `ENVIRONMENT_BLOCKED`.
 The runtime is a separate deployment from this host; the runbook is
 [`agentcore/DEPLOY-CHECKLIST.md`](../agentcore/DEPLOY-CHECKLIST.md) and the
 packaging rationale is [`agentcore/README.md`](../agentcore/README.md).
-Current shape: a **Linux ARM64 Node 22 container** (`agentcore/Dockerfile`)
+Current shape: a **Linux ARM64 Node 22 container** (`Dockerfile` at the
+repo root, the container build context)
 carrying the native `better-sqlite3` addon, HTTP protocol on 8080, with
 run state on the `/mnt/data` session mount.
 
@@ -243,9 +244,14 @@ never lands in git or in this file:
 - Agent runtime: `WD_MACHINE_TOKEN_HASH=<sha256(token)>`, validated
   timing-safely by the agent service. The tracked runtime config
   (`agentcore/agentcore.json`) commits only non-secret env vars, so the
-  hash must reach the runtime through a deployment-time mechanism.
-  **TODO(owner): the injection mechanism is still an open decision** —
-  until it is chosen and applied, every live invocation fails closed
+  hash is installed **post-deploy via a control-plane patch**
+  (`aws bedrock-agentcore-control update-agent-runtime
+  --environment-variables ...`) — decided by Joe on 2026-09-08; the exact
+  command lives in
+  [`agentcore/DEPLOY-CHECKLIST.md`](../agentcore/DEPLOY-CHECKLIST.md).
+  Because a later tracked-config deploy re-applies the env vars without
+  the hash, **the patch must be re-applied and re-verified after every
+  deploy**; until it is in place, every live invocation fails closed
   with `MACHINE_AUTH_DISABLED`.
 - Regenerating the token requires updating both sides; a mismatch fails
   closed with 401, never open.

@@ -1,9 +1,14 @@
 # AgentCore deployment
 
-The runtime uses a Linux ARM64 Node 22 container. `agentcore/Dockerfile`
-bundles application source and JSON schemas while keeping npm packages in
-`node_modules`, including the native `better-sqlite3` binary installed inside
-Linux. This preserves the existing consumption-store implementation.
+The runtime uses a Linux ARM64 Node 22 container. The `Dockerfile` lives at
+the repository root — the container build context — because the deployer
+force-keeps the Dockerfile's ancestor directories, and an `agentcore/`
+ancestor re-inclusion swept `agentcore/cdk/cdk.out` into its own S3 asset
+staging (self-nesting until ENAMETOOLONG; see docs/spike-log.md Day 9).
+The image bundles application source and JSON schemas while keeping npm
+packages in `node_modules`, including the native `better-sqlite3` binary
+installed inside Linux. This preserves the existing consumption-store
+implementation.
 
 `agentcore.json` selects `Container`, the repository root build context, port
 8080, Bedrock, and the `/mnt/data` session-storage mount. `aws-targets.json`
@@ -20,7 +25,7 @@ npm ci
 npx tsc --noEmit
 npm test
 npx agentcore validate
-docker build --platform linux/arm64 -f agentcore/Dockerfile -t who-decides:ac5-repair .
+docker build --platform linux/arm64 -f Dockerfile -t who-decides:ac5-repair .
 npm run test:container
 ```
 

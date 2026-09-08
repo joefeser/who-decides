@@ -40,7 +40,7 @@
         }
       ],
       "buildContextPath": ".",
-      "dockerfile": "agentcore/Dockerfile"
+      "dockerfile": "Dockerfile"
     }
   ]
 }
