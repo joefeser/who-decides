@@ -193,7 +193,11 @@ export class AgentCoreStack extends Stack {
 
       let physicalName = `${baseName}${REPLACEMENT_SUFFIX}`;
       if (physicalName.length > AGENT_RUNTIME_NAME_MAX) {
-        physicalName = `${baseName.slice(baseName.length - (AGENT_RUNTIME_NAME_MAX - REPLACEMENT_SUFFIX.length))}${REPLACEMENT_SUFFIX}`;
+        // Keep the leading character — the name pattern requires the first
+        // char to be a letter, and a blind tail cut can start with a digit
+        // or underscore — plus as much of the tail as fits before the suffix.
+        const keep = AGENT_RUNTIME_NAME_MAX - REPLACEMENT_SUFFIX.length;
+        physicalName = `${baseName.charAt(0)}${baseName.slice(-(keep - 1))}${REPLACEMENT_SUFFIX}`;
       }
       if (originalNames.has(physicalName) || assignedPhysicalNames.has(physicalName)) {
         throw new Error(

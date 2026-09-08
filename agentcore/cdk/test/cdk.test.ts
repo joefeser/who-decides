@@ -97,3 +97,15 @@ test('replacement physical names stay within the 48-char service limit', () => {
   expect(name.length).toBeLessThanOrEqual(48);
   expect(name.endsWith('_container')).toBe(true);
 });
+
+test('truncated replacement names keep a valid leading character', () => {
+  // A 47-char name whose 10th char is '_' truncates to a tail starting with
+  // '_' — the name pattern requires the first char to be a letter.
+  const template = synthesize([containerRuntime(`${'a'.repeat(9)}_${'b'.repeat(37)}`)]);
+  const [, resource] = Object.entries(
+    template.findResources('AWS::BedrockAgentCore::Runtime'),
+  )[0]!;
+  const name = resource.Properties.AgentRuntimeName as string;
+  expect(name.length).toBeLessThanOrEqual(48);
+  expect(name).toMatch(/^[A-Za-z][A-Za-z0-9_]*_container$/);
+});
