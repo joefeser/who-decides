@@ -12,6 +12,16 @@ import { CfnOutput, Stack, type StackProps } from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
+// The aws_bedrockagentcore service module exists on the main export but has
+// no package-export subpath in this aws-cdk-lib line — resolve it via the
+// module object, not a subpath import.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const bedrockagentcore = require('aws-cdk-lib') as typeof import('aws-cdk-lib') & {
+  aws_bedrockagentcore: {
+    CfnRuntime: new (...args: unknown[]) => Construct & { overrideLogicalId(id: string): void };
+  };
+};
+
 /**
  * Harness deployment config: role-scoped fields (for IAM role + container build)
  * plus the full validated spec + its config directory so the L3 construct can
@@ -124,6 +134,22 @@ export class AgentCoreStack extends Stack {
       appProps.credentials = credentials;
     }
     this.application = new AgentCoreApplication(this, 'Application', appProps as any);
+
+    // The AgentCore control plane REJECTS changing an existing runtime's
+    // artifact type — "Agent artifact type cannot be updated" (InvalidRequest,
+    // 400); the 2026-09-08 CodeZip→Container deploy failed and rolled back on
+    // exactly this, after the CDK diff had shown a harmless-looking in-place
+    // update. Force a NEW logical id for every CfnRuntime so CloudFormation
+    // creates the container runtime fresh and deletes the CodeZip one.
+    // Run-scoped consequence: the runtime ID and ARN change with the new
+    // resource — update WD_AGENTCORE_ENDPOINT wherever it is configured.
+    let runtimeIndex = 0;
+    for (const child of this.node.findAll()) {
+      if (child instanceof bedrockagentcore.aws_bedrockagentcore.CfnRuntime) {
+        child.overrideLogicalId(`AgentRuntimeContainer${runtimeIndex}`);
+        runtimeIndex += 1;
+      }
+    }
 
     // Create AgentCoreMcp if there are gateways configured
     if (mcpSpec?.agentCoreGateways && mcpSpec.agentCoreGateways.length > 0) {

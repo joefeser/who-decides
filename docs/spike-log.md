@@ -807,3 +807,32 @@ Diff review (read-only): the CodeZip → Container move updates
 is additive (ECR repo + KMS key, CodeBuild project, Lambda build trigger,
 ECR-pull/KMS-decrypt grants). Real deploy awaits Joe's authorization.
 
+## Day 9 addendum 3 — first container deploy failed + the replace fix (2026-09-08)
+
+Joe ran the real deploy (deploy-20260908-143109): 5m13s, FAILED, clean
+rollback (UPDATE_ROLLBACK_COMPLETE; the freshly created ECR/KMS/CodeBuild/
+IAM resources deleted; the old runtime untouched). The handler error:
+
+    Resource handler returned message: "Invalid request provided: Agent
+    artifact type cannot be updated" (HandlerErrorCode: InvalidRequest)
+
+on AWS::BedrockAgentCore::Runtime. Lesson, now proven by the service: the
+CDK `--diff` "[~] in-place update" was a fiction at the API level — the
+AgentCore control plane forbids changing an existing runtime's artifact
+type entirely. The runtime resource must be REPLACED.
+
+Fix in the vendored stack (agentcore/cdk/lib/cdk-stack.ts): after
+constructing AgentCoreApplication, every `aws_bedrockagentcore.CfnRuntime`
+gets `overrideLogicalId('AgentRuntimeContainer<index>')` — CloudFormation
+then creates the container runtime fresh and deletes the CodeZip one in a
+single deploy. Accepted consequence: the runtime ID and ARN change;
+WD_AGENTCORE_ENDPOINT must be updated wherever configured, and the
+checklist's hash-patch step no longer hardcodes an ID.
+
+Side effects of the failed attempt worth keeping: the CloudWatch log group
+`...-1mF5fr45DG-DEFAULT` survives with the boot-crash history; the runtime
+itself is unchanged (still READY, still the broken CodeZip), so a READY
+status still proves nothing; the console-side live-dispatch config was
+never set, so nothing downstream referenced the old runtime except this
+repo's docs.
+
