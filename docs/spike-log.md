@@ -665,3 +665,145 @@ The path there (3 deploy failures, each with a real lesson):
 Remaining for AC-5: attach PowerUserAccess (done), verify the runtime
 responds (invoke test), capture the endpoint for the console's
 WD_AGENTCORE_ENDPOINT env var.
+
+## Day 8 addendum 3 — state-loss recovery + deploy prerequisites (2026-09-07)
+
+After the successful deploy, `invoke` failed with `State config file not
+found`: the post-deploy cleanup commit (763e888) gitignored
+`agentcore/.cli/` as "build/cache dirs" and the cleanup deleted
+`deployed-state.json` — which is the deployment record, not cache.
+
+Lessons, all verified live:
+1. `agentcore deploy` hard-requires `uv` (brew install uv); the dependency
+   check is unconditional on @aws/agentcore 0.28.1, no skip flag.
+2. Recovery for lost state is a plain re-run of `npx agentcore deploy`:
+   CDK adopted the existing runtime in place (runtime ID
+   whoDecides_who_decides_agent-1mF5fr45DG unchanged) and rewrote the
+   state file.
+3. `agentcore import runtime` is NOT a recovery path here — it refuses
+   because `agentcore.json` already declares `who_decides_agent`, and
+   add/remove have no runtime subcommand. Raw `cdk deploy` updates AWS
+   but never writes the state file.
+4. `agentcore status --runtime-id <id>` works without local state and is
+   the fastest way to confirm a runtime is live.
+
+DEPLOY-CHECKLIST.md restructured around these (prerequisites, deploy
+sequence, recovery, resolved blockers). aws-targets.json
+REPLACE_BEFORE_DEPLOY warning retired — account verified live.
+
+## Day 8 addendum 4 — first invoke: two boot crashes behind "deploy complete"
+
+The first real invoke (22:36 UTC) returned "Runtime initialization time
+exceeded" — AgentCore's 30s init window expired because the Node process
+crashed before binding 8080. CloudWatch logs showed the true error; the
+init-timeout message alone hides it. Lesson: read runtime logs on any
+invoke failure before touching config.
+
+Crash 1 (FIXED): `src/artifacts/schemas.ts` read the seven vendored HACP
+schema JSONs via cwd-relative `readFileSync` at module load. The CodeZip
+ships only the esbuild bundle — no payload files — so under `/var/task`
+boot hit ENOENT. Fix: static JSON imports (esbuild inlines them), the same
+pattern `agent-service/fixture.ts` already used for patch-scenario.json.
+Verified: tsc clean; test:artifacts 8/8, test:agent-service 5/5,
+test:local-owner 46/46.
+
+Crash 2 (OPEN, decision needed; resolved the same evening by the container
+repair — see Day 9): the boot graph imports better-sqlite3 at
+module load (`agent-core/phases.ts:25` → `consumption/store.ts:14`,
+`store-admission.ts` same chain). The native addon cannot ship in a
+CodeZip and the CLI has no externals field — this was checklist blocker
+"better-sqlite3 cannot ship in a CodeZip", never actually resolved; the
+17:12 "deploy complete" proved packaging only. Remedies for Joe:
+(a) Container build — the original fallback, no governed-code changes;
+(b) port the claim store to node:sqlite (available unflagged on the
+runtime's Node 22.23) — stays CodeZip but swaps the engine under the
+hardened admission contract, so it warrants dual review.
+
+Also open: the runtime env carries no `WD_MACHINE_TOKEN_HASH`, so once the
+runtime boots, invocations still fail closed with 503 MACHINE_AUTH_DISABLED
+until the secret-injection mechanism is chosen (`.env.local.example`:
+never in git). The start-of-session dev token's sha256 is the intended
+value once a mechanism exists.
+
+## Day 9 — 2026-09-08: Codex container repair (AC-5 repackage) + stash recovery
+
+Joe chose the container path. Codex's repair commit 8056d0b repackaged the
+agent as a Node 22 linux/arm64 container (agentcore/Dockerfile) with
+better-sqlite3's native addon inside the image — Crash 2 above is resolved
+by that choice, not by a node:sqlite port. The same commit fixed live
+dispatch/decision binding (runs resume only their own confirmed decision),
+the `app/api/*` live-mode routes, and added regression coverage including
+`src/server/live-dispatch.test.ts`.
+
+Local gates passed after the repair: 122 unit tests, 50 Postgres tests,
+tsc, next build, `agentcore validate`, and an ARM64 container smoke that
+boots the image and loads native SQLite. These prove the artifact, not the
+deployment: AC-6 still needs the repaired image deployed, the runtime env
+carrying `WD_MACHINE_TOKEN_HASH`, and a real A→human decision→B cycle.
+
+Stash recovery: this session's IDE rebase autostash (recovered as
+e1ca26ed after deletion) held addenda 3 and 4 above plus schema-JSON
+imports, the live account ID, and a checklist restructure. The schema and
+account changes were already incorporated by 8056d0b verbatim; the
+checklist restructure was superseded by 8056d0b's rewrite (which keeps the
+uv prerequisite, the `.cli/` state warning, and the honest
+"READY ≠ working invocation" gate). Only the two addenda were missing and
+are restored above, with Crash 2's status annotated.
+
+## Day 9 addendum — deployed runtime verified still broken (2026-09-08)
+
+With the AWS session restored, the live prerequisites were verified
+read-only against the control plane and CloudWatch:
+
+- Runtime `whoDecides_who_decides_agent-1mF5fr45DG` is READY, but its
+  artifact is still the pre-repair CodeZip: S3 CDK asset
+  `cd2ccbcf…zip` (hash-identical to the local pre-repair
+  `agentcore/cdk/cdk.out` asset), entryPoint `main.js`,
+  `lastUpdatedAt 2026-09-07T22:13:36Z` — before the repair commit
+  (2026-09-08T02:23Z). The repaired container is NOT deployed.
+- The newest CloudWatch boot attempt still crashes with addendum 4's
+  Crash 1 verbatim: `ENOENT /var/task/schemas/hacp/v0.1-draft/
+  task-packet.schema.json` under `/var/task`. Any invoke today burns
+  the 30s init window; READY is proof of nothing.
+- Runtime `environmentVariables` carry only WD_AGENT_DATA_DIR,
+  WD_AGENT_PORT, WD_PROVIDER — no `WD_MACHINE_TOKEN_HASH`, so even a
+  healthy boot would fail every invocation closed with
+  `MACHINE_AUTH_DISABLED`.
+- The account session (root-equivalent) covers the manual gate's AWS
+  permissions. The EC2 console host's env (`WD_AGENTCORE_ENDPOINT`,
+  `WD_MACHINE_TOKEN`) is not verifiable from a laptop and remains
+  Joe's on-host check.
+
+Blockers to a real AC-6 cycle, in order: (1) owner decision on the
+`WD_MACHINE_TOKEN_HASH` injection mechanism, (2) authorized redeploy of
+the repaired container (`deploy --dry-run` diff review first), (3) console
+host env config, (4) `npm run test:agentcore-live` from a credentialed
+host.
+
+## Day 9 addendum 2 — synth recursion found and fixed; dry-run clean (2026-09-08)
+
+Joe decided blocker (1): the hash is installed **post-deploy** via
+`aws bedrock-agentcore-control update-agent-runtime --environment-variables`
+(no secret in tracked config; must be re-applied after every deploy
+because a tracked-config deploy drops it — checklist step 3 records this).
+
+Then the authorized `deploy --dry-run` failed: CDK synth died with
+ENAMETOOLONG. Root cause: the container source asset stages the repo-root
+build context into `cdk.out/asset.<hash>`, and `ContainerSourceAsset`
+appends force-keep patterns for the Dockerfile's ancestor directories
+AFTER the user `.dockerignore` — with `agentcore/Dockerfile`, the
+`!agentcore` ancestor negation re-included the `agentcore` subtree in
+CDK's DOCKER ignore matcher, so the staging swept `agentcore/cdk/cdk.out`
+into itself and nested until paths overflowed (one synth run went 8+ deep;
+the old cdk.out had accumulated 9 levels / 2.3 GB). Fix: move the
+Dockerfile to the context root (`agentcore.json` `dockerfile: "Dockerfile"`),
+so force-keep emits only `!Dockerfile` and the `agentcore/cdk` exclusion
+holds. After the move: clean cdk.out, `agentcore validate` Valid, dry-run
+and `--diff` both green.
+
+Diff review (read-only): the CodeZip → Container move updates
+`AWS::BedrockAgentCore::Runtime` IN PLACE (`CodeConfiguration` →
+`ContainerConfiguration`, runtime ID unchanged, no replacement); all else
+is additive (ECR repo + KMS key, CodeBuild project, Lambda build trigger,
+ECR-pull/KMS-decrypt grants). Real deploy awaits Joe's authorization.
+

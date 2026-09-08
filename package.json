@@ -33,6 +33,7 @@
     "agent:start": "tsx src/agent-service/server.ts",
     "test:machine-auth": "tsx --test src/agent-service/machine-auth.test.ts",
     "test:dispatch": "tsx --test src/server/agent-dispatch.test.ts src/server/live-dispatch.test.ts",
+    "test:agentcore-live": "tsx --test src/server/agentcore-live.test.ts",
     "test:container": "node scripts/agent-container-smoke.mjs"
   },
   "repository": {
