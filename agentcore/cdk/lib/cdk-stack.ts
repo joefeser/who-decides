@@ -18,7 +18,10 @@ import { Construct } from 'constructs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bedrockagentcore = require('aws-cdk-lib') as typeof import('aws-cdk-lib') & {
   aws_bedrockagentcore: {
-    CfnRuntime: new (...args: unknown[]) => Construct & { overrideLogicalId(id: string): void };
+    CfnRuntime: new (...args: unknown[]) => Construct & {
+      overrideLogicalId(id: string): void;
+      agentRuntimeName: string;
+    };
   };
 };
 
@@ -141,14 +144,33 @@ export class AgentCoreStack extends Stack {
     // exactly this, after the CDK diff had shown a harmless-looking in-place
     // update. Force a NEW logical id for every CfnRuntime so CloudFormation
     // creates the container runtime fresh and deletes the CodeZip one.
+    //
+    // Two constraints beyond the logical-id swap:
+    // - The replacement id derives from the runtime's configured NAME, not
+    //   traversal order — inserting, removing, or reordering runtimes in the
+    //   spec must never remap a replacement id onto a different runtime.
+    // - The replacement also gets a DISTINCT PHYSICAL NAME (agentRuntimeName
+    //   + '_container'): CloudFormation creates additions before deletions,
+    //   so reusing the still-existing old name would collide at create time
+    //   and roll the deploy back a second time.
     // Run-scoped consequence: the runtime ID and ARN change with the new
     // resource — update WD_AGENTCORE_ENDPOINT wherever it is configured.
-    let runtimeIndex = 0;
+    const replacedRuntimeNames = new Set<string>();
     for (const child of this.node.findAll()) {
-      if (child instanceof bedrockagentcore.aws_bedrockagentcore.CfnRuntime) {
-        child.overrideLogicalId(`AgentRuntimeContainer${runtimeIndex}`);
-        runtimeIndex += 1;
+      if (!(child instanceof bedrockagentcore.aws_bedrockagentcore.CfnRuntime)) {
+        continue;
       }
+      const baseName = child.agentRuntimeName;
+      if (!baseName) {
+        throw new Error('Cannot derive a replacement identity for a runtime without agentRuntimeName');
+      }
+      if (replacedRuntimeNames.has(baseName)) {
+        throw new Error(`Duplicate runtime name in replacement pass: ${baseName}`);
+      }
+      replacedRuntimeNames.add(baseName);
+      const sanitized = baseName.replace(/[^A-Za-z0-9]/g, '');
+      child.overrideLogicalId(`AgentRuntime${sanitized}Container`.slice(0, 255));
+      child.agentRuntimeName = `${baseName}_container`;
     }
 
     // Create AgentCoreMcp if there are gateways configured
