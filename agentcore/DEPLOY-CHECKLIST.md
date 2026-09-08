@@ -42,12 +42,18 @@ unchanged runtime ID, an empty diff, or in-place adoption. Record the actual
 Runtime ARN and execution role returned by the deployment. A READY resource
 alone is not proof of a working invocation.
 
-The 2026-09-08 diff review (dry-run + `--diff`) confirmed the CodeZip →
-Container move updates `AWS::BedrockAgentCore::Runtime` IN PLACE
-(`CodeConfiguration` → `ContainerConfiguration`; runtime ID unchanged) and
-otherwise only adds the image-build chain: ECR repository + KMS key, a
-CodeBuild project, and a Lambda build trigger, with ECR pull / KMS-decrypt
-grants for the execution role.
+The 2026-09-08 CodeZip → Container migration **REPLACES the runtime
+resource**. The first real deploy of the container packaging failed with
+`Agent artifact type cannot be updated` (InvalidRequest, 400) — the
+control plane forbids updating an existing runtime's artifact type, even
+though the CDK diff had shown a plain in-place update. The stack therefore
+forces a new logical id and a distinct runtime name: CloudFormation
+creates the container runtime fresh and deletes the CodeZip one in a
+single deploy. Expect a NEW runtime ID and ARN (see the hash-patch step
+below), and take `WD_AGENTCORE_ENDPOINT` from `npx agentcore status` after
+the deploy. Everything else in that diff is additive: ECR repository +
+KMS key, a CodeBuild project, and a Lambda build trigger, with ECR pull /
+KMS-decrypt grants for the execution role.
 
 ### Step 3: patch the machine-token hash (after EVERY deploy)
 
@@ -59,17 +65,22 @@ lands in shell history:
 ```sh
 read -s WD_HASH   # paste: printf '%s' "$TOKEN" | shasum -a 256 | cut -d' ' -f1
 aws bedrock-agentcore-control update-agent-runtime \
-  --agent-runtime-id whoDecides_who_decides_agent-1mF5fr45DG \
+  --agent-runtime-id <runtime-id from `npx agentcore status`> \
   --environment-variables WD_AGENT_PORT=8080,WD_AGENT_DATA_DIR=/mnt/data/agent,WD_PROVIDER=bedrock,WD_MACHINE_TOKEN_HASH="$WD_HASH" \
   --region us-east-1
 ```
 
-Confirm the runtime ID first with `npx agentcore status` (it has been
-stable across re-deploys, but verify, don't assume). Verify the patch by
-re-reading `aws bedrock-agentcore-control get-agent-runtime` and checking
-the hash KEY is present in `environmentVariables` — never print the value.
-**Every subsequent `npx agentcore deploy` re-applies the tracked config
-WITHOUT the hash**, silently re-enabling fail-closed
+The runtime ID is not stable across artifact-type changes: the 2026-09-08
+CodeZip→Container deploy had to REPLACE the runtime resource (the control
+plane rejects updating an existing runtime's artifact type —
+"Agent artifact type cannot be updated"), so the container runtime has a
+NEW runtime ID and ARN and the old `whoDecides_who_decides_agent-1mF5fr45DG`
+is retired. Always take the current ID from `npx agentcore status` and
+update `WD_AGENTCORE_ENDPOINT` wherever it is configured. Verify the patch
+by re-reading `aws bedrock-agentcore-control get-agent-runtime` and
+checking the hash KEY is present in `environmentVariables` — never print
+the value. **Every subsequent `npx agentcore deploy` re-applies the
+tracked config WITHOUT the hash**, silently re-enabling fail-closed
 `MACHINE_AUTH_DISABLED` — re-run this patch and the check after each
 deploy. If the update call rejects `--environment-variables`, stop and
 check the current API shape instead of improvising.
