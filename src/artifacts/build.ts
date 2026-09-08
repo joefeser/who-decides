@@ -28,6 +28,13 @@ export type Scenario = {
   human_operator: string
 }
 
+/** Change only record IDs; scenario data and actor identity remain unchanged. */
+export function scopeScenario(f: Scenario, tag: string): Scenario {
+  const scoped = structuredClone(f)
+  for (const key of ['run_id', 'packet_id', 'decision_id', 'finding_tradeoff_id', 'report_id', 'stop_id'] as const) scoped[key] = `${f[key]}-${tag}`
+  return scoped
+}
+
 const NOW = () => new Date().toISOString()
 
 function sha256(value: string): string {
@@ -75,7 +82,7 @@ export function buildTaskPacket(s: Scenario): Record<string, unknown> {
     required_report_shape: 'hacp.agent_report',
     evidence_visibility: 'reviewer_only',
     loop_ceiling: 2,
-    authority_boundary_notice: 'The agent prepares and requests; the human decides. No effect before a recorded human decision.',
+    authority_boundary_notice: 'Fixture task packet: initial approval and approved_body_hash are illustrative, not a verified signature or canonical body digest. The agent prepares and requests; the human decides. No external effect is performed.',
   }
 }
 
@@ -97,7 +104,7 @@ export function buildReviewFindings(s: Scenario): Array<Record<string, unknown>>
   return [
     {
       ...base,
-      finding_id: 'finding-2026-09-03-001',
+      finding_id: `finding-green-${s.run_id}`,
       severity: 'low',
       classification: 'confirmation',
       title: 'Unit suite green on target runtime',

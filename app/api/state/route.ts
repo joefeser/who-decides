@@ -19,6 +19,10 @@ export async function DELETE(request: NextRequest) {
   if (!(await requireOperator(request))) {
     return NextResponse.json({ ok: false, error: 'OPERATOR_AUTH_REQUIRED' }, { status: 401 })
   }
-  await engine.reset()
-  return NextResponse.json({ ok: true })
+  try {
+    await engine.reset()
+    return NextResponse.json({ ok: true })
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'RESET_FAILED' }, { status: 409 })
+  }
 }

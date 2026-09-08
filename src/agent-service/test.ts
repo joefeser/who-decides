@@ -89,7 +89,7 @@ test('phase B rejects invalid inputs and a competing claim fails closed', async 
     const done = await resumePhase(ctx, { tag: 'svc-bad', choice: 'defer', rationale: 'not now, revisit later' }, factory)
     assert.equal(done.status, 'COMPLETED')
     const conflict = await resumePhase(ctx, { tag: 'svc-bad', choice: 'create_draft_pr', rationale: 'changed' }, factory)
-    assert.equal(conflict.status, 'DUPLICATE')
+    assert.equal(conflict.status, 'STATE_CONFLICT')
 
     // Unknown tag
     const unknown = await resumePhase(ctx, { tag: 'never-started', choice: 'defer', rationale: 'x' }, factory)
@@ -146,5 +146,53 @@ test('/ping returns the AgentCore health body ({"status":"Healthy"})', async () 
   } finally {
     server.closeIdleConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+test('scoped artifacts retain scenario meaning and receipt references join the saved stop', async () => {
+  const { ctx, dir } = freshContext()
+  try {
+    await startPhase(ctx, { tag: 'scope-proof' }, syntheticRuntime())
+    await resumePhase(ctx, { tag: 'scope-proof', choice: 'defer', rationale: 'keep original values' }, syntheticRuntime())
+    const read = (name: string) => JSON.parse(readFileSync(path.join(ctx.dataDir, 'runs/scope-proof', name), 'utf8'))
+    const packet = read('01-task-packet.json')
+    assert.equal(packet.created_by, fixture.human_operator)
+    assert.equal(packet.target_label, `dependency ${fixture.package}`)
+    assert.equal(read('05-consumption-receipt.json').decisionRequestId, read('03-stop-response.json').stop_id)
+    const scoped = (await import('../agent-core/phases')).scopedFixture(fixture, 'scope-proof')
+    assert.deepEqual(scoped.decision_request, fixture.decision_request)
+    assert.equal(scoped.to_version, fixture.to_version)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('HTTP invocations enforce body credentials and conflicting resumes fail', async () => {
+  const { createAgentServer } = await import('./server')
+  const { createMachineAuth } = await import('./machine-auth')
+  const { createHash } = await import('node:crypto')
+  const { ctx, dir } = freshContext()
+  const token = 'synthetic-http-test-token'
+  const http = createAgentServer(ctx, createMachineAuth({ tokenHash: createHash('sha256').update(token).digest('hex') }), syntheticRuntime())
+  await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(http.address() as { port: number }).port}/invocations`
+  const invoke = (body: unknown) => fetch(url, { method: 'POST', body: JSON.stringify(body) })
+  try {
+    const missing = await invoke({ kind: 'decision-run', sessionId: 'http-proof' })
+    assert.equal(missing.status, 401)
+    assert.equal((await missing.json()).error, 'MACHINE_AUTH_REQUIRED')
+    const a = await invoke({ kind: 'decision-run', sessionId: 'http-proof', credential: token })
+    assert.equal(a.status, 200)
+    assert.equal((await a.json()).result.status, 'DECISION_REQUIRED')
+    const payload = { kind: 'decision-resume', sessionId: 'http-proof', credential: token, choice: 'defer', rationale: 'HTTP proof' }
+    const b = await invoke(payload)
+    assert.equal(b.status, 200)
+    assert.equal((await b.json()).result.status, 'COMPLETED')
+    assert.equal((await (await invoke(payload)).json()).result.status, 'DUPLICATE')
+    const conflict = await invoke({ ...payload, choice: 'create_draft_pr' })
+    assert.equal(conflict.status, 409)
+    assert.equal((await conflict.json()).ok, false)
+  } finally {
+    http.closeIdleConnections()
+    await new Promise<void>(resolve => http.close(() => resolve()))
+    rmSync(dir, { recursive: true, force: true })
   }
 })

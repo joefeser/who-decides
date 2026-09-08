@@ -7,13 +7,14 @@
  * Storage goes through the async provider seam in ./store — SQLite by
  * default (zero-config local demo), Postgres adapter for the hosted demo.
  * All engine methods are async for that reason. */
+import type { AgentDispatcher, AgentDispatchResult } from './agent-dispatch'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import { assertValid, validateArtifact } from '../artifacts/schemas'
 import type { ArtifactKind } from '../artifacts/schemas'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
-  buildAgentReport,
+  buildAgentReport, scopeScenario,
 } from '../artifacts/build'
 import type { Scenario } from '../artifacts/build'
 import { decisionDigest } from '../consumption/store'
@@ -27,7 +28,7 @@ const DB_DIR = process.env.WD_CONSOLE_DIR ?? path.resolve(process.cwd(), '.tmp/c
 const RUN_RUNNING_MS = 2600
 const RUN_RESUMING_MS = 1800
 
-export type RunState = 'running' | 'decision_required' | 'resuming' | 'completed'
+export type RunState = 'running' | 'decision_required' | 'resuming' | 'completed' | 'blocked'
 
 export type Milestone = { label: string, detail: string, at: string }
 
@@ -44,6 +45,8 @@ type StoredDecision = {
 export type ConsoleState = {
   schema: 'who-decides.console-state.v1'
   tenantId: string
+  executionMode: string
+  agent: AgentDispatchResult | null
   runId: string
   state: RunState | 'ready'
   invocationA: string | null
@@ -62,12 +65,13 @@ export type ConsoleState = {
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
   replayProbe: { attemptedBy: string, result: string, detail: string } | null
   effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
-  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', valid: boolean }>
+  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch', valid: boolean }>
   heading: string
   subheading: string
 }
 
 const HEADING: Record<ConsoleState['state'] & string, { heading: string, subheading: string }> = {
+  blocked: { heading: 'Live run stopped', subheading: 'The agent did not confirm completion. Inspect the recorded result before starting a new run.' },
   ready: { heading: 'Ready', subheading: 'One click starts invocation A. It never preselects your decision.' },
   running: { heading: 'Running', subheading: 'The agent works in the background. You are not needed yet.' },
   decision_required: { heading: 'Decision required — waiting for you', subheading: 'Invocation A has ended. Nothing will happen until you decide.' },
@@ -131,7 +135,7 @@ export class ConsoleEngine {
     return this.runs.getCurrentRun(this.tenant)
   }
 
-  async startRun(retried = false): Promise<{ runId: string }> {
+  async startRun(retried = false, dispatcher?: AgentDispatcher): Promise<{ runId: string }> {
     await this.ready
     const s = patchScenario
     const runId = `run-${randomUUID()}`
@@ -149,6 +153,7 @@ export class ConsoleEngine {
     const active = await this.runs.ensureActiveRun(this.tenant, {
       id: runId, tenantId: this.tenant, invocationA,
       startedAt: now, phaseChangedAt: now, milestonesJson: JSON.stringify(milestones),
+      executionMode: dispatcher?.isEnabled() ? 'agentcore' : 'deterministic',
     })
     if (active.id !== runId) {
       // Another caller provisioned this run moments ago. Provisioning is
@@ -160,7 +165,7 @@ export class ConsoleEngine {
       if (active.state !== 'provisioning') return { runId: active.id }
       if (await this.completeProvisioning(active.id)) return { runId: active.id }
       if (retried) throw new Error('PROVISIONING_RETRY_EXHAUSTED')
-      return await this.startRun(true)
+      return await this.startRun(true, dispatcher)
     }
 
     try {
@@ -185,13 +190,13 @@ export class ConsoleEngine {
     if (await this.runs.markProvisioned(runId)) return true
     const row = await this.runs.getRunRow(runId)
     return row !== undefined && Number(row.archived) === 0
-      && ['running', 'decision_required', 'resuming', 'completed'].includes(row.state ?? '')
+      && ['running', 'starting', 'decision_required', 'resuming', 'completed', 'blocked'].includes(row.state ?? '')
   }
 
   /** Writes the invocation-A artifacts idempotently — the builders are
    * deterministic, so any caller can complete or repair provisioning. */
   private async provisionArtifacts(runId: string): Promise<void> {
-    const s = patchScenario
+    const s = scopeScenario(patchScenario, runId)
     const packet = buildTaskPacket(s)
     assertValid('task-packet', packet)
     if (await this.runs.getArtifactJson(runId, 'task-packet') === undefined) {
@@ -216,7 +221,8 @@ export class ConsoleEngine {
    * compare-and-swap: a stale poller losing the race must not overwrite a
    * newer phase (e.g. flip a consumed run back to decision_required). The
    * local object only advances when the CAS won. */
-  private async advancePhases(run: { id: string, state: string, phase_changed_at: string }): Promise<void> {
+  private async advancePhases(run: { id: string, state: string, phase_changed_at: string, execution_mode?: string }): Promise<void> {
+    if (run.execution_mode === 'agentcore') return
     const elapsed = Date.now() - Date.parse(run.phase_changed_at)
     if (run.state === 'running' && elapsed >= RUN_RUNNING_MS) {
       const won = await this.runs.updateRunPhase(run.id, 'running', 'decision_required', new Date().toISOString())
@@ -235,13 +241,17 @@ export class ConsoleEngine {
    * authenticated console decision must never be recorded with the
    * unauthenticated demo defaults. Engine-level callers (tests, scenario,
    * CLI) omit it and keep the honest demo defaults. */
-  async submitDecision(choice: string, rationale: string, idempotencyKey?: string, channel?: DecisionChannel): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
+  async submitDecision(choice: string, rationale: string, idempotencyKey?: string, channel?: DecisionChannel, expectedRunId?: string, dispatcher?: AgentDispatcher): Promise<{ ok: boolean, duplicate?: boolean, error?: string }> {
     const run = await this.currentRun()
     if (!run) return { ok: false, error: 'NO_RUN' }
+    if (expectedRunId !== undefined && run.id !== expectedRunId) return { ok: false, error: 'RUN_CHANGED' }
     await this.advancePhases(run)
     // Authoritative post-advance state comes from the row, never the local
     // object — a lost CAS race here means the run already moved on.
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
+    if (!row || Number(row.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
+    const live = row.execution_mode === 'agentcore'
+    if (live && !dispatcher?.isEnabled()) return { ok: false, error: 'AGENT_DISPATCH_UNAVAILABLE' }
     const runState = row.state!
     const prior = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
     const rowInvocationB = row.invocation_b
@@ -249,6 +259,8 @@ export class ConsoleEngine {
     // Idempotent recovery, matched strictly: only the SAME submission (key +
     // choice) may return committed success. A different decision arriving
     // after one was recorded is a conflict — the first decision was consumed.
+    if (live && runState === 'resuming') return { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
+    if (live && runState === 'blocked') return { ok: false, error: 'AGENT_RUN_BLOCKED' }
     if (runState !== 'decision_required') {
       if (prior && prior.choice === choice && prior.idempotencyKey === (idempotencyKey ?? null)) {
         return { ok: true, duplicate: true }
@@ -256,7 +268,7 @@ export class ConsoleEngine {
       if (prior) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
       return { ok: false, error: `WRONG_STATE:${run.state}` }
     }
-    const s = patchScenario
+    const s = scopeScenario(patchScenario, run.id)
     if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
     // Idempotent reuse matches BOTH key and choice; a different key is a
@@ -278,7 +290,8 @@ export class ConsoleEngine {
       invocationB,
       JSON.stringify({ choice: prior?.choice ?? choice, rationale: prior?.rationale ?? rationale, decidedAt, idempotencyKey: idempotencyKey ?? null, channel: prior ? prior.channel : channel }),
     )
-    const storedDecision = JSON.parse(stored.decision_json!) as StoredDecision
+    if (!stored.decision_json) return { ok: false, error: 'RUN_CHANGED' }
+    const storedDecision = JSON.parse(stored.decision_json) as StoredDecision
     if (storedDecision.choice !== choice || storedDecision.idempotencyKey !== (idempotencyKey ?? null)) {
       return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
     }
@@ -291,7 +304,7 @@ export class ConsoleEngine {
     const authoritativeInvocationB = stored.invocation_b ?? invocationB
 
     const decisionId = `decision-${run.id}`
-    const decisionRecord = this.decisionRecord(decisionId, effectiveChoice, effectiveRationale, authoritativeDecidedAt)
+    const decisionRecord = await this.decisionRecord(run.id, decisionId, effectiveChoice, effectiveRationale, authoritativeDecidedAt)
 
     const claim = await this.receipts.claim(decisionRecord, authoritativeInvocationB, decisionDigest(decisionRecord))
     if (claim.status === 'rejected') return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
@@ -312,10 +325,28 @@ export class ConsoleEngine {
     await this.storeArtifact(run.id, 'human-decision', 'human-decision', humanDecision)
     await this.storeArtifact(run.id, 'consumption-receipt', 'consumption-receipt', claim.receipt)
 
+    if (live) {
+      // Reserve dispatch durably. An in-flight or uncertain attempt is never
+      // automatically repeated, even when a duplicate HTTP request arrives.
+      if (!(await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString()))) {
+        const latest = await this.runs.getRunRow(run.id)
+        return latest?.state === 'completed' && Number(latest.archived) === 0
+          ? { ok: true, duplicate: true } : { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
+      }
+      const dispatched = await dispatcher!.dispatch({ kind: 'decision-resume', sessionId: run.id, choice: effectiveChoice, rationale: effectiveRationale })
+      const response = dispatched.result?.result as Record<string, unknown> | undefined
+      if (!dispatched.ok || response?.status !== 'COMPLETED' || response.decisionId !== `decision-svc-${run.id}` || typeof response.receiptId !== 'string' || typeof response.invocationB !== 'string') {
+        await this.storeDispatch(run.id, 'agent-resume', { ...dispatched, ok: false, error: dispatched.error ?? 'AGENT_RESUME_NOT_CONFIRMED' })
+        await this.runs.updateRunPhase(run.id, 'resuming', 'blocked', new Date().toISOString())
+        return { ok: false, error: dispatched.error ?? `AGENT_RESUME_NOT_COMPLETED:${String(response?.status)}` }
+      }
+      await this.storeDispatch(run.id, 'agent-resume', dispatched)
+    }
+
     const effect = this.buildEffect(s, effectiveChoice, runtimeDecision.decisionId, claim.receipt.receiptId, authoritativeInvocationB)
     await this.storeArtifact(run.id, 'effect-receipt', 'effect-receipt', effect)
 
-    const report = buildAgentReport(s, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''))
+    const report = buildAgentReport(s, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
     assertValid('agent-report', report)
     await this.storeArtifact(run.id, 'agent-report', 'agent-report', report)
 
@@ -323,8 +354,38 @@ export class ConsoleEngine {
     // already-finalized/completed run back to resuming. Losing the race is
     // idempotent success — the winner recorded identical artifacts (the
     // builders are deterministic) from the same claim.
-    await this.runs.finalizeDecision(run.id, 'decision_required', 'resuming', authoritativeDecidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
+    const finalized = await this.runs.finalizeDecision(run.id, live ? 'resuming' : 'decision_required', live ? 'completed' : 'resuming', live ? new Date().toISOString() : authoritativeDecidedAt, JSON.stringify(claim.receipt), JSON.stringify(effect))
+    if (!finalized) {
+      const latest = await this.runs.getRunRow(run.id)
+      if (!latest || Number(latest.archived) !== 0 || !['resuming', 'completed'].includes(latest.state ?? '')) return { ok: false, error: 'RUN_CHANGED' }
+    }
     return { ok: true }
+  }
+
+  private async storeDispatch(runId: string, name: string, result: AgentDispatchResult): Promise<void> {
+    await this.runs.storeArtifact({ runId, tenantId: this.tenant, name, kind: 'agent-dispatch', valid: result.ok, json: JSON.stringify(result) })
+  }
+
+  async dispatchStart(runId: string, dispatcher: AgentDispatcher): Promise<{ ok: boolean, error?: string }> {
+    await this.ready
+    const row = await this.runs.getRunRow(runId)
+    if (!row || row.tenant_id !== this.tenant || Number(row.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
+    if (row.execution_mode !== 'agentcore') return { ok: true }
+    if (!dispatcher.isEnabled()) return { ok: false, error: 'AGENT_DISPATCH_UNAVAILABLE' }
+    if (!(await this.runs.updateRunPhase(runId, 'running', 'starting', new Date().toISOString()))) {
+      return row.state === 'decision_required' ? { ok: true } : { ok: false, error: 'AGENT_START_IN_PROGRESS_OR_STOPPED' }
+    }
+    const dispatched = await dispatcher.dispatch({ kind: 'decision-run', sessionId: runId })
+    const response = dispatched.result?.result as Record<string, unknown> | undefined
+    const request = response?.decisionRequest as { patchId?: string, question?: string, options?: string[] } | undefined
+    const accepted = dispatched.ok && response?.status === 'DECISION_REQUIRED'
+      && request?.patchId === `${patchScenario.package}-${patchScenario.to_version}`
+      && request?.question === patchScenario.decision_request.question
+      && JSON.stringify(request?.options) === JSON.stringify(patchScenario.decision_request.options)
+    await this.storeDispatch(runId, 'agent-start', { ...dispatched, ok: Boolean(accepted), error: accepted ? undefined : dispatched.error ?? 'AGENT_DECISION_REQUEST_NOT_CONFIRMED' })
+    const changed = await this.runs.updateRunPhase(runId, 'starting', accepted ? 'decision_required' : 'blocked', new Date().toISOString())
+    if (!changed) return { ok: false, error: 'RUN_CHANGED' }
+    return accepted ? { ok: true } : { ok: false, error: dispatched.error ?? 'AGENT_DECISION_REQUEST_NOT_CONFIRMED' }
   }
 
   /** The effect receipt executes ONLY the approved branch — the console's
@@ -376,7 +437,7 @@ export class ConsoleEngine {
     if (!decisionJson || !receiptJson) throw new Error('NOT_RESUMED_YET')
     const decision = JSON.parse(decisionJson) as { choice: string, rationale: string, decidedAt: string }
     const receipt = JSON.parse(receiptJson) as { decisionId: string }
-    const record = this.decisionRecord(receipt.decisionId, decision.choice, decision.rationale, decision.decidedAt)
+    const record = await this.decisionRecord(run.id, receipt.decisionId, decision.choice, decision.rationale, decision.decidedAt)
     const imposter = `inv-${randomUUID()}`
     const result = await this.receipts.claim(record, imposter)
     const probe = result.status === 'rejected'
@@ -394,14 +455,15 @@ export class ConsoleEngine {
     return createHash('sha256').update(json).digest('hex')
   }
 
-  private decisionRecord(decisionId: string, choice: string, rationale: string, decidedAt: string): DecisionRecord {
-    const s = patchScenario
+  private async decisionRecord(runId: string, decisionId: string, choice: string, rationale: string, decidedAt: string): Promise<DecisionRecord> {
+    const stop = JSON.parse((await this.runs.getArtifactJson(runId, 'stop-response')) ?? 'null')
+    if (typeof stop?.stop_id !== 'string') throw new Error('EVIDENCE_MISSING:stop-response')
     return {
       decisionId,
       chosenOption: choice,
       rationale,
       decidedAt,
-      decisionRequestId: s.stop_id,
+      decisionRequestId: stop.stop_id,
       permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
     }
   }
@@ -443,7 +505,7 @@ export class ConsoleEngine {
     if (!run) {
       return {
         schema: 'who-decides.console-state.v1',
-        tenantId: this.tenant,
+        tenantId: this.tenant, executionMode: 'deterministic', agent: null,
         runId: '', state: 'ready', invocationA: null, invocationB: null,
         startedAt: null, completedAt: null, milestones: [], decisionRequest: null,
         decision: null, consumption: null, replayProbe: null, effect: null,
@@ -452,7 +514,7 @@ export class ConsoleEngine {
     }
     await this.advancePhases(run)
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
-    const s = patchScenario
+    const s = scopeScenario(patchScenario, run.id)
     const artifacts = (await this.runs.listArtifacts(run.id, this.tenant))
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
     const storedDecision = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
@@ -465,10 +527,12 @@ export class ConsoleEngine {
     // A run still provisioning renders as running — same console semantics;
     // provisioning is an internal lifecycle state, not a console state.
     const rawState = row.state ?? run.state
-    const state = (rawState === 'provisioning' ? 'running' : rawState) as ConsoleState['state']
+    const state = (['provisioning', 'starting'].includes(rawState) ? 'running' : rawState) as ConsoleState['state']
     return {
       schema: 'who-decides.console-state.v1',
       tenantId: this.tenant,
+      executionMode: row.execution_mode ?? 'deterministic',
+      agent: JSON.parse((await this.runs.getArtifactJson(run.id, 'agent-resume')) ?? (await this.runs.getArtifactJson(run.id, 'agent-start')) ?? 'null'),
       runId: run.id,
       state,
       invocationA: row.invocation_a,

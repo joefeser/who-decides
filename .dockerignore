@@ -1,0 +1,13 @@
+# Only source and locked dependencies enter the build context.
+**/node_modules
+**/.git
+**/.env
+**/.env.*
+**/.tmp
+**/.next
+**/dist
+**/*.log
+agentcore/.cli
+agentcore/.cache
+agentcore/cdk
+.agent-control

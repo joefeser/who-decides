@@ -86,7 +86,7 @@ export function createAgentDispatcher(config: AgentDispatchConfig, client?: Invo
         // The platform can transport an application-level rejection (the
         // agent service's typed 409s) as a successful delivery — derive
         // our ok from the agent service's own response envelope (review P2).
-        const agentOk = result.ok !== false
+        const agentOk = result.ok === true && result.result !== null && typeof result.result === 'object' && typeof (result.result as Record<string, unknown>).status === 'string'
         return {
           ok: agentOk,
           result,

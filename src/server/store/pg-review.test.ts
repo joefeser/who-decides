@@ -258,3 +258,24 @@ if (skipWhenNoPostgres('store-review-pg suite')) {
     })
   }
 }
+
+if (WD_TEST_PG_URL) {
+  test('reset and intent acquisition serialize without returning unpersisted approval', async () => {
+    const store = new PostgresRunStore(pgConfig())
+    const tenant = randomUUID()
+    try {
+      await store.initialize()
+      const archived = candidate(tenant)
+      await store.ensureActiveRun(tenant, archived)
+      await store.archiveTenantRuns(tenant)
+      assert.equal((await store.acquireDecisionIntent(archived.id, 'late', '{}')).decision_json, null)
+      const active = candidate(tenant)
+      await store.ensureActiveRun(tenant, active)
+      await store.markProvisioned(active.id)
+      await store.updateRunPhase(active.id, 'running', 'decision_required', new Date().toISOString())
+      assert.ok((await store.acquireDecisionIntent(active.id, 'winner', '{}')).decision_json)
+      await assert.rejects(store.archiveTenantRuns(tenant), /DECISION_IN_PROGRESS/)
+      assert.equal(Number((await store.getRunRow(active.id))!.archived), 0)
+    } finally { await store.close() }
+  })
+}

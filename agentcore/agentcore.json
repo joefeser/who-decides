@@ -5,8 +5,8 @@
   "runtimes": [
     {
       "name": "who_decides_agent",
-      "description": "who-decides live-loop agent (AC-1 service). Fields per @aws/agentcore 0.28.1 zod schemas + bedrock-agentcore runtime-service-contract docs. Deploy is MANUAL (Joe, AC-5).",
-      "build": "CodeZip",
+      "description": "who-decides HTTP agent; Linux ARM64 Node 22 container preserves native SQLite. Deployment remains manual.",
+      "build": "Container",
       "entrypoint": "main.js",
       "codeLocation": "agentcore/app/who-decides-agent",
       "runtimeVersion": "NODE_22",
@@ -38,7 +38,9 @@
             "mountPath": "/mnt/data"
           }
         }
-      ]
+      ],
+      "buildContextPath": ".",
+      "dockerfile": "agentcore/Dockerfile"
     }
   ]
 }

@@ -245,7 +245,7 @@ test('an authenticated decision records operator session metadata, not the unaut
   const decision = await postDecision(new Request('http://localhost/api/decision', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ choice: 'defer', rationale: 'audit metadata check', idempotencyKey: 'auth-meta-test' }),
+    body: JSON.stringify({ runId: (await (await getState(new Request('http://localhost/api/state'))).json()).runId, choice: 'defer', rationale: 'audit metadata check', idempotencyKey: 'auth-meta-test' }),
   }))
   assert.equal(decision.status, 200, `decision submits under a valid session: ${JSON.stringify(await decision.json().catch(() => null))}`)
   const artifactDb = new Database(path.join(DIR, 'state.db'))

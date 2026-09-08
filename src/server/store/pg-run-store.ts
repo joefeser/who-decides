@@ -113,6 +113,7 @@ export class PostgresRunStore implements RunStore {
           seq BIGINT GENERATED ALWAYS AS IDENTITY,
           PRIMARY KEY (run_id, name)
         );
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'deterministic';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
@@ -137,16 +138,16 @@ export class PostgresRunStore implements RunStore {
       // (equivalent of BEGIN IMMEDIATE; see file header for the choice).
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [LOCK_ENSURE_ACTIVE, tenantId])
       const existing = await client.query(
-        'SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
+        'SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
         [tenantId],
       )
       const active = existing.rows[0] as RunRow | undefined
       if (active && active.state !== 'completed') return active
       await client.query(
-        'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson],
+        'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic'],
       )
-      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt }
+      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic' }
     })
   }
 
@@ -162,17 +163,16 @@ export class PostgresRunStore implements RunStore {
       [runId, invocationB, decisionJson],
     )
     if ((won.rowCount ?? 0) > 0) return { decision_json: decisionJson, invocation_b: invocationB }
-    const stored = await this.pool.query('SELECT decision_json, invocation_b FROM runs WHERE id = $1', [runId])
+    const stored = await this.pool.query('SELECT decision_json, invocation_b FROM runs WHERE id = $1 AND archived = 0', [runId])
     const row = stored.rows[0] as DecisionIntentRow | undefined
     if (row?.decision_json) return row
-    // Row absent or intent still unset (cannot happen after a winning
-    // UPDATE): preserve the SQLite adapter's return-the-intent contract.
-    return { decision_json: decisionJson, invocation_b: invocationB }
+    // A reset won; never report an unpersisted intent as accepted.
+    return { decision_json: null, invocation_b: null }
   }
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {
     const result = await this.pool.query(
-      'SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
       [tenantId],
     )
     return result.rows[0] as RunRow | undefined
@@ -180,8 +180,8 @@ export class PostgresRunStore implements RunStore {
 
   async insertRun(run: NewRun): Promise<void> {
     await this.pool.query(
-      'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson],
+      'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic'],
     )
   }
 
@@ -216,7 +216,7 @@ export class PostgresRunStore implements RunStore {
 
   async finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean> {
     const result = await this.pool.query(
-      'UPDATE runs SET state = $1, phase_changed_at = $2, receipt_json = $3, effect_json = $4 WHERE id = $5 AND state = $6 AND archived = 0',
+      "UPDATE runs SET state = $1, phase_changed_at = $2, receipt_json = $3, effect_json = $4, completed_at = CASE WHEN $1 = 'completed' THEN $2 ELSE completed_at END WHERE id = $5 AND state = $6 AND archived = 0",
       [state, phaseChangedAt, receiptJson, effectJson, runId, expectedState],
     )
     return (result.rowCount ?? 0) > 0
@@ -254,7 +254,11 @@ export class PostgresRunStore implements RunStore {
   }
 
   async archiveTenantRuns(tenantId: string): Promise<void> {
-    await this.pool.query('UPDATE runs SET archived = 1 WHERE tenant_id = $1', [tenantId])
+    await this.withTx(async client => {
+      const rows = await client.query('SELECT state, decision_json, execution_mode FROM runs WHERE tenant_id = $1 AND archived = 0 FOR UPDATE', [tenantId])
+      if (rows.rows.some(row => row.decision_json && (row.state === 'decision_required' || (row.state === 'resuming' && row.execution_mode === 'agentcore')))) throw new Error('DECISION_IN_PROGRESS')
+      await client.query('UPDATE runs SET archived = 1 WHERE tenant_id = $1', [tenantId])
+    })
   }
 
   async retractProvisioningRun(runId: string): Promise<boolean> {

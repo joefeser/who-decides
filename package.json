@@ -7,10 +7,9 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:dispatch",
-    "start": "tsx src/console/server.ts",
+    "test": "npm run test:auth && npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:dispatch",
+    "start": "npm run console:start",
     "smoke": "tsx src/smoke.ts",
-    "preflight": "tsx src/preflight.ts",
     "spike:interrupt": "tsx src/spike-interrupt.ts",
     "gate:bedrock": "tsx src/gate-bedrock.ts",
     "live-loop": "tsx src/live-loop.ts",
@@ -33,7 +32,8 @@
     "test:agent-service": "tsx --test src/agent-service/test.ts",
     "agent:start": "tsx src/agent-service/server.ts",
     "test:machine-auth": "tsx --test src/agent-service/machine-auth.test.ts",
-    "test:dispatch": "tsx --test src/server/agent-dispatch.test.ts"
+    "test:dispatch": "tsx --test src/server/agent-dispatch.test.ts src/server/live-dispatch.test.ts",
+    "test:container": "node scripts/agent-container-smoke.mjs"
   },
   "repository": {
     "type": "git",
@@ -57,12 +57,14 @@
     "openai": "^6.49.0",
     "pg": "^8.23.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "@aws-sdk/client-bedrock-agentcore": "^3.1127.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1127.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.4.1",
+    "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.2.18",
     "@aws/agentcore": "^0.28.1",
@@ -70,17 +72,9 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",
-    "@aws-sdk/client-bedrock-agentcore": "^3.1127.0"
+    "esbuild": "0.28.2"
   },
-  "peerDependencies": {
-    "@aws-sdk/client-bedrock-agentcore": "*"
-  },
-  "peerDependenciesMeta": {
-    "@aws-sdk/client-bedrock-agent-core": {
-      "optional": true
-    },
-    "@aws-sdk/client-bedrock-agentcore": {
-      "optional": true
-    }
+  "engines": {
+    "node": "22.x"
   }
 }

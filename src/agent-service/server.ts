@@ -12,7 +12,7 @@ import path from 'node:path'
 import { startPhase, resumePhase } from '../agent-core/phases'
 import { createMachineAuth, attestMachinePrincipal } from './machine-auth'
 import { patchScenario } from './fixture'
-import type { ServiceContext } from '../agent-core/phases'
+import type { ServiceContext, RuntimeFactory } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
 const DATA_DIR = process.env.WD_AGENT_DATA_DIR ?? path.resolve(process.cwd(), '.tmp/agent-service')
@@ -48,11 +48,12 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(bytes)
 }
 
-const server = createServer(async (req, res) => {
+export function createAgentServer(serviceContext: ServiceContext = ctx, machineAuthenticator = machineAuth, runtimeFactory?: RuntimeFactory) {
+return createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/ping') {
     // AgentCore HTTP protocol contract: the platform health check reads the
     // {"status":"Healthy"} body (spike-log Day 7; runtime-service-contract).
-    return send(res, 200, { status: 'Healthy', service: 'who-decides-agent', dataDir: DATA_DIR })
+    return send(res, 200, { status: 'Healthy', service: 'who-decides-agent', dataDir: serviceContext.dataDir })
   }
   if (req.method === 'POST' && req.url === '/invocations') {
     // Machine-principal gate (AC-2, review round-2 P1): the documented
@@ -70,8 +71,8 @@ const server = createServer(async (req, res) => {
     }
     const bodyCredential = typeof payload.credential === 'string' ? payload.credential : undefined
     const auth = bodyCredential !== undefined
-      ? machineAuth.authorizeCredential(bodyCredential)
-      : machineAuth.authorize(req as unknown as Request)
+      ? machineAuthenticator.authorizeCredential(bodyCredential)
+      : machineAuthenticator.authorize(req as unknown as Request)
     if (!auth.ok) {
       const status = auth.error === 'MACHINE_AUTH_REQUIRED' || auth.error === 'MACHINE_AUTH_INVALID' ? 401 : 503
       return send(res, status, { ok: false, error: auth.error })
@@ -85,14 +86,14 @@ const server = createServer(async (req, res) => {
     }
     try {
       if (kind === 'decision-run') {
-        const result = await startPhase(ctx, { tag })
+        const result = await startPhase(serviceContext, { tag }, runtimeFactory)
         return send(res, result.status === 'ENVIRONMENT_BLOCKED' || result.status === 'HUMAN_DECISION_REQUIRED' ? 409 : 200, { ok: true, result })
       }
       if (kind === 'decision-resume') {
         const choice = typeof payload.choice === 'string' ? payload.choice : ''
         const rationale = typeof payload.rationale === 'string' ? payload.rationale : ''
-        const result = await resumePhase(ctx, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) })
-        const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED'
+        const result = await resumePhase(serviceContext, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) }, runtimeFactory)
+        const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED' || result.status === 'HUMAN_DECISION_REQUIRED'
         return send(res, conflict ? 409 : 200, { ok: !conflict, result })
       }
       return send(res, 400, { ok: false, error: `UNKNOWN_KIND:${String(kind)}` })
@@ -102,6 +103,9 @@ const server = createServer(async (req, res) => {
   }
   return send(res, 404, { ok: false, error: 'NOT_FOUND' })
 })
+}
+
+const server = createAgentServer()
 
 // The listener starts ONLY when run directly as the service entry point —
 // never when the module is imported (tests, future host embedding). This

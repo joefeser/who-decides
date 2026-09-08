@@ -1,12 +1,8 @@
-/* Dispatcher wiring for the console routes: reads the env configuration
- * once, returns a singleton. When WD_AGENTCORE_ENDPOINT and
- * WD_MACHINE_TOKEN are both set, dispatch is live; otherwise the console
- * runs its deterministic engine and routes receive `agent: undefined`.
- *
- * The live AWS client is loaded lazily — @aws-sdk/client-bedrock-agentcore
- * is an optional peer the deployer installs; its absence with the env set
- * is an ENVIRONMENT_BLOCKED condition reported at startup, not a silent
- * fallback to 'disabled'. */
+/* Host-side SDK wiring. Both live env vars must be configured; otherwise
+ * only an entirely unconfigured host may select deterministic mode.
+ * The SDK is a production dependency, loaded at server initialization.
+ */
+import { createRequire } from 'node:module'
 import { createAgentDispatcher, type AgentDispatcher, type InvokeAgentRuntimeClient } from './agent-dispatch'
 
 let cached: AgentDispatcher | undefined
@@ -26,24 +22,17 @@ export function getAgentDispatcher(): AgentDispatcher {
   const endpoint = process.env.WD_AGENTCORE_ENDPOINT
   const machineToken = process.env.WD_MACHINE_TOKEN
 
-  if (!endpoint || !machineToken) {
+  if (cachedError) return createAgentDispatcher({})
+  if (!endpoint && !machineToken) {
     cached = createAgentDispatcher({})
     return cached
   }
-  if (cachedError) {
-    // A previous init failed (SDK missing). Routes get the typed disabled
-    // stop; the error is reported via the health endpoint, not thrown
-    // into an in-flight request.
-    cached = createAgentDispatcher({})
-    return cached
-  }
-
-  // Lazy optional peer: the deployer installs the SDK in the hosted
-  // environment; local dev and CI never pay for it.
+  if (!endpoint || !machineToken) throw new Error('ENVIRONMENT_BLOCKED: configure both WD_AGENTCORE_ENDPOINT and WD_MACHINE_TOKEN, or unset both for deterministic mode')
+  // Load the production SDK only when the host selects live dispatch.
   let client: InvokeAgentRuntimeClient | undefined
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('@aws-sdk/client-bedrock-agentcore') as {
+    const mod = createRequire(import.meta.url)('@aws-sdk/client-bedrock-agentcore') as {
       BedrockAgentCoreClient: new (config: { region?: string }) => {
         send: (command: unknown) => Promise<Record<string, unknown>>
       },

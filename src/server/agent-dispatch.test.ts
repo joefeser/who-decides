@@ -75,3 +75,10 @@ test('client errors pass through with dispatch metadata, not as throws', async (
   assert.equal(result.dispatch.transport, 'aws-sdk')
   assert.ok(result.dispatch.durationMs >= 0)
 })
+
+test('malformed successful transports are not accepted as agent success', async () => {
+  for (const response of [{}, { rawResponse: '<html>error</html>' }, { ok: true }, { ok: true, result: null }]) {
+    const dispatcher = createAgentDispatcher(CONFIG, recordingDouble(() => response).client)
+    assert.equal((await dispatcher.dispatch({ kind: 'decision-run', sessionId: 'bad-result' })).ok, false)
+  }
+})

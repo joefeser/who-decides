@@ -46,7 +46,8 @@ HACP schemas. See [docs/roadmap.md](docs/roadmap.md) and
 ## Quickstart
 
 ```sh
-npm install
+nvm use   # Node 22, matching CI and the runtime image
+npm ci
 ```
 
 The decision console is deterministic and needs no model credentials. It
@@ -152,6 +153,14 @@ demo with public watch mode**:
 - Public hosting requires HTTPS and the reverse proxy setup in
   [deploy/PROVISION.md](deploy/PROVISION.md). `npm run console` is the local
   development server; the hosted deployment uses a production build.
+- Preparation and verification are fixture simulations. Task-packet initial
+  approval hashes are illustrative, not signature verification. Runtime machine
+  authentication proves the relay credential, not an independently verified
+  human act; the console retains the originating operator-session decision.
+- Live mode uses both `WD_AGENTCORE_ENDPOINT` and `WD_MACHINE_TOKEN`. Live
+  runs advance only on confirmed AgentCore responses; failures stay visible.
+  Unset both variables and restart for deterministic mode. See
+  [the deployment checklist](agentcore/DEPLOY-CHECKLIST.md).
 - The prepared effect is always a **dry-run**: the exact payload is recorded and
   shown, and no external mutation is performed in any branch.
 - Resetting the console archives the current run; completed run records and
