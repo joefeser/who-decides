@@ -73,3 +73,27 @@ test('runtime artifact-type replacement gives the new runtime a distinct physica
   expect(logicalId).toBe('AgentRuntimetestprojectwhodecidesagentContainer');
   expect(resource.Properties.AgentRuntimeName).toBe('testproject_who_decides_agent_container');
 });
+
+test('runtime names that sanitize identically fail synthesis with an actionable error', () => {
+  // 'alpha_agent' and 'alphaagent' are distinct names but sanitize to the
+  // same logical id — the gate must fail loudly, not conflate the runtimes.
+  expect(() => synthesize([containerRuntime('alpha_agent'), containerRuntime('alphaagent')]))
+    .toThrow(/logical id collision/);
+});
+
+test('a replacement name colliding with another runtime fails synthesis', () => {
+  // 'foo' replaces to 'testproject_foo_container', which IS the second
+  // runtime's existing physical name — refuse instead of rolling back AWS-side.
+  expect(() => synthesize([containerRuntime('foo'), containerRuntime('foo_container')]))
+    .toThrow(/collides with another runtime's name/);
+});
+
+test('replacement physical names stay within the 48-char service limit', () => {
+  const template = synthesize([containerRuntime('a'.repeat(47))]);
+  const [, resource] = Object.entries(
+    template.findResources('AWS::BedrockAgentCore::Runtime'),
+  )[0]!;
+  const name = resource.Properties.AgentRuntimeName as string;
+  expect(name.length).toBeLessThanOrEqual(48);
+  expect(name.endsWith('_container')).toBe(true);
+});

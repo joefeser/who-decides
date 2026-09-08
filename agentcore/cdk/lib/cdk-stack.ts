@@ -145,32 +145,64 @@ export class AgentCoreStack extends Stack {
     // update. Force a NEW logical id for every CfnRuntime so CloudFormation
     // creates the container runtime fresh and deletes the CodeZip one.
     //
-    // Two constraints beyond the logical-id swap:
+    // Three constraints beyond the logical-id swap:
     // - The replacement id derives from the runtime's configured NAME, not
     //   traversal order — inserting, removing, or reordering runtimes in the
     //   spec must never remap a replacement id onto a different runtime.
-    // - The replacement also gets a DISTINCT PHYSICAL NAME (agentRuntimeName
-    //   + '_container'): CloudFormation creates additions before deletions,
-    //   so reusing the still-existing old name would collide at create time
-    //   and roll the deploy back a second time.
+    // - The replacement gets a DISTINCT PHYSICAL NAME (agentRuntimeName +
+    //   '_container'): CloudFormation creates additions before deletions, so
+    //   reusing the still-existing old name would collide at create time.
+    // - Both derived identities must stay unique and within limits: names
+    //   that sanitize identically, a runtime literally named '<x>_container',
+    //   and the 48-char agentRuntimeName service limit (mirrored by the CLI
+    //   schema) all get an explicit, actionable synthesis error.
     // Run-scoped consequence: the runtime ID and ARN change with the new
     // resource — update WD_AGENTCORE_ENDPOINT wherever it is configured.
-    const replacedRuntimeNames = new Set<string>();
-    for (const child of this.node.findAll()) {
-      if (!(child instanceof bedrockagentcore.aws_bedrockagentcore.CfnRuntime)) {
-        continue;
-      }
-      const baseName = child.agentRuntimeName;
-      if (!baseName) {
+    const AGENT_RUNTIME_NAME_MAX = 48;
+    const REPLACEMENT_SUFFIX = '_container';
+    const runtimeNodes = this.node.findAll().filter(
+      (child): child is InstanceType<typeof bedrockagentcore.aws_bedrockagentcore.CfnRuntime> =>
+        child instanceof bedrockagentcore.aws_bedrockagentcore.CfnRuntime,
+    );
+
+    const originalNames = new Set<string>();
+    for (const runtime of runtimeNodes) {
+      const name = runtime.agentRuntimeName;
+      if (!name) {
         throw new Error('Cannot derive a replacement identity for a runtime without agentRuntimeName');
       }
-      if (replacedRuntimeNames.has(baseName)) {
-        throw new Error(`Duplicate runtime name in replacement pass: ${baseName}`);
+      if (originalNames.has(name)) {
+        throw new Error(`Duplicate runtime name in replacement pass: ${name}`);
       }
-      replacedRuntimeNames.add(baseName);
-      const sanitized = baseName.replace(/[^A-Za-z0-9]/g, '');
-      child.overrideLogicalId(`AgentRuntime${sanitized}Container`.slice(0, 255));
-      child.agentRuntimeName = `${baseName}_container`;
+      originalNames.add(name);
+    }
+
+    const assignedLogicalIds = new Set<string>();
+    const assignedPhysicalNames = new Set<string>();
+    for (const runtime of runtimeNodes) {
+      const baseName = runtime.agentRuntimeName;
+      const logicalId = `AgentRuntime${baseName.replace(/[^A-Za-z0-9]/g, '')}Container`;
+      if (assignedLogicalIds.has(logicalId)) {
+        throw new Error(
+          `Replacement logical id collision (${logicalId}): two runtime names sanitize identically. ` +
+          'Rename one of them in agentcore.json and rerun the deploy.',
+        );
+      }
+      assignedLogicalIds.add(logicalId);
+      runtime.overrideLogicalId(logicalId.slice(0, 255));
+
+      let physicalName = `${baseName}${REPLACEMENT_SUFFIX}`;
+      if (physicalName.length > AGENT_RUNTIME_NAME_MAX) {
+        physicalName = `${baseName.slice(baseName.length - (AGENT_RUNTIME_NAME_MAX - REPLACEMENT_SUFFIX.length))}${REPLACEMENT_SUFFIX}`;
+      }
+      if (originalNames.has(physicalName) || assignedPhysicalNames.has(physicalName)) {
+        throw new Error(
+          `Replacement runtime name '${physicalName}' collides with another runtime's name. ` +
+          'Rename one of them in agentcore.json and rerun the deploy.',
+        );
+      }
+      assignedPhysicalNames.add(physicalName);
+      runtime.agentRuntimeName = physicalName;
     }
 
     // Create AgentCoreMcp if there are gateways configured
