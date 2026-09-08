@@ -29,9 +29,12 @@
  *   retries after an uncertain execution outcome; a timeout or transport
  *   failure fails the run and the operator inspects it.
  */
-import { test, type TestContext } from 'node:test'
+import { after, test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   agentDispatcherError,
   getAgentDispatcher,
@@ -40,6 +43,9 @@ import {
 import { runtimeSessionIdFor } from './agent-dispatch'
 import type { AgentDispatcher, AgentDispatchRequest, AgentDispatchResult } from './agent-dispatch'
 import { patchScenario as f } from '../agent-service/fixture'
+import { ConsoleEngine } from './state'
+import { SqliteRunStore } from './store/sqlite-run-store'
+import { SqliteReceiptStore } from './store/sqlite-receipt-store'
 
 const endpoint = process.env.WD_AGENTCORE_ENDPOINT
 const machineToken = process.env.WD_MACHINE_TOKEN
@@ -156,23 +162,67 @@ function assertCompleted(res: AgentDispatchResult, decisionId: unknown, invocati
 
 // State threaded through the sequential run-1 lifecycle tests.
 let run1: { tag: string, decisionId: unknown, invocationA: unknown, choice: string, rationale: string, receiptId: unknown } | undefined
+let consoleEngine: ConsoleEngine | undefined
+let consoleDir: string | undefined
+
+after(async () => {
+  if (consoleEngine) await consoleEngine.close()
+  if (consoleDir) rmSync(consoleDir, { recursive: true, force: true })
+})
 
 test('AC-6 phase A: fresh live run reaches DECISION_REQUIRED', { timeout: 300_000 }, async t => {
   if (skipWithoutEndpoint(t)) return
-  const tag = freshTag('wdac6a')
-  const res = await dispatchOnce({ kind: 'decision-run', sessionId: tag })
-  const opened = assertPhaseA(res, tag)
-  run1 = { tag, decisionId: opened.decisionId, invocationA: opened.invocationA, choice: f.human_choice.decision, rationale: f.human_choice.rationale, receiptId: undefined }
+  consoleDir = mkdtempSync(path.join(os.tmpdir(), 'wd-agentcore-live-gate-'))
+  consoleEngine = new ConsoleEngine(freshTag('wdac6-tenant'), {
+    runs: new SqliteRunStore(consoleDir),
+    receipts: new SqliteReceiptStore(path.join(consoleDir, 'consumption.db')),
+  })
+  const { runId } = await consoleEngine.startRun(false, live())
+  const dispatched = await consoleEngine.dispatchStart(runId, live())
+  assert.equal(dispatched.ok, true, `console dispatchStart failed: ${dispatched.error ?? 'untyped rejection'}`)
+
+  const state = await consoleEngine.getState()
+  assert.equal(state.runId, runId, 'console readback must remain bound to the started run')
+  assert.equal(state.executionMode, 'agentcore', 'console must persist the live execution mode')
+  assert.equal(state.state, 'decision_required', 'console must render the live human-decision gate')
+  assert.ok(state.agent, 'console must persist the live start dispatch evidence')
+  assert.equal(state.agent.dispatch.transport, 'aws-sdk', 'console readback must retain the live transport')
+  assert.equal(state.decisionRequest?.question, f.decision_request.question, 'console must render the live decision question')
+  assert.deepEqual(state.decisionRequest?.options, f.decision_request.options, 'console must render the live decision options')
+  const opened = assertPhaseA(state.agent, runId)
+  run1 = { tag: runId, decisionId: opened.decisionId, invocationA: opened.invocationA, choice: f.human_choice.decision, rationale: f.human_choice.rationale, receiptId: undefined }
 })
 
 test('AC-6 phase B: approved decision resumes the same run to COMPLETED with bound evidence', { timeout: 300_000 }, async t => {
   if (skipWithoutEndpoint(t)) return
-  if (!run1) return t.skip('phase A did not produce a run to resume')
-  const res = await dispatchOnce({
-    kind: 'decision-resume', sessionId: run1.tag,
-    choice: run1.choice, rationale: run1.rationale,
-  })
-  const done = assertCompleted(res, run1.decisionId, run1.invocationA, run1.choice)
+  if (!run1 || !consoleEngine) return t.skip('phase A did not produce a console run to resume')
+  const submitted = await consoleEngine.submitDecision(
+    run1.choice,
+    run1.rationale,
+    `live-gate-${run1.tag}`,
+    undefined,
+    run1.tag,
+    live(),
+  )
+  assert.equal(submitted.ok, true, `console submitDecision failed: ${submitted.error ?? 'untyped rejection'}`)
+
+  const state = await consoleEngine.getState()
+  assert.equal(state.state, 'completed', 'console must persist and render completion')
+  assert.deepEqual(state.decision, {
+    choice: run1.choice,
+    rationale: run1.rationale,
+    decidedAt: state.decision?.decidedAt,
+  }, 'console must persist the exact approved choice and rationale')
+  assert.ok(state.decision?.decidedAt, 'console decision must carry its decision time')
+  assert.ok(state.consumption?.receiptId, 'console must persist its one-use consumption receipt')
+  assert.equal(state.effect?.effect, run1.choice, 'console effect must match the approved choice')
+  assert.equal(state.effect?.noExternalMutationPerformed, true, 'console effect must remain non-mutating')
+  assert.ok(state.agent, 'console must persist the live resume dispatch evidence')
+  assert.equal(state.agent.dispatch.transport, 'aws-sdk', 'completed console readback must retain the live transport')
+  for (const name of ['human-decision', 'consumption-receipt', 'effect-receipt', 'agent-report', 'agent-resume']) {
+    assert.ok(state.artifacts.some(artifact => artifact.name === name && artifact.valid), `console must expose valid ${name} evidence`)
+  }
+  const done = assertCompleted(state.agent, run1.decisionId, run1.invocationA, run1.choice)
   run1.receiptId = done.receiptId
 })
 
@@ -209,6 +259,25 @@ test('AC-6 conflict: a different decision on the completed run is rejected', { t
   })
   assert.equal(phaseResult(replay).status, 'DUPLICATE', 'the original decision must remain the recorded one')
   assert.equal(phaseResult(replay).receiptId, run1.receiptId, 'the original receipt must be unchanged')
+})
+
+test('AC-6 conflict: the recorded choice cannot be replayed with a different rationale', { timeout: 300_000 }, async t => {
+  if (skipWithoutEndpoint(t)) return
+  if (!run1?.receiptId) return t.skip('phase B did not complete a run to conflict against')
+  const res = await dispatchOnce({
+    kind: 'decision-resume', sessionId: run1.tag,
+    choice: run1.choice, rationale: `${run1.rationale} (conflicting rationale probe)`,
+  })
+  assert.equal(res.ok, false, 'a rationale-only conflict must not be accepted')
+  const result = phaseResult(res)
+  assert.equal(result.status, 'STATE_CONFLICT', `expected the typed STATE_CONFLICT rejection, got '${String(result.status)}'`)
+
+  const replay = await dispatchOnce({
+    kind: 'decision-resume', sessionId: run1.tag,
+    choice: run1.choice, rationale: run1.rationale,
+  })
+  assert.equal(phaseResult(replay).status, 'DUPLICATE', 'the exact original decision must remain replayable')
+  assert.equal(phaseResult(replay).receiptId, run1.receiptId, 'the original receipt must remain unchanged')
 })
 
 test('AC-6 rejection discipline: typed resume rejections do not advance a fresh run', { timeout: 300_000 }, async t => {

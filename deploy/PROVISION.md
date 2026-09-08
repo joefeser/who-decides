@@ -198,8 +198,10 @@ per-IP rate limit.
 ## 11. Live agent dispatch (AgentCore runtime, AC-6)
 
 Steps 1–10 provision the console host. This section wires it to the real
-agent runtime on AWS AgentCore. Until both live variables are set, the
-console runs the deterministic fixture demo.
+agent runtime on AWS AgentCore. The console runs the deterministic fixture
+demo only when **neither** live variable is set. Setting exactly one of
+`WD_AGENTCORE_ENDPOINT` or `WD_MACHINE_TOKEN` is an invalid partial
+configuration that fails closed with `ENVIRONMENT_BLOCKED`.
 
 ### Runtime deployment (manual — Joe's steps, Joe's authorization)
 
