@@ -15,16 +15,23 @@
  *   missing SDK, AWS credential/permission errors, transport failures,
  *   and malformed response envelopes all FAIL the gate.
  * - The only passing path is a real A → human decision → B cycle through
- *   the PRODUCTION dispatcher wiring (`getAgentDispatcher`, the same
- *   client `app/api/*` uses), asserting the 'aws-sdk' transport on every
+ *   the PRODUCTION wiring (`getAgentDispatcher` — the same client the
+ *   console API routes use), asserting the 'aws-sdk' transport on every
  *   dispatch so the deterministic/disabled fallback can never satisfy
  *   the gate.
+ * - The main lifecycle runs THROUGH `ConsoleEngine` (startRun →
+ *   dispatchStart → submitDecision) against real SQLite stores, so the
+ *   gate proves the console state transitions, persisted artifacts, and
+ *   displayed evidence — not just the dispatcher. AC-6 item 6 (the
+ *   console reflects the actual live result) is asserted on the engine's
+ *   own readback, cross-bound to the runtime's completion.
  * - Phase A must return exactly DECISION_REQUIRED with the scenario's
  *   decision request; the approved resume must return exactly COMPLETED
  *   with the run/decision binding and receipt evidence. Typed stops and
- *   rejections (duplicate, conflict, invalid choice, empty rationale)
- *   are asserted on their own dispatches — an arbitrary typed error
- *   standing in for the happy path fails these assertions.
+ *   rejections (duplicate, choice conflict, rationale-only conflict,
+ *   invalid choice, empty rationale) are asserted on their own
+ *   dispatches — an arbitrary typed error standing in for the happy path
+ *   fails these assertions.
  * - Every dispatch is performed exactly once. There are no automatic
  *   retries after an uncertain execution outcome; a timeout or transport
  *   failure fails the run and the operator inspects it.
@@ -51,9 +58,13 @@ const endpoint = process.env.WD_AGENTCORE_ENDPOINT
 const machineToken = process.env.WD_MACHINE_TOKEN
 
 /** Filename-safe per Joe's isolated-run requirement and the agent
- * service's session-id slug rule; unique per process invocation. */
+ * service's session-id slug rule; unique per process invocation.
+ * Length matters: AgentCore's InvokeAgentRuntime requires runtimeSessionId
+ * to be 33–256 chars and the dispatcher prefixes 'wd-console-', so the tag
+ * itself must stay well above 22 chars or every dispatch dies at request
+ * validation before the gate runs at all. */
 function freshTag(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`
+  return `${prefix}-${Date.now().toString(36)}-${randomBytes(8).toString('hex')}`
 }
 
 /** Marks the test skipped when no endpoint is configured. Returns true
@@ -101,6 +112,10 @@ async function dispatchOnce(request: AgentDispatchRequest): Promise<AgentDispatc
     runtimeSessionIdFor(request.sessionId),
     'runtime session id must derive from the run id (same-session state binding)',
   )
+  // AWS InvokeAgentRuntime rejects runtimeSessionId outside 33–256 chars;
+  // a short id would fail at request validation, not at the gate.
+  assert.ok(res.dispatch.runtimeSessionId.length >= 33,
+    `runtimeSessionId must meet AgentCore's 33-char minimum, got ${res.dispatch.runtimeSessionId.length}`)
   return res
 }
 
@@ -223,6 +238,18 @@ test('AC-6 phase B: approved decision resumes the same run to COMPLETED with bou
     assert.ok(state.artifacts.some(artifact => artifact.name === name && artifact.valid), `console must expose valid ${name} evidence`)
   }
   const done = assertCompleted(state.agent, run1.decisionId, run1.invocationA, run1.choice)
+  // The displayed evidence must reflect what the live runtime actually
+  // produced: the console effect and the runtime effect are distinct
+  // artifacts (different authorizedBy identities), but they must agree on
+  // the executed branch and its safety flags, and the runtime's own
+  // receipt/invocation ids must be the ones on display in state.agent.
+  const runtimeEffect = ((state.agent!.result as { result?: { effect?: Record<string, unknown> } }).result?.effect ?? null) as Record<string, unknown> | null
+  assert.ok(runtimeEffect, 'runtime completion must carry its own effect receipt')
+  assert.equal(state.effect?.effect, runtimeEffect.effect, 'displayed effect must agree with the runtime effect')
+  assert.equal(state.effect?.noExternalMutationPerformed, runtimeEffect.noExternalMutationPerformed,
+    'displayed effect must agree with the runtime mutation flag')
+  assert.equal(state.agent!.dispatch.runtimeSessionId, runtimeSessionIdFor(run1.tag),
+    'the displayed resume evidence must come from this run\'s live session')
   run1.receiptId = done.receiptId
 })
 
