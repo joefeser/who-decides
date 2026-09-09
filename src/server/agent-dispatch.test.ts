@@ -82,3 +82,23 @@ test('malformed successful transports are not accepted as agent success', async 
     assert.equal((await dispatcher.dispatch({ kind: 'decision-run', sessionId: 'bad-result' })).ok, false)
   }
 })
+
+test('typed 200 + ok:false envelopes surface status and reason as the dispatch error', async () => {
+  // Managed-runtime contract: rejections arrive as 200 envelopes without a
+  // top-level error — the operator must see the typed outcome, not a
+  // generic AGENT_REJECTED placeholder.
+  const dispatcher = createAgentDispatcher(CONFIG, recordingDouble(() => ({
+    ok: false,
+    result: { status: 'STATE_CONFLICT', reason: 'completed run holds a different decision' },
+  })).client)
+  const result = await dispatcher.dispatch({ kind: 'decision-resume', sessionId: 'typed-reject', choice: 'defer', rationale: 'gate probe' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'STATE_CONFLICT: completed run holds a different decision')
+  // An explicit top-level error still wins; nothing typed falls back to the placeholder.
+  const withTopError = await createAgentDispatcher(CONFIG, recordingDouble(() => ({ ok: false, error: 'synthetic resume failure' })).client)
+    .dispatch({ kind: 'decision-resume', sessionId: 'typed-reject', choice: 'defer', rationale: 'gate probe' })
+  assert.equal(withTopError.error, 'synthetic resume failure')
+  const empty = await createAgentDispatcher(CONFIG, recordingDouble(() => ({})).client)
+    .dispatch({ kind: 'decision-run', sessionId: 'typed-reject' })
+  assert.equal(empty.error, 'AGENT_REJECTED')
+})
