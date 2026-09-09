@@ -222,14 +222,25 @@ Deployment history, stated precisely:
   invoke timed out; CloudWatch showed two boot crashes behind it
   (missing schema files; the native SQLite addon could not ship in the
   CodeZip at all).
-- *Verified outcome so far*: Codex's repair (8056d0b) repackages the
-  agent as a container and passes the local gates — tests, Next build,
-  `agentcore validate`, and an ARM64 container smoke that boots the image
-  and loads native SQLite. **The repaired image is not yet deployed.**
-  The deployment record on file predates the repair, and a READY status
-  in the AWS console would not prove the runtime contains this code.
-  Until a post-repair deploy is followed by a verified live cycle
-  (AC-6), treat the runtime as unverified.
+- *Repair + replacement* 2026-09-08: the container packaging repair
+  (Codex, 8056d0b) passed the local gates, but the redeploy failed —
+  the control plane forbids updating an existing runtime's artifact
+  type ("Agent artifact type cannot be updated"), so the stack was
+  changed to REPLACE the runtime resource, and the base image moved to
+  ECR Public after CodeBuild hit Docker Hub 429s. The old CodeZip
+  runtime (`…-1mF5fr45DG`) is deleted; the runtime ID/ARN changed.
+- *Verified outcome* 2026-09-09: the container runtime
+  `whoDecides_who_decides_agent_container-dtvXkDG2Ps` is READY (version
+  5, ECR image from merged dev-agentcore 2f469bc) with
+  `WD_MACHINE_TOKEN_HASH` installed via the post-deploy patch, and the
+  AC-6 live gate passed **6/6** against it — cold-boot phase A
+  `DECISION_REQUIRED`, claim-gated resume to `COMPLETED` with bound
+  evidence, `DUPLICATE`, both conflict shapes, typed-rejection
+  discipline, and the console-engine lifecycle. Evidence:
+  [`docs/spike-log.md`](../docs/spike-log.md) Day 9–10. Standing
+  caveats: every future `agentcore deploy` drops the hash (re-apply +
+  verify, checklist step 3), and a READY status still proves nothing
+  by itself — the gate is the proof.
 
 ### Token setup
 
