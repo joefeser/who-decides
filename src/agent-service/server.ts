@@ -87,14 +87,20 @@ return createServer(async (req, res) => {
     try {
       if (kind === 'decision-run') {
         const result = await startPhase(serviceContext, { tag }, runtimeFactory)
-        return send(res, result.status === 'ENVIRONMENT_BLOCKED' || result.status === 'HUMAN_DECISION_REQUIRED' ? 409 : 200, { ok: true, result })
+        // Managed-runtime contract (live-gate evidence, 2026-09-08): the
+        // AgentCore platform drops non-2xx bodies — a 409 arrives at the
+        // caller as an opaque transport error. Application-level outcomes
+        // therefore ride as HTTP 200 and the CALLER derives success from the
+        // envelope; ok mirrors the typed status.
+        const ok = result.status === 'DECISION_REQUIRED'
+        return send(res, 200, { ok, result })
       }
       if (kind === 'decision-resume') {
         const choice = typeof payload.choice === 'string' ? payload.choice : ''
         const rationale = typeof payload.rationale === 'string' ? payload.rationale : ''
         const result = await resumePhase(serviceContext, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) }, runtimeFactory)
-        const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED' || result.status === 'HUMAN_DECISION_REQUIRED'
-        return send(res, conflict ? 409 : 200, { ok: !conflict, result })
+        const ok = result.status === 'COMPLETED' || result.status === 'DUPLICATE'
+        return send(res, 200, { ok, result })
       }
       return send(res, 400, { ok: false, error: `UNKNOWN_KIND:${String(kind)}` })
     } catch (err) {

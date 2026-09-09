@@ -187,9 +187,24 @@ test('HTTP invocations enforce body credentials and conflicting resumes fail', a
     assert.equal(b.status, 200)
     assert.equal((await b.json()).result.status, 'COMPLETED')
     assert.equal((await (await invoke(payload)).json()).result.status, 'DUPLICATE')
+    // Managed-runtime contract: typed rejections ride as HTTP 200 with
+    // ok:false — the platform drops non-2xx bodies, so a 409 would reach the
+    // caller as an opaque transport error with no typed status at all.
     const conflict = await invoke({ ...payload, choice: 'create_draft_pr' })
-    assert.equal(conflict.status, 409)
-    assert.equal((await conflict.json()).ok, false)
+    assert.equal(conflict.status, 200)
+    const conflictBody = await conflict.json()
+    assert.equal(conflictBody.ok, false)
+    assert.equal(conflictBody.result.status, 'STATE_CONFLICT')
+
+    // Invalid choices reject typed on a fresh run without consuming it
+    await invoke({ kind: 'decision-run', sessionId: 'http-invalid', credential: token })
+    const invalid = await invoke({ kind: 'decision-resume', sessionId: 'http-invalid', credential: token, choice: 'ship_it', rationale: 'x' })
+    assert.equal(invalid.status, 200)
+    const invalidBody = await invalid.json()
+    assert.equal(invalidBody.ok, false)
+    assert.equal(invalidBody.result.status, 'INVALID_INPUT')
+    const after = await invoke({ kind: 'decision-resume', sessionId: 'http-invalid', credential: token, choice: 'defer', rationale: 'still completable' })
+    assert.equal((await after.json()).result.status, 'COMPLETED', 'a typed rejection must not consume the run')
   } finally {
     http.closeIdleConnections()
     await new Promise<void>(resolve => http.close(() => resolve()))

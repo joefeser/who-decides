@@ -83,14 +83,29 @@ export function createAgentDispatcher(config: AgentDispatchConfig, client?: Invo
 
       try {
         const result = await client!.invoke(payload)
-        // The platform can transport an application-level rejection (the
-        // agent service's typed 409s) as a successful delivery — derive
-        // our ok from the agent service's own response envelope (review P2).
+        // Application-level rejections ride as HTTP 200 with ok:false in the
+        // envelope — the platform DROPS non-2xx bodies (live-gate evidence,
+        // 2026-09-08: a typed 409 reaches the caller as an opaque transport
+        // error with no typed status). Success must therefore be derived
+        // from the envelope, never from transport success; transport and
+        // auth failures remain exceptional.
         const agentOk = result.ok === true && result.result !== null && typeof result.result === 'object' && typeof (result.result as Record<string, unknown>).status === 'string'
+        let error: string | undefined
+        if (!agentOk) {
+          // Prefer an explicit top-level error; otherwise surface the typed
+          // outcome (status + reason) from the envelope — an operator must
+          // see STATE_CONFLICT/INVALID_INPUT, not a generic placeholder.
+          const topError = (result as { error?: unknown }).error
+          const inner = (result as { result?: { status?: unknown; reason?: unknown } }).result
+          const typed = inner !== null && typeof inner === 'object' && typeof inner.status === 'string'
+            ? `${inner.status}${typeof inner.reason === 'string' && inner.reason ? `: ${inner.reason}` : ''}`
+            : undefined
+          error = typeof topError === 'string' && topError ? topError : typed ?? 'AGENT_REJECTED'
+        }
         return {
           ok: agentOk,
           result,
-          error: agentOk ? undefined : String((result as { error?: unknown }).error ?? 'AGENT_REJECTED'),
+          error,
           dispatch: { runtimeSessionId, dispatchedAt, durationMs: Date.now() - started, transport: 'aws-sdk' },
         }
       } catch (err) {
