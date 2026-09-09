@@ -836,3 +836,55 @@ status still proves nothing; the console-side live-dispatch config was
 never set, so nothing downstream referenced the old runtime except this
 repo's docs.
 
+
+## Day 10 — 2026-09-09: AC-6 GATE GREEN — the live cycle is proven (6/6)
+
+The full path, with each deploy lesson in its place:
+
+1. PR #32 merged (63da7cd): typed rejections ride as HTTP 200 + ok:false.
+   The platform DROPS non-2xx bodies — gate round 1 falsified the
+   dispatcher's "platform delivers typed 409s" assumption (3 gate tests
+   failed on `no invocation envelope (Received error (409))` while every
+   200 path delivered full envelopes). The dispatcher also now surfaces
+   the envelope's typed status/reason instead of a generic
+   AGENT_REJECTED placeholder.
+2. Redeploy attempt 1 failed in CodeBuild: `node:22-bookworm-slim: 429
+   Too Many Requests` from Docker Hub — anonymous pull limits are per-IP,
+   and CodeBuild's shared IPs exhaust them intermittently (same
+   Dockerfile built fine the day before). PR #33 (2f469bc): base image
+   from public.ecr.aws; local ARM64 build + container smoke green.
+3. Redeploy 2: SUCCESS in ~3.5 min. Runtime
+   `whoDecides_who_decides_agent_container-dtvXkDG2Ps` READY, container
+   artifact (ECR image), version 4 → hash re-applied per checklist step
+   3 → version 5, hash-match verified. The deploy re-applies tracked env
+   vars WITHOUT the patched hash — the documented caveat, now observed
+   live twice. AWS login grants also kept expiring (~hourly); purely
+   operational.
+4. GATE (`npm run test:agentcore-live`, token sourced from a local
+   0600 file, never in chat/commands): **6/6 pass, 0 skipped, 26.8s**:
+   - phase A DECISION_REQUIRED (17.2s — cold container boot, clean)
+   - phase B COMPLETED with bound decision/invocation/receipt evidence
+     (2.2s; successor ≠ invocation A; effect authorizedBy joins all three)
+   - identical resume → DUPLICATE, same receipt, no new successor
+   - different choice → STATE_CONFLICT; rationale-only → STATE_CONFLICT;
+     original receipt unchanged after both
+   - rejection discipline on a fresh run: INVALID_CHOICE and
+     RATIONALE_REQUIRED are typed, consume nothing, and the run still
+     completes
+   - the main lifecycle runs through ConsoleEngine with real SQLite
+     stores: running → decision_required → completed, artifacts valid,
+     displayed effect cross-bound to the runtime effect, displayed
+     resume evidence from this run's live session
+
+Deployed revision: merged dev-agentcore 2f469bc (Dockerfile ECR Public
+base) as image `whodecides/who_decides_agent:3bac0f0b…`; runtime ID/ARN
+changed from the retired CodeZip runtime exactly as the control plane's
+artifact-type immutability forced.
+
+Honest residuals: the browser-level hosted console UI was not exercised —
+the gate drives ConsoleEngine (the same engine `app/api/*` uses) with
+real stores on this host; the public EC2 host remains unconfigured.
+Machine-auth 401/503 bodies are dropped by the platform too, so auth
+failures surface as opaque transport errors (fail-closed; acceptable for
+a failure path). The gate passing is AC-6 engine evidence; closing the
+board item remains the owner's call.
