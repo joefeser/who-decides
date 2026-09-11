@@ -41,7 +41,10 @@ hackathon (AWS / Strands Agents SDK), September 2026. The core loop is proven:
 a real Strands agent on Bedrock stops at a typed decision request, resumes on
 a recorded human decision, and every artifact validates against the vendored
 HACP schemas. See [docs/roadmap.md](docs/roadmap.md) and
-[docs/spike-log.md](docs/spike-log.md) for evidence.
+[docs/spike-log.md](docs/spike-log.md) for evidence. The full build epic —
+every milestone from the governed design debate through the AgentCore
+deployment — is on the public
+[who-decides project board](https://github.com/users/joefeser/projects/1).
 
 ## Quickstart
 
@@ -175,13 +178,15 @@ by explicit owner override after repeated rounds kept surfacing real
 findings — the ceiling on review is the human's, by design.
 
 **Deployed-agent evidence.** The AgentCore packaging repair (Node 22
-ARM64 container, native SQLite) is validated by local gates only: unit
-suites, build, `agentcore validate`, and a container smoke test. The
-live A → decision → B cycle on the deployed runtime is gated by
-`npm run test:agentcore-live` (see
+ARM64 container, native SQLite) is validated by local gates — unit
+suites, build, `agentcore validate`, and a container smoke test — and by
+the strict live gate. `npm run test:agentcore-live` (see
 [deploy/PROVISION.md](deploy/PROVISION.md) and
-[agentcore/DEPLOY-CHECKLIST.md](agentcore/DEPLOY-CHECKLIST.md)) and had
-not been run when this section was written.
+[agentcore/DEPLOY-CHECKLIST.md](agentcore/DEPLOY-CHECKLIST.md)) ran
+against the deployed container runtime on 2026-09-09 and passed **6/6,
+0 skipped, 26.8 s** — a real A → human decision → B cycle through the
+production dispatcher and `ConsoleEngine`, plus duplicate/conflict/
+rejection discipline on typed dispatches (spike-log Day 10).
 
 ## Demo boundaries (honest scope)
 
