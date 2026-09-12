@@ -83,9 +83,16 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   }
 
   return (
-    <details className="text-sm">
-      <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Operator sign-in</summary>
-      <form onSubmit={signIn} className="mt-2 flex flex-wrap items-center gap-2">
+    <form
+      onSubmit={signIn}
+      aria-label="Operator sign-in"
+      className="rounded-lg border border-slate-700 bg-slate-900/70 p-4"
+    >
+      <h3 className="mb-1 text-sm font-semibold text-slate-200">Operator sign-in</h3>
+      <p className="mb-3 text-xs text-slate-400">
+        Visitors watch in read-only mode. The operator passcode unlocks running the demo and deciding.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
         <input
           type="password"
           value={passcode}
@@ -93,18 +100,18 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
           aria-label="Operator passcode"
           placeholder="Operator passcode"
           autoComplete="off"
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
+          className="min-w-56 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
         />
         <button
           type="submit"
           disabled={signingIn || !passcode}
-          className="rounded-lg border border-slate-600 px-4 py-1.5 text-sm hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {signingIn ? 'Signing in…' : 'Sign in'}
         </button>
-        {error && <p className="w-full text-sm text-red-400" role="alert">Stopped: {error}</p>}
-      </form>
-    </details>
+      </div>
+      {error && <p className="mt-2 text-sm text-red-400" role="alert">Stopped: {error}</p>}
+    </form>
   )
 }
 
@@ -368,6 +375,10 @@ export default function Console() {
 
       {state.state === 'completed' && (
         <div className="space-y-5">
+          <p className="font-mono text-xs text-slate-500">
+            run {state.runId} · started {state.startedAt ?? '—'} · completed {state.completedAt ?? '—'} —
+            this page renders live server state; the same JSON is served at <span className="text-slate-300">GET /api/state</span>
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg bg-slate-900/70 p-4">
               <h3 className="mb-1 text-sm font-semibold text-emerald-300">Consumption receipt</h3>
