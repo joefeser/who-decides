@@ -234,6 +234,13 @@ export default function Console() {
     await refresh()
   }
 
+  async function signOut() {
+    await fetch('/api/operator/logout', { method: 'POST' }).catch(() => null)
+    setChoice('')
+    setRationale('')
+    await refresh()
+  }
+
   if (!state) {
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
@@ -256,7 +263,14 @@ export default function Console() {
     >
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xl font-semibold" role="status">{state.heading}</h2>
-        <span className="font-mono text-xs text-slate-400">{state.state}</span>
+        <div className="flex items-center gap-3">
+          {!readOnly && (
+            <button onClick={signOut} className="text-xs text-slate-400 underline hover:text-slate-200">
+              Sign out
+            </button>
+          )}
+          <span className="font-mono text-xs text-slate-400">{state.state}</span>
+        </div>
       </div>
       <p className="mb-6 text-sm text-slate-300">{state.subheading}</p>
 
