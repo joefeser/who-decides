@@ -19,8 +19,8 @@ function setup(invoke: (payload: Record<string, unknown>) => Promise<Record<stri
   const dispatcher = createAgentDispatcher({ endpoint: 'synthetic-runtime', machineToken: 'synthetic-token' }, { invoke })
   return { engine, runs, receipts, dispatcher, dir, close: async () => { await engine.close(); rmSync(dir, { recursive: true, force: true }) } }
 }
-const startResult = () => ({ ok: true, result: { status: 'DECISION_REQUIRED', decisionRequest: { patchId: `${f.package}-${f.to_version}`, question: f.decision_request.question, options: f.decision_request.options } } })
-const completed = (sessionId: unknown) => ({ ok: true, result: { status: 'COMPLETED', decisionId: `decision-svc-${sessionId}`, receiptId: 'runtime-receipt', invocationB: 'runtime-successor' } })
+const startResult = (sessionId: unknown) => ({ ok: true, result: { status: 'DECISION_REQUIRED', decisionId: `decision-svc-${sessionId}`, invocationA: 'runtime-invocation-a', decisionRequest: { patchId: `${f.package}-${f.to_version}`, question: f.decision_request.question, options: f.decision_request.options } } })
+const completed = (sessionId: unknown, choice: unknown) => ({ ok: true, result: { status: 'COMPLETED', decisionId: `decision-svc-${sessionId}`, receiptId: 'runtime-receipt', invocationB: 'runtime-successor', effect: { effect: choice, mode: 'dry-run', noExternalMutationPerformed: true, authorizedBy: { decisionId: `decision-svc-${sessionId}`, consumptionReceiptId: 'runtime-receipt', successorInvocationId: 'runtime-successor' } } } })
 function age(dir: string) {
   const db = new Database(path.join(dir, 'state.db'))
   db.prepare('UPDATE runs SET phase_changed_at = ?').run('2000-01-01T00:00:00.000Z')
@@ -49,9 +49,9 @@ test('only the confirmed live resume completes; a concurrent retry cannot dispat
   const held = new Promise<void>(resolve => { release = resolve })
   let resumes = 0
   const t = setup(async payload => {
-    if (payload.kind === 'decision-run') return startResult()
+    if (payload.kind === 'decision-run') return startResult(payload.sessionId)
     resumes++; entered(); await held
-    return completed(payload.sessionId)
+    return completed(payload.sessionId, payload.choice)
   })
   try {
     const { runId } = await t.engine.startRun(false, t.dispatcher)
@@ -75,7 +75,7 @@ test('only the confirmed live resume completes; a concurrent retry cannot dispat
 })
 
 test('a typed live resume rejection does not produce completion artifacts', async () => {
-  const t = setup(async payload => payload.kind === 'decision-run' ? startResult() : { ok: false, error: 'synthetic resume failure' })
+  const t = setup(async payload => payload.kind === 'decision-run' ? startResult(payload.sessionId) : { ok: false, error: 'synthetic resume failure' })
   try {
     const { runId } = await t.engine.startRun(false, t.dispatcher)
     await t.engine.dispatchStart(runId, t.dispatcher)
@@ -90,7 +90,7 @@ test('a typed live resume rejection does not produce completion artifacts', asyn
 })
 
 test('stale displayed run and archived intent cannot consume a new run decision', async () => {
-  const t = setup(async () => startResult())
+  const t = setup(async payload => startResult(payload.sessionId))
   try {
     const a = await t.engine.startRun()
     await t.engine.reset()
@@ -105,9 +105,9 @@ test('stale displayed run and archived intent cannot consume a new run decision'
 test('a crashed pre-finalization live resume is repaired by resubmission without redispatch', async () => {
   let resumes = 0
   const t = setup(async payload => {
-    if (payload.kind === 'decision-run') return startResult()
+    if (payload.kind === 'decision-run') return startResult(payload.sessionId)
     resumes++
-    return completed(payload.sessionId)
+    return completed(payload.sessionId, payload.choice)
   })
   try {
     // Simulate a local persistence failure AFTER the runtime confirmed the
@@ -142,7 +142,7 @@ test('a crashed pre-finalization live resume is repaired by resubmission without
 })
 
 test('a terminal claim rejection parks the run blocked so reset can recover', async () => {
-  const t = setup(async payload => payload.kind === 'decision-run' ? startResult() : completed(payload.sessionId))
+  const t = setup(async payload => payload.kind === 'decision-run' ? startResult(payload.sessionId) : completed(payload.sessionId, payload.choice))
   try {
     const { runId } = await t.engine.startRun(false, t.dispatcher)
     await t.engine.dispatchStart(runId, t.dispatcher)
@@ -161,5 +161,77 @@ test('a terminal claim rejection parks the run blocked so reset can recover', as
     await t.engine.reset()
     const next = await t.engine.startRun(false, t.dispatcher)
     assert.notEqual(next.runId, runId)
+  } finally { await t.close() }
+})
+
+test('a completion whose effect violates the approved choice is rejected, nothing synthesized', async () => {
+  const t = setup(async payload => {
+    if (payload.kind === 'decision-run') return startResult(payload.sessionId)
+    // Well-formed envelope, but the runtime claims it executed a different
+    // action than the human approved.
+    return { ok: true, result: { status: 'COMPLETED', decisionId: `decision-svc-${payload.sessionId}`, receiptId: 'runtime-receipt', invocationB: 'runtime-successor', effect: { effect: 'create_draft_pr', mode: 'dry-run', noExternalMutationPerformed: true, authorizedBy: { decisionId: `decision-svc-${payload.sessionId}`, consumptionReceiptId: 'runtime-receipt', successorInvocationId: 'runtime-successor' } } } }
+  })
+  try {
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    await t.engine.dispatchStart(runId, t.dispatcher)
+    const submitted = await t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher)
+    assert.equal(submitted.ok, false)
+    assert.match(submitted.error!, /AGENT_RESUME_NOT_COMPLETED/)
+    const state = await t.engine.getState()
+    assert.equal(state.state, 'blocked')
+    assert.equal(state.effect, null)
+    assert.equal(await t.runs.getArtifactJson(runId, 'effect-receipt'), undefined)
+  } finally { await t.close() }
+})
+
+test('a transient persistence failure of the confirmed resume retries and completes', async () => {
+  const t = setup(async payload => payload.kind === 'decision-run' ? startResult(payload.sessionId) : completed(payload.sessionId, payload.choice))
+  try {
+    const originalStore = t.runs.storeArtifact.bind(t.runs)
+    let failures = 0
+    t.runs.storeArtifact = async (artifact: { name?: string }) => {
+      if (artifact.name === 'agent-resume' && failures < 2) {
+        failures++
+        throw new Error('synthetic transient write failure')
+      }
+      return originalStore(artifact as Parameters<typeof originalStore>[0])
+    }
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    await t.engine.dispatchStart(runId, t.dispatcher)
+    assert.equal((await t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher)).ok, true)
+    assert.equal(failures, 2, 'both transient failures must have been absorbed by the bounded retry')
+    assert.equal((await t.engine.getState()).state, 'completed')
+  } finally { await t.close() }
+})
+
+test('a resuming run with no confirmation artifact stays resettable', async () => {
+  const t = setup(async payload => payload.kind === 'decision-run' ? startResult(payload.sessionId) : completed(payload.sessionId, payload.choice))
+  try {
+    const originalStore = t.runs.storeArtifact.bind(t.runs)
+    t.runs.storeArtifact = async (artifact: { name?: string }) => {
+      if (artifact.name === 'agent-resume') throw new Error('sustained synthetic outage')
+      return originalStore(artifact as Parameters<typeof originalStore>[0])
+    }
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    await t.engine.dispatchStart(runId, t.dispatcher)
+    await assert.rejects(t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher), /sustained synthetic outage/)
+    assert.equal((await t.engine.getState()).state, 'resuming')
+    // No confirmation artifact exists, so there is no repair evidence and
+    // no in-flight reservation worth protecting — reset is the recovery.
+    await t.engine.reset()
+    const next = await t.engine.startRun(false, t.dispatcher)
+    assert.notEqual(next.runId, runId)
+  } finally { await t.close() }
+})
+
+test('a phase-A response not bound to this run never opens the human gate', async () => {
+  const t = setup(async payload => payload.kind === 'decision-run'
+    ? { ok: true, result: { status: 'DECISION_REQUIRED', decisionId: 'decision-svc-someone-else', invocationA: 'stale-invocation', decisionRequest: { patchId: `${f.package}-${f.to_version}`, question: f.decision_request.question, options: f.decision_request.options } } }
+    : completed(payload.sessionId, payload.choice))
+  try {
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    assert.equal((await t.engine.dispatchStart(runId, t.dispatcher)).ok, false)
+    assert.equal((await t.engine.getState()).state, 'blocked')
+    assert.equal((await t.engine.getState()).decisionRequest, null)
   } finally { await t.close() }
 })

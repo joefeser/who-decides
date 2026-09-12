@@ -110,6 +110,11 @@ export class ConsoleEngine {
   private readonly runs: RunStore
   private readonly receipts: ReceiptStore
   private readonly ready: Promise<void>
+  /** Runs whose live resume dispatch is currently being awaited by THIS
+   * process. Reset refuses to archive an in-flight resume even before its
+   * confirmation artifact exists — the durable artifact check alone cannot
+   * distinguish in-flight from crashed-without-evidence. */
+  private readonly inflightResumes = new Set<string>()
   /** Known-tenant scoping: one engine instance serves one tenant's runs.
    * Multi-process deployments run one process per tenant, or one process per
    * tenant pool, with separate state directories. The default keeps the
@@ -347,15 +352,31 @@ export class ConsoleEngine {
       // dispatch entirely — the runtime already completed this resume.
       let dispatchConfirmed = repairConfirmedResume
       if (!dispatchConfirmed && await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString())) {
-        const dispatched = await dispatcher!.dispatch({ kind: 'decision-resume', sessionId: run.id, choice: effectiveChoice, rationale: effectiveRationale })
-        const response = dispatched.result?.result as Record<string, unknown> | undefined
-        if (!dispatched.ok || response?.status !== 'COMPLETED' || response.decisionId !== `decision-svc-${run.id}` || typeof response.receiptId !== 'string' || typeof response.invocationB !== 'string') {
-          await this.storeDispatch(run.id, 'agent-resume', { ...dispatched, ok: false, error: dispatched.error ?? 'AGENT_RESUME_NOT_CONFIRMED' })
-          await this.runs.updateRunPhase(run.id, 'resuming', 'blocked', new Date().toISOString())
-          return { ok: false, error: dispatched.error ?? `AGENT_RESUME_NOT_COMPLETED:${String(response?.status)}` }
+        this.inflightResumes.add(run.id)
+        try {
+          const dispatched = await dispatcher!.dispatch({ kind: 'decision-resume', sessionId: run.id, choice: effectiveChoice, rationale: effectiveRationale })
+          const response = dispatched.result?.result as Record<string, unknown> | undefined
+          const effect = response?.effect as Record<string, unknown> | undefined
+          const authorizedBy = effect?.authorizedBy as Record<string, unknown> | undefined
+          // The completion must prove it executed the APPROVED action: the
+          // returned effect matches the choice, stays a dry-run with no
+          // external mutation, and its authorization references this
+          // decision, the reported successor, and the reported receipt —
+          // the same predicate the live gate asserts. A runtime reporting
+          // a foreign or unsafe effect is a typed rejection; the console
+          // never synthesizes a local effect over it (review P1).
+          if (!dispatched.ok || response?.status !== 'COMPLETED' || response.decisionId !== `decision-svc-${run.id}` || typeof response.receiptId !== 'string' || typeof response.invocationB !== 'string'
+            || effect?.effect !== effectiveChoice || effect.mode !== 'dry-run' || effect.noExternalMutationPerformed !== true
+            || authorizedBy?.decisionId !== response.decisionId || authorizedBy?.successorInvocationId !== response.invocationB || authorizedBy?.consumptionReceiptId !== response.receiptId) {
+            await this.storeDispatch(run.id, 'agent-resume', { ...dispatched, ok: false, error: dispatched.error ?? 'AGENT_RESUME_NOT_CONFIRMED' })
+            await this.runs.updateRunPhase(run.id, 'resuming', 'blocked', new Date().toISOString())
+            return { ok: false, error: dispatched.error ?? `AGENT_RESUME_NOT_COMPLETED:${String(response?.status)}` }
+          }
+          await this.storeConfirmedResume(run.id, dispatched)
+          dispatchConfirmed = true
+        } finally {
+          this.inflightResumes.delete(run.id)
         }
-        await this.storeDispatch(run.id, 'agent-resume', dispatched)
-        dispatchConfirmed = true
       }
       if (!dispatchConfirmed) {
         const latest = await this.runs.getRunRow(run.id)
@@ -389,6 +410,25 @@ export class ConsoleEngine {
     await this.runs.storeArtifact({ runId, tenantId: this.tenant, name, kind: 'agent-dispatch', valid: result.ok, json: JSON.stringify(result) })
   }
 
+  /** The confirmed resume envelope is the repair key for crashed
+   * pre-finalization attempts, so its persistence gets a small bounded
+   * retry: a single transient write failure must not orphan a remotely
+   * completed resume (review P1). A sustained outage still fails loudly —
+   * and a resuming run with no confirmed artifact remains resettable. */
+  private async storeConfirmedResume(runId: string, result: AgentDispatchResult): Promise<void> {
+    let lastError: unknown
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.storeDispatch(runId, 'agent-resume', result)
+        return
+      } catch (error) {
+        lastError = error
+        await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)))
+      }
+    }
+    throw lastError
+  }
+
   /** True when the durable agent-resume dispatch artifact records a
    * runtime-confirmed COMPLETED resume bound to this run — the evidence
    * that a crashed pre-finalization attempt may be repaired by rebuilding
@@ -418,7 +458,12 @@ export class ConsoleEngine {
     const dispatched = await dispatcher.dispatch({ kind: 'decision-run', sessionId: runId })
     const response = dispatched.result?.result as Record<string, unknown> | undefined
     const request = response?.decisionRequest as { patchId?: string, question?: string, options?: string[] } | undefined
+    // The phase-A response must be bound to THIS run before the human gate
+    // opens: the fixture matching alone would accept a stale or malformed
+    // response carrying the same fixture (review P2).
     const accepted = dispatched.ok && response?.status === 'DECISION_REQUIRED'
+      && response.decisionId === `decision-svc-${runId}`
+      && typeof response.invocationA === 'string' && response.invocationA.length > 0
       && request?.patchId === `${patchScenario.package}-${patchScenario.to_version}`
       && request?.question === patchScenario.decision_request.question
       && JSON.stringify(request?.options) === JSON.stringify(patchScenario.decision_request.options)
@@ -513,6 +558,10 @@ export class ConsoleEngine {
    * tenant's console is cleared; other tenants' runs are untouched. */
   async reset(): Promise<void> {
     await this.ready
+    // In-flight resumes are protected in memory: their confirmation
+    // artifact does not exist yet, and the durable artifact rule below
+    // must not let a concurrent reset archive a live dispatch.
+    if (this.inflightResumes.size > 0) throw new Error('DECISION_IN_PROGRESS')
     await this.runs.archiveTenantRuns(this.tenant)
   }
 

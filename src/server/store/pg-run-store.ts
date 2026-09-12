@@ -255,8 +255,16 @@ export class PostgresRunStore implements RunStore {
 
   async archiveTenantRuns(tenantId: string): Promise<void> {
     await this.withTx(async client => {
-      const rows = await client.query('SELECT state, decision_json, execution_mode FROM runs WHERE tenant_id = $1 AND archived = 0 FOR UPDATE', [tenantId])
-      if (rows.rows.some(row => row.decision_json && (row.state === 'decision_required' || (row.state === 'resuming' && row.execution_mode === 'agentcore')))) throw new Error('DECISION_IN_PROGRESS')
+      // Mirrors the SQLite rule: a resuming AgentCore run blocks reset only
+      // while its agent-resume confirmation artifact exists — a stuck run
+      // with no confirmation has no repair evidence, so reset is its only
+      // recovery and must stay available.
+      const pending = await client.query(
+        `SELECT 1 FROM runs r WHERE r.tenant_id = $1 AND r.archived = 0 AND r.decision_json IS NOT NULL
+         AND (r.state = 'decision_required' OR (r.state = 'resuming' AND r.execution_mode = 'agentcore'
+         AND EXISTS (SELECT 1 FROM artifacts a WHERE a.run_id = r.id AND a.name = 'agent-resume'))) LIMIT 1`,
+        [tenantId])
+      if (pending.rowCount) throw new Error('DECISION_IN_PROGRESS')
       await client.query('UPDATE runs SET archived = 1 WHERE tenant_id = $1', [tenantId])
     })
   }

@@ -185,7 +185,12 @@ export class SqliteRunStore implements RunStore {
 
   async archiveTenantRuns(tenantId: string): Promise<void> {
     this.db.transaction(() => {
-      const pending = this.db.prepare("SELECT 1 FROM runs WHERE tenant_id = ? AND archived = 0 AND decision_json IS NOT NULL AND (state = 'decision_required' OR (state = 'resuming' AND execution_mode = 'agentcore'))").get(tenantId)
+      // A resuming AgentCore run blocks reset only while its confirmation
+      // artifact exists: a run stuck resuming with NO agent-resume artifact
+      // (dispatch hung, or the confirmation could not be persisted through
+      // a sustained outage) has no repair evidence — reset is its only
+      // recovery, and keeping it blocked forever wedges the console.
+      const pending = this.db.prepare("SELECT 1 FROM runs WHERE tenant_id = ? AND archived = 0 AND decision_json IS NOT NULL AND (state = 'decision_required' OR (state = 'resuming' AND execution_mode = 'agentcore' AND EXISTS (SELECT 1 FROM artifacts WHERE run_id = runs.id AND name = 'agent-resume')))").get(tenantId)
       if (pending) throw new Error('DECISION_IN_PROGRESS')
       this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
     }).immediate()

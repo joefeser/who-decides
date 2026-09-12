@@ -983,3 +983,35 @@ live code before the owner merge decision (Sourcery skipped: diff over its
 Local gates after the patch: all 9 suites **125/125** (two new regression
 tests in live-dispatch: repair-without-redispatch, claim-rejection parks
 blocked + reset recovers), `tsc --noEmit` clean.
+
+### Day 12 addendum — Codex round on the patched head: all three valid, patched
+
+Codex reviewed e99e6f2 and found the follow-on gaps in the same area
+(2×P1, 1×P2); all three were verified live and patched:
+
+1. **Completion acceptance didn't validate the returned effect (P1).**
+   The predicate checked status/decisionId/receiptId/invocationB only, so
+   a runtime reporting a foreign effect, a non-dry-run, or mismatched
+   authorization references would be accepted and the console would
+   synthesize its own local effect over it. The live gate's
+   `assertCompleted` predicate (effect === choice, dry-run,
+   noExternalMutationPerformed, authorizedBy joins) is now the
+   production acceptance rule; violations are typed rejections to
+   `blocked`.
+2. **No recovery when persisting the confirmation fails (P1).** The
+   repair key is the `agent-resume` artifact — if the write itself failed
+   (transient outage), the run wedged `resuming` with no artifact. Three
+   layers now: bounded retry on the confirmation write; a resuming run
+   with NO artifact is resettable (store-level rule, SQLite + Postgres);
+   and an in-memory in-flight registry keeps genuinely in-flight resumes
+   reset-proof (the pre-existing concurrency test caught the first
+   relaxation attempt over-reaching — reset during a held dispatch must
+   still throw).
+3. **Phase-A acceptance not bound to the run (P2).** Fixture matching
+   alone would open the human gate for a stale/malformed response;
+   `decisionId === decision-svc-<run>` and non-empty `invocationA` are
+   now required in the production predicate (the live gate already
+   asserted both).
+
+Gates: all 9 suites **129/129** (four new live-dispatch regression
+tests), `tsc --noEmit` clean.
