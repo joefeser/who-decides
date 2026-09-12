@@ -475,7 +475,7 @@ export default function Console() {
     {/* The sign-in card belongs to the page, not to any run state —
         rendering it inside the state card made it read as part of the
         completed-run panel (live-demo QA). */}
-    {readOnly && watchNotice}
+    {readOnly && <div className="mt-8">{watchNotice}</div>}
     </>
   )
 }
