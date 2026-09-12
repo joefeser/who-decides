@@ -9,13 +9,15 @@ import { SqliteRunStore } from './store/sqlite-run-store'
 import { SqliteReceiptStore } from './store/sqlite-receipt-store'
 import { createAgentDispatcher } from './agent-dispatch'
 import { patchScenario as f } from '../agent-service/fixture'
+import { decisionDigest } from '../consumption/store'
 
 function setup(invoke: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'wd-live-console-'))
   const runs = new SqliteRunStore(dir)
-  const engine = new ConsoleEngine('live-test', { runs, receipts: new SqliteReceiptStore(path.join(dir, 'consumption.db')) })
+  const receipts = new SqliteReceiptStore(path.join(dir, 'consumption.db'))
+  const engine = new ConsoleEngine('live-test', { runs, receipts })
   const dispatcher = createAgentDispatcher({ endpoint: 'synthetic-runtime', machineToken: 'synthetic-token' }, { invoke })
-  return { engine, runs, dispatcher, dir, close: async () => { await engine.close(); rmSync(dir, { recursive: true, force: true }) } }
+  return { engine, runs, receipts, dispatcher, dir, close: async () => { await engine.close(); rmSync(dir, { recursive: true, force: true }) } }
 }
 const startResult = () => ({ ok: true, result: { status: 'DECISION_REQUIRED', decisionRequest: { patchId: `${f.package}-${f.to_version}`, question: f.decision_request.question, options: f.decision_request.options } } })
 const completed = (sessionId: unknown) => ({ ok: true, result: { status: 'COMPLETED', decisionId: `decision-svc-${sessionId}`, receiptId: 'runtime-receipt', invocationB: 'runtime-successor' } })
@@ -97,5 +99,67 @@ test('stale displayed run and archived intent cannot consume a new run decision'
     age(t.dir)
     assert.equal((await t.engine.submitDecision('defer', 'stale page', 'old', undefined, a.runId)).error, 'RUN_CHANGED')
     assert.equal((await t.runs.getRunRow(b.runId))!.decision_json, null)
+  } finally { await t.close() }
+})
+
+test('a crashed pre-finalization live resume is repaired by resubmission without redispatch', async () => {
+  let resumes = 0
+  const t = setup(async payload => {
+    if (payload.kind === 'decision-run') return startResult()
+    resumes++
+    return completed(payload.sessionId)
+  })
+  try {
+    // Simulate a local persistence failure AFTER the runtime confirmed the
+    // resume: the agent-resume dispatch artifact is already durable, so the
+    // evidence to repair exists — only the local spine died mid-write.
+    const originalStore = t.runs.storeArtifact.bind(t.runs)
+    let failedOnce = false
+    t.runs.storeArtifact = async (artifact: { name?: string }) => {
+      if (artifact.name === 'effect-receipt' && !failedOnce) {
+        failedOnce = true
+        throw new Error('synthetic local persistence failure')
+      }
+      return originalStore(artifact as Parameters<typeof originalStore>[0])
+    }
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    await t.engine.dispatchStart(runId, t.dispatcher)
+    await assert.rejects(t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher), /persistence failure/)
+    let state = await t.engine.getState()
+    assert.equal(state.state, 'resuming')
+    assert.equal(state.effect, null)
+    await assert.rejects(t.engine.reset(), /DECISION_IN_PROGRESS/)
+    // The same submission repairs: no redispatch, deterministic rebuild,
+    // finalize wins the resuming → completed CAS.
+    assert.equal((await t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher)).ok, true)
+    assert.equal(resumes, 1, 'the repair must not invoke the runtime again')
+    state = await t.engine.getState()
+    assert.equal(state.state, 'completed')
+    assert.ok(state.effect, 'repaired run must display the executed effect')
+    assert.notEqual(await t.runs.getArtifactJson(runId, 'agent-report'), undefined)
+    assert.equal((await t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher)).duplicate, true)
+  } finally { await t.close() }
+})
+
+test('a terminal claim rejection parks the run blocked so reset can recover', async () => {
+  const t = setup(async payload => payload.kind === 'decision-run' ? startResult() : completed(payload.sessionId))
+  try {
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    await t.engine.dispatchStart(runId, t.dispatcher)
+    // Seed a conflicting receipt for this run's decision: the real claim
+    // collides (digest mismatch) and is terminal for the recorded decision.
+    const conflicting = {
+      decisionId: `decision-${runId}`, chosenOption: 'defer', rationale: 'conflicting earlier claim',
+      decidedAt: '2026-09-01T00:00:00Z', decisionRequestId: 'request-seed', permittedAction: 'conflicting',
+    }
+    assert.equal((await t.receipts.claim(conflicting, 'other-successor', decisionDigest(conflicting))).status, 'claimed')
+    const submitted = await t.engine.submitDecision('defer', 'approved deferral', 'key', undefined, runId, t.dispatcher)
+    assert.equal(submitted.ok, false)
+    assert.match(submitted.error!, /^CLAIM_REJECTED:/)
+    assert.equal((await t.engine.getState()).state, 'blocked')
+    // The retained intent must not wedge reset forever; audit rows survive.
+    await t.engine.reset()
+    const next = await t.engine.startRun(false, t.dispatcher)
+    assert.notEqual(next.runId, runId)
   } finally { await t.close() }
 })

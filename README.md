@@ -212,6 +212,17 @@ demo with public watch mode**:
   runs advance only on confirmed AgentCore responses; failures stay visible.
   Unset both variables and restart for deterministic mode. See
   [the deployment checklist](agentcore/DEPLOY-CHECKLIST.md).
+- Live mode keeps **two artifact spines**: the console persists its own
+  decision → consumption-receipt → effect-receipt chain (whose
+  `successorInvocationId` is the console's reserved claim successor), while
+  the AgentCore runtime persists its own spine with its own invocation IDs.
+  The spines are joined by the run tag embedded in the runtime's decision ID
+  and by the full dispatch envelopes the console stores per invocation —
+  not by sharing one invocation ID space.
+- If a live resume is confirmed remotely but the console dies before
+  finalizing, resubmitting the same decision repairs the run idempotently
+  (no redispatch). A terminal claim rejection parks the run as `blocked`,
+  which reset may archive; audit artifacts are retained either way.
 - The prepared effect is always a **dry-run**: the exact payload is recorded and
   shown, and no external mutation is performed in any branch.
 - Resetting the console archives the current run; completed run records and

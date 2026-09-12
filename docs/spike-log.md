@@ -946,3 +946,40 @@ runtime boots, invocations still fail closed with 503 MACHINE_AUTH_DISABLED
 until the secret-injection mechanism is chosen (`.env.local.example`:
 never in git). The start-of-session dev token's sha256 is the intended
 value once a mechanism exists.
+
+## Day 12 — 2026-09-12: PR #35 review triage — two real wedges patched
+
+Qodo's review of the final unit PR surfaced four findings; triaged against
+live code before the owner merge decision (Sourcery skipped: diff over its
+300k-char limit):
+
+1. **Stuck `resuming` after remote-confirm (patched — real).** The
+   elapsed-time sweep explicitly skips `execution_mode = 'agentcore'`
+   (state.ts advancePhases), so a crash or local persistence failure after
+   the runtime confirmed the resume — but before local finalize — left the
+   run in `resuming` forever: resubmission returned
+   `AGENT_RESUME_IN_PROGRESS`, reset threw `DECISION_IN_PROGRESS`, no new
+   runs could start. The confirmed `agent-resume` dispatch artifact (stored
+   before the effect write) is now repair evidence: the same submission
+   falls through, replays the claim, rebuilds the deterministic artifacts,
+   and wins the `resuming → completed` CAS — no redispatch, no new
+   successor. Mid-demo crash recovery no longer needs DB surgery.
+2. **Console-vs-runtime successor IDs (dispositioned — by design).** The
+   console's effect receipt cites the console's reserved claim successor;
+   the runtime's spine uses its own invocation IDs. Two spines, joined by
+   the run tag in the runtime decision ID and the stored dispatch
+   envelopes. Unifying them (Qodo's suggested fix) would change the
+   service contract mid-unit; documented in README demo boundaries
+   instead.
+3. **Terminal claim rejection wedge (patched — hard to reach, cheap to
+   close).** A rejected claim retained its intent with the run still
+   `decision_required`, wedging reset forever. Rejections are now parked
+   `blocked` (reset-archivable; intent and dispatch evidence retained).
+4. **Concurrent double-start race (dispositioned — cosmetic).** The loser
+   of the `running → starting` CAS can see a stale pre-CAS state and get
+   an error instead of idempotent success; single-operator demo, retry
+   succeeds. Not patched at deadline.
+
+Local gates after the patch: all 9 suites **125/125** (two new regression
+tests in live-dispatch: repair-without-redispatch, claim-rejection parks
+blocked + reset recovers), `tsc --noEmit` clean.

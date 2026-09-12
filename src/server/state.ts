@@ -259,9 +259,15 @@ export class ConsoleEngine {
     // Idempotent recovery, matched strictly: only the SAME submission (key +
     // choice) may return committed success. A different decision arriving
     // after one was recorded is a conflict — the first decision was consumed.
-    if (live && runState === 'resuming') return { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
+    // Exception: a resuming live run whose agent-resume dispatch artifact
+    // records a runtime-CONFIRMED completion. The prior attempt died between
+    // remote confirmation and local finalization (crash or local persistence
+    // failure); the same submission falls through and repairs idempotently —
+    // no redispatch, no new successor, deterministic builders only.
+    const repairConfirmedResume = live && runState === 'resuming' && await this.hasConfirmedResume(run.id)
+    if (live && runState === 'resuming' && !repairConfirmedResume) return { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
     if (live && runState === 'blocked') return { ok: false, error: 'AGENT_RUN_BLOCKED' }
-    if (runState !== 'decision_required') {
+    if (runState !== 'decision_required' && !repairConfirmedResume) {
       if (prior && prior.choice === choice && prior.idempotencyKey === (idempotencyKey ?? null)) {
         return { ok: true, duplicate: true }
       }
@@ -307,7 +313,16 @@ export class ConsoleEngine {
     const decisionRecord = await this.decisionRecord(run.id, decisionId, effectiveChoice, effectiveRationale, authoritativeDecidedAt)
 
     const claim = await this.receipts.claim(decisionRecord, authoritativeInvocationB, decisionDigest(decisionRecord))
-    if (claim.status === 'rejected') return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
+    if (claim.status === 'rejected') {
+      // A terminal claim rejection is unrecoverable for this run: its
+      // recorded decision can never be consumed (a receipt already exists
+      // with a conflicting successor or digest). Park it as blocked so reset
+      // can archive the run while the intent and dispatch evidence stay
+      // queryable — a retained decision intent must never wedge
+      // DECISION_IN_PROGRESS forever (review finding).
+      await this.runs.updateRunPhase(run.id, 'decision_required', 'blocked', new Date().toISOString())
+      return { ok: false, error: `CLAIM_REJECTED:${claim.reason}` }
+    }
 
     const runtimeDecision = {
       decisionId: decisionRecord.decisionId,
@@ -328,19 +343,27 @@ export class ConsoleEngine {
     if (live) {
       // Reserve dispatch durably. An in-flight or uncertain attempt is never
       // automatically repeated, even when a duplicate HTTP request arrives.
-      if (!(await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString()))) {
+      // A repair (confirmed resume artifact already on disk) skips the
+      // dispatch entirely — the runtime already completed this resume.
+      let dispatchConfirmed = repairConfirmedResume
+      if (!dispatchConfirmed && await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString())) {
+        const dispatched = await dispatcher!.dispatch({ kind: 'decision-resume', sessionId: run.id, choice: effectiveChoice, rationale: effectiveRationale })
+        const response = dispatched.result?.result as Record<string, unknown> | undefined
+        if (!dispatched.ok || response?.status !== 'COMPLETED' || response.decisionId !== `decision-svc-${run.id}` || typeof response.receiptId !== 'string' || typeof response.invocationB !== 'string') {
+          await this.storeDispatch(run.id, 'agent-resume', { ...dispatched, ok: false, error: dispatched.error ?? 'AGENT_RESUME_NOT_CONFIRMED' })
+          await this.runs.updateRunPhase(run.id, 'resuming', 'blocked', new Date().toISOString())
+          return { ok: false, error: dispatched.error ?? `AGENT_RESUME_NOT_COMPLETED:${String(response?.status)}` }
+        }
+        await this.storeDispatch(run.id, 'agent-resume', dispatched)
+        dispatchConfirmed = true
+      }
+      if (!dispatchConfirmed) {
         const latest = await this.runs.getRunRow(run.id)
-        return latest?.state === 'completed' && Number(latest.archived) === 0
-          ? { ok: true, duplicate: true } : { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
+        if (latest?.state === 'completed' && Number(latest.archived) === 0) {
+          return { ok: true, duplicate: true }
+        }
+        return { ok: false, error: 'AGENT_RESUME_IN_PROGRESS' }
       }
-      const dispatched = await dispatcher!.dispatch({ kind: 'decision-resume', sessionId: run.id, choice: effectiveChoice, rationale: effectiveRationale })
-      const response = dispatched.result?.result as Record<string, unknown> | undefined
-      if (!dispatched.ok || response?.status !== 'COMPLETED' || response.decisionId !== `decision-svc-${run.id}` || typeof response.receiptId !== 'string' || typeof response.invocationB !== 'string') {
-        await this.storeDispatch(run.id, 'agent-resume', { ...dispatched, ok: false, error: dispatched.error ?? 'AGENT_RESUME_NOT_CONFIRMED' })
-        await this.runs.updateRunPhase(run.id, 'resuming', 'blocked', new Date().toISOString())
-        return { ok: false, error: dispatched.error ?? `AGENT_RESUME_NOT_COMPLETED:${String(response?.status)}` }
-      }
-      await this.storeDispatch(run.id, 'agent-resume', dispatched)
     }
 
     const effect = this.buildEffect(s, effectiveChoice, runtimeDecision.decisionId, claim.receipt.receiptId, authoritativeInvocationB)
@@ -364,6 +387,23 @@ export class ConsoleEngine {
 
   private async storeDispatch(runId: string, name: string, result: AgentDispatchResult): Promise<void> {
     await this.runs.storeArtifact({ runId, tenantId: this.tenant, name, kind: 'agent-dispatch', valid: result.ok, json: JSON.stringify(result) })
+  }
+
+  /** True when the durable agent-resume dispatch artifact records a
+   * runtime-confirmed COMPLETED resume bound to this run — the evidence
+   * that a crashed pre-finalization attempt may be repaired by rebuilding
+   * the local spine without redispatching. */
+  private async hasConfirmedResume(runId: string): Promise<boolean> {
+    const stored = await this.runs.getArtifactJson(runId, 'agent-resume')
+    if (stored === undefined) return false
+    try {
+      const dispatch = JSON.parse(stored) as { ok?: unknown, result?: { result?: { status?: unknown, decisionId?: unknown } } }
+      return dispatch.ok === true
+        && dispatch.result?.result?.status === 'COMPLETED'
+        && dispatch.result.result.decisionId === `decision-svc-${runId}`
+    } catch {
+      return false
+    }
   }
 
   async dispatchStart(runId: string, dispatcher: AgentDispatcher): Promise<{ ok: boolean, error?: string }> {
