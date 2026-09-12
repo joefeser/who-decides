@@ -9,8 +9,8 @@
 </style>
 </head>
 <body>
-<svg width="3200" height="2000" viewBox="0 0 3200 2000" xmlns="http://www.w3.org/2000/svg">
-  <rect width="3200" height="2000" fill="#0f172a"/>
+<svg width="3200" height="2640" viewBox="0 0 3200 2640" xmlns="http://www.w3.org/2000/svg">
+  <rect width="3200" height="2640" fill="#0f172a"/>
 
   <!-- Title -->
   <text x="80" y="130" font-size="64" font-weight="700" fill="#e2e8f0">who-decides — architecture</text>
@@ -151,17 +151,72 @@
   <text x="1916" y="1712" font-size="24" fill="#e2e8f0">• provenance: provider, model,</text>
   <text x="1916" y="1758" font-size="24" fill="#e2e8f0">  runtime, dry-run status</text>
 
+  <!-- ===================== BAND 4 : DEPLOYED ===================== -->
+  <text x="80" y="1990" font-size="24" fill="#818cf8" letter-spacing="4" font-weight="600">4 · DEPLOYED — AWS AGENTCORE RUNTIME (us-east-1)</text>
+
+  <!-- b10: agent service -->
+  <rect x="80" y="2030" width="640" height="330" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="130" cy="2090" r="24" fill="#312e81"/><text x="130" y="2099" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">10</text>
+  <text x="170" y="2100" font-size="30" font-weight="700" fill="#e2e8f0">AGENT SERVICE, CONTAINERIZED</text>
+  <text x="110" y="2160" font-size="24" fill="#94a3b8">Node 22 ARM64 container · microVM/session</text>
+  <text x="110" y="2210" font-size="24" fill="#e2e8f0">• same Strands loop as a per-session service</text>
+  <text x="110" y="2256" font-size="24" fill="#e2e8f0">• typed envelopes ride as HTTP 200 + ok flag</text>
+  <text x="110" y="2302" font-size="24" fill="#e2e8f0">• session snapshot + artifact spine per run</text>
+
+  <!-- arrow b10->b11 -->
+  <line x1="720" y1="2195" x2="788" y2="2195" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="788,2185 808,2195 788,2205" fill="#818cf8"/>
+
+  <!-- b11: machine auth -->
+  <rect x="812" y="2030" width="640" height="330" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="862" cy="2090" r="24" fill="#312e81"/><text x="862" y="2099" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">11</text>
+  <text x="902" y="2100" font-size="30" font-weight="700" fill="#e2e8f0">MACHINE-PRINCIPAL AUTH</text>
+  <text x="842" y="2160" font-size="24" fill="#94a3b8">scoped service token · fail closed</text>
+  <text x="842" y="2210" font-size="24" fill="#e2e8f0">• timing-safe sha256 credential check</text>
+  <text x="842" y="2256" font-size="24" fill="#e2e8f0">• credential rides in the body — the managed</text>
+  <text x="842" y="2302" font-size="24" fill="#e2e8f0">  runtime drops Authorization headers</text>
+
+  <!-- arrow b11->b12 -->
+  <line x1="1452" y1="2195" x2="1520" y2="2195" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="1520,2185 1540,2195 1520,2205" fill="#818cf8"/>
+
+  <!-- b12: console dispatch -->
+  <rect x="1544" y="2030" width="640" height="330" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="1594" cy="2090" r="24" fill="#312e81"/><text x="1594" y="2099" font-size="26" fill="#c7d2fe" text-anchor="middle" font-weight="700">12</text>
+  <text x="1634" y="2100" font-size="30" font-weight="700" fill="#e2e8f0">CONSOLE → RUNTIME DISPATCH</text>
+  <text x="1574" y="2160" font-size="24" fill="#94a3b8">aws-sdk transport · no silent fallback</text>
+  <text x="1574" y="2210" font-size="24" fill="#e2e8f0">• completion accepted only when the returned</text>
+  <text x="1574" y="2256" font-size="24" fill="#e2e8f0">  effect matches the approved choice (dry-run)</text>
+  <text x="1574" y="2302" font-size="24" fill="#e2e8f0">• typed rejections park blocked · crash repair</text>
+
+  <!-- arrow b12->b13 -->
+  <line x1="2184" y1="2195" x2="2252" y2="2195" stroke="#818cf8" stroke-width="4"/>
+  <polygon points="2252,2185 2272,2195 2252,2205" fill="#818cf8"/>
+
+  <!-- b13: live gate -->
+  <rect x="2276" y="2030" width="640" height="330" rx="16" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+  <circle cx="2326" cy="2090" r="24" fill="#065f46"/><text x="2326" y="2099" font-size="26" fill="#a7f3d0" text-anchor="middle" font-weight="700">✓</text>
+  <text x="2366" y="2100" font-size="30" font-weight="700" fill="#e2e8f0">LIVE GATE — 6/6 GREEN</text>
+  <text x="2306" y="2160" font-size="24" fill="#94a3b8">strict gated test · 2026-09-09 · 26.8 s</text>
+  <text x="2306" y="2210" font-size="24" fill="#e2e8f0">• A → human decision → B through the</text>
+  <text x="2306" y="2256" font-size="24" fill="#e2e8f0">  production dispatcher + console engine</text>
+  <text x="2306" y="2302" font-size="24" fill="#34d399">• duplicate / conflict / rejection discipline</text>
+
+  <!-- runtime badge -->
+  <rect x="80" y="2380" width="2836" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/>
+  <text x="1498" y="2416" font-size="22" fill="#c7d2fe" text-anchor="middle">runtime whoDecides_who_decides_agent_container-dtvXkDG2Ps · container build (CodeZip → Container pivot) · us-east-1</text>
+
   <!-- ===================== ARTIFACT FOOTER ===================== -->
-  <text x="80" y="1886" font-size="24" fill="#94a3b8" letter-spacing="2" font-weight="600">TYPED ARTIFACTS — VALIDATED AGAINST HACP v0.1-draft JSON SCHEMAS</text>
+  <text x="80" y="2528" font-size="24" fill="#94a3b8" letter-spacing="2" font-weight="600">TYPED ARTIFACTS — VALIDATED AGAINST HACP v0.1-draft JSON SCHEMAS</text>
   <g font-size="22" fill="#c7d2fe">
-    <rect x="80"  y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="295" y="1948" text-anchor="middle">task-packet</text>
-    <rect x="540" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="755" y="1948" text-anchor="middle">review-finding</text>
-    <rect x="1000" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1215" y="1948" text-anchor="middle">human-decision</text>
-    <rect x="1460" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1675" y="1948" text-anchor="middle">consumption-receipt</text>
-    <rect x="1920" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2135" y="1948" text-anchor="middle">agent-report</text>
-    <rect x="2380" y="1912" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2595" y="1948" text-anchor="middle">stop-response</text>
+    <rect x="80"  y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="295" y="2590" text-anchor="middle">task-packet</text>
+    <rect x="540" y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="755" y="2590" text-anchor="middle">review-finding</text>
+    <rect x="1000" y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1215" y="2590" text-anchor="middle">human-decision</text>
+    <rect x="1460" y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="1675" y="2590" text-anchor="middle">consumption-receipt</text>
+    <rect x="1920" y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2135" y="2590" text-anchor="middle">agent-report</text>
+    <rect x="2380" y="2554" width="430" height="56" rx="28" fill="#1e293b" stroke="#4338ca" stroke-width="2"/><text x="2595" y="2590" text-anchor="middle">stop-response</text>
   </g>
-  <text x="2870" y="1948" font-size="22" fill="#64748b" text-anchor="end" transform="translate(310 0)"> </text>
+  <text x="2870" y="2590" font-size="22" fill="#64748b" text-anchor="end" transform="translate(310 0)"> </text>
 </svg>
 </body>
 </html>
