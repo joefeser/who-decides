@@ -245,16 +245,15 @@ export default function Console() {
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
 
-  const watchNotice = (
-    <div className="space-y-4">
-      <p className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200" role="note">
-        Awaiting the operator&rsquo;s decision — this console is read-only for visitors.
-      </p>
-      <OperatorSignIn onSignedIn={refresh} />
-    </div>
-  )
+  const watchNotice = <OperatorSignIn onSignedIn={refresh} />
 
   const canSubmit = state.state === 'decision_required' && choice !== '' && rationale.trim().length > 0 && !submitting
+
+  // Operator-voiced copy ("waiting for you") must not address visitors who
+  // cannot decide; revoice the one state that does.
+  const visitorVoice = readOnly && state.state === 'decision_required'
+    ? { heading: 'Decision required — waiting for the operator', subheading: 'The agent stopped and asked a human to decide. Visitors watch; the operator decides.' }
+    : null
 
   return (
     <>
@@ -263,7 +262,7 @@ export default function Console() {
       className={`rounded-2xl border p-6 transition-colors ${STATE_TONE[state.state]}`}
     >
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-xl font-semibold" role="status">{state.heading}</h2>
+        <h2 className="text-xl font-semibold" role="status">{visitorVoice?.heading ?? state.heading}</h2>
         <div className="flex items-center gap-3">
           {!readOnly && (
             <button onClick={signOut} className="text-xs text-slate-400 underline hover:text-slate-200">
@@ -273,7 +272,17 @@ export default function Console() {
           <span className="font-mono text-xs text-slate-400">{state.state}</span>
         </div>
       </div>
-      <p className="mb-6 text-sm text-slate-300">{state.subheading}</p>
+      <p className="mb-6 text-sm text-slate-300">{visitorVoice?.subheading ?? state.subheading}</p>
+
+      {/* Visitors read the read-only frame BEFORE the state it describes —
+          the state cards below (decision request, receipts) are things they
+          are watching, not things addressed to them (live-demo QA). */}
+      {readOnly && (
+        <p role="note" className="mb-6 rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200">
+          You&rsquo;re watching this console in read-only mode — decisions belong to the operator.
+          Sign in below to run the demo yourself.
+        </p>
+      )}
 
       {state.state === 'ready' && (
         <div className="space-y-4">
