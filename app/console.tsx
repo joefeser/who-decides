@@ -99,7 +99,7 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
           onChange={e => setPasscode(e.target.value)}
           aria-label="Operator passcode"
           placeholder="Operator passcode"
-          autoComplete="off"
+          autoComplete="one-time-code"
           className="min-w-56 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
         />
         <button
@@ -257,6 +257,7 @@ export default function Console() {
   const canSubmit = state.state === 'decision_required' && choice !== '' && rationale.trim().length > 0 && !submitting
 
   return (
+    <>
     <section
       aria-live="polite"
       className={`rounded-2xl border p-6 transition-colors ${STATE_TONE[state.state]}`}
@@ -280,7 +281,7 @@ export default function Console() {
             The demo seeds a bounded task packet: a security patch whose runtime floor moves —
             a real judgment call the agent cannot own.
           </p>
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <>
               <button
                 onClick={startRun}
@@ -308,7 +309,6 @@ export default function Console() {
               </li>
             ))}
           </ol>
-          {readOnly && watchNotice}
         </div>
       )}
 
@@ -330,7 +330,7 @@ export default function Console() {
             <p className="mt-2 text-sm text-amber-300/90">Who is affected: {state.decisionRequest.whoIsAffected}</p>
             <p className="mt-1 font-mono text-xs text-slate-500">evidence: {state.decisionRequest.tradeoffFindingId}</p>
           </div>
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <form onSubmit={submitDecision} className="space-y-5">
               <fieldset ref={choiceRef} tabIndex={-1} className="space-y-2" aria-label="Your decision">
                 <legend className="mb-2 text-sm font-medium text-slate-200">Your decision — nothing is selected for you:</legend>
@@ -379,7 +379,6 @@ export default function Console() {
           <p className="animate-pulse text-sm text-sky-300" role="status">
             Starting new invocation… claiming the decision exactly once…
           </p>
-          {readOnly && watchNotice}
         </div>
       )}
 
@@ -455,7 +454,7 @@ export default function Console() {
             </div>
           )}
 
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <button onClick={resetConsole} className="text-xs text-slate-500 underline hover:text-slate-300">
               Reset demo
             </button>
@@ -463,5 +462,11 @@ export default function Console() {
         </div>
       )}
     </section>
+
+    {/* The sign-in card belongs to the page, not to any run state —
+        rendering it inside the state card made it read as part of the
+        completed-run panel (live-demo QA). */}
+    {readOnly && watchNotice}
+    </>
   )
 }
