@@ -1,0 +1,11 @@
+{
+  "name": "who-decides-agent-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@strands-agents/sdk": "^1.16.0",
+    "better-sqlite3": "^13.0.3",
+    "openai": "^6.49.0"
+  }
+}

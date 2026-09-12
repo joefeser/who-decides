@@ -11,6 +11,7 @@
 export type RunRow = {
   id: string
   state: string
+  execution_mode?: string
   phase_changed_at: string
 }
 
@@ -28,6 +29,7 @@ export type NewRun = {
   invocationA: string
   startedAt: string
   phaseChangedAt: string
+  executionMode?: string
   milestonesJson: string
 }
 
@@ -64,7 +66,8 @@ export interface RunStore {
   /** Atomic first-writer-wins intent acquisition: inside the exclusive write
    * slot, persists (successor, decisionJson) only if none exists and returns
    * the STORED intent — a losing concurrent submission receives the winner's
-   * successor and decision, never its own stale values. */
+   * successor and decision, never its own stale values. A missing/archived
+   * row returns null fields; it cannot authorize a claim. */
   acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow>
   /** CAS finalization (decision_required -> resuming): a slower duplicate
    * submission must never drag an already-completed run back to resuming.

@@ -30,6 +30,7 @@
   "include": [
     "app/**/*.ts",
     "app/**/*.tsx",
+    "agentcore/app/**/*.ts",
     "src/**/*.ts",
     "next.config.ts",
     ".next/types/**/*.ts",

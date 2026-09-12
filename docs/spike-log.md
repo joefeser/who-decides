@@ -596,3 +596,422 @@ UPSTREAM_CONTRACT_AMBIGUITY stop is lifted; its next step is repinning to
 this HACP main and running the digest-verified dual-review round it queued.
 The ladder's scorecard: two gaps, both caught at gates, zero improvised
 work, both resolved upstream by the standard's owners.
+
+## Day 8 — 2026-09-07: AC-3 and AC-4 merged — the unit's build is done
+
+AC-3 (host proxy, PR #27, 7815334) merged after four review rounds (14
+findings: wrong-run dispatch race, both stream shapes, the SDK package
+name 404 caught by CI, and the final pair — dispatch the AUTHORITATIVE
+STORED decision on every submit with duplicate-retry recovery). AC-4
+(agentcore scaffold, PR #28, 8368309) merged merge-ready-strict: the
+flash session read the actual zod schemas inside @aws/agentcore@0.28.1
+and corrected the packet twice (protocol not serverProtocol, entrypoint
+not entryPoint, no build command — validate is the local gate). agentcore
+validate returns Valid.
+
+The flash session's four AC-5 prerequisites (each with doc citations,
+deferred by disposition — src/ is frozen for AC-4):
+1. /ping returns {ok,...} not the documented {"status":"Healthy"} — align
+   before first deploy.
+2. CodeZip/esbuild will likely fail on better-sqlite3's native addon —
+   externals, restructure, or Container build.
+3. server.ts reads fixtures/patch-scenario.json from CWD at import — won't
+   exist in the zip.
+4. Replace the placeholder account ID (000000000000).
+
+Unit state: dev-agentcore has AC-1 through AC-4. Remaining: AC-5 (Joe:
+IAM + first deploy, now with the four named prerequisites), AC-6 (gated
+live test + PROVISION half), then the one final PR to main.
+
+## Day 8 addendum — WITS architecture gate merged; critical path now HACP #54
+
+WITS PR #1365 (the interworking spec, post-#48/#51 repin and dual review)
+merged to WITS dev at 20ed2b2. The architecture gate is complete; runtime
+implementation (Tasks 1.0–1.7) is explicitly HELD pending:
+1. HACP #54 publishes the external/supplementary bundle admission schema
+   (the cross-validation entry point for a second implementation's fixtures)
+2. WITS repins the package
+3. Joe authorizes Tasks 1.0–1.7
+4. WITS produces independent fixtures → cross-validated through HACP
+
+This ordering (schema before implementation) avoids building WITS twice
+against a changing admission contract — the same spec-follows-proof
+discipline that produced the who-decides evidence chain. WITS #1366 tracks
+post-candidate production hardening separately.
+
+All three repos' boards are now clean dependencies:
+- who-decides: AC-5 (Joe) → AC-6 → final unit PR
+- HACP: #54 (the ladder's current rung) + #52 (no-decision identity, later)
+- WITS: waiting on #54, then Joe's authorization
+
+## Day 8 addendum 2 — AGENT DEPLOYED ON AWS (AC-5 deploy complete)
+
+The AgentCore runtime deployed successfully at 2026-09-07T22:12 UTC:
+- Runtime: whoDecides_who_decides_agent-1mF5fr45DG
+- ARN: arn:aws:bedrock-agentcore:us-east-1:937830454526:runtime/whoDecides_who_decides_agent-1mF5fr45DG
+- Stack: AgentCore-whoDecides-who-decides-dev
+- Execution role: AgentCore-whoDecides-who--ApplicationAgentWhoDecide-ZOJtpf1P647v
+
+The path there (3 deploy failures, each with a real lesson):
+1. CDK project not found — AC-4 scaffolded config but not the CDK infra;
+   fixed by generating the cdk/ tree via agentcore create --no-agent.
+2. Broken node_modules bin links from the copy — fixed with a clean
+   npm install.
+3. Entrypoint validation: the AgentCore API rejects .ts entrypoints for
+   NODE_22 runtime — compiled main.ts to a bundled main.js via esbuild
+   (359KB CJS, native addons external). The CLI validates .ts but the
+   API validates .js; the config now names the compiled output.
+
+Remaining for AC-5: attach PowerUserAccess (done), verify the runtime
+responds (invoke test), capture the endpoint for the console's
+WD_AGENTCORE_ENDPOINT env var.
+
+## Day 8 addendum 3 — state-loss recovery + deploy prerequisites (2026-09-07)
+
+After the successful deploy, `invoke` failed with `State config file not
+found`: the post-deploy cleanup commit (763e888) gitignored
+`agentcore/.cli/` as "build/cache dirs" and the cleanup deleted
+`deployed-state.json` — which is the deployment record, not cache.
+
+Lessons, all verified live:
+1. `agentcore deploy` hard-requires `uv` (brew install uv); the dependency
+   check is unconditional on @aws/agentcore 0.28.1, no skip flag.
+2. Recovery for lost state is a plain re-run of `npx agentcore deploy`:
+   CDK adopted the existing runtime in place (runtime ID
+   whoDecides_who_decides_agent-1mF5fr45DG unchanged) and rewrote the
+   state file.
+3. `agentcore import runtime` is NOT a recovery path here — it refuses
+   because `agentcore.json` already declares `who_decides_agent`, and
+   add/remove have no runtime subcommand. Raw `cdk deploy` updates AWS
+   but never writes the state file.
+4. `agentcore status --runtime-id <id>` works without local state and is
+   the fastest way to confirm a runtime is live.
+
+DEPLOY-CHECKLIST.md restructured around these (prerequisites, deploy
+sequence, recovery, resolved blockers). aws-targets.json
+REPLACE_BEFORE_DEPLOY warning retired — account verified live.
+
+## Day 8 addendum 4 — first invoke: two boot crashes behind "deploy complete"
+
+The first real invoke (22:36 UTC) returned "Runtime initialization time
+exceeded" — AgentCore's 30s init window expired because the Node process
+crashed before binding 8080. CloudWatch logs showed the true error; the
+init-timeout message alone hides it. Lesson: read runtime logs on any
+invoke failure before touching config.
+
+Crash 1 (FIXED): `src/artifacts/schemas.ts` read the seven vendored HACP
+schema JSONs via cwd-relative `readFileSync` at module load. The CodeZip
+ships only the esbuild bundle — no payload files — so under `/var/task`
+boot hit ENOENT. Fix: static JSON imports (esbuild inlines them), the same
+pattern `agent-service/fixture.ts` already used for patch-scenario.json.
+Verified: tsc clean; test:artifacts 8/8, test:agent-service 5/5,
+test:local-owner 46/46.
+
+Crash 2 (OPEN, decision needed; resolved the same evening by the container
+repair — see Day 9): the boot graph imports better-sqlite3 at
+module load (`agent-core/phases.ts:25` → `consumption/store.ts:14`,
+`store-admission.ts` same chain). The native addon cannot ship in a
+CodeZip and the CLI has no externals field — this was checklist blocker
+"better-sqlite3 cannot ship in a CodeZip", never actually resolved; the
+17:12 "deploy complete" proved packaging only. Remedies for Joe:
+(a) Container build — the original fallback, no governed-code changes;
+(b) port the claim store to node:sqlite (available unflagged on the
+runtime's Node 22.23) — stays CodeZip but swaps the engine under the
+hardened admission contract, so it warrants dual review.
+
+Also open: the runtime env carries no `WD_MACHINE_TOKEN_HASH`, so once the
+runtime boots, invocations still fail closed with 503 MACHINE_AUTH_DISABLED
+until the secret-injection mechanism is chosen (`.env.local.example`:
+never in git). The start-of-session dev token's sha256 is the intended
+value once a mechanism exists.
+
+## Day 9 — 2026-09-08: Codex container repair (AC-5 repackage) + stash recovery
+
+Joe chose the container path. Codex's repair commit 8056d0b repackaged the
+agent as a Node 22 linux/arm64 container (agentcore/Dockerfile) with
+better-sqlite3's native addon inside the image — Crash 2 above is resolved
+by that choice, not by a node:sqlite port. The same commit fixed live
+dispatch/decision binding (runs resume only their own confirmed decision),
+the `app/api/*` live-mode routes, and added regression coverage including
+`src/server/live-dispatch.test.ts`.
+
+Local gates passed after the repair: 122 unit tests, 50 Postgres tests,
+tsc, next build, `agentcore validate`, and an ARM64 container smoke that
+boots the image and loads native SQLite. These prove the artifact, not the
+deployment: AC-6 still needs the repaired image deployed, the runtime env
+carrying `WD_MACHINE_TOKEN_HASH`, and a real A→human decision→B cycle.
+
+Stash recovery: this session's IDE rebase autostash (recovered as
+e1ca26ed after deletion) held addenda 3 and 4 above plus schema-JSON
+imports, the live account ID, and a checklist restructure. The schema and
+account changes were already incorporated by 8056d0b verbatim; the
+checklist restructure was superseded by 8056d0b's rewrite (which keeps the
+uv prerequisite, the `.cli/` state warning, and the honest
+"READY ≠ working invocation" gate). Only the two addenda were missing and
+are restored above, with Crash 2's status annotated.
+
+## Day 9 addendum — deployed runtime verified still broken (2026-09-08)
+
+With the AWS session restored, the live prerequisites were verified
+read-only against the control plane and CloudWatch:
+
+- Runtime `whoDecides_who_decides_agent-1mF5fr45DG` is READY, but its
+  artifact is still the pre-repair CodeZip: S3 CDK asset
+  `cd2ccbcf…zip` (hash-identical to the local pre-repair
+  `agentcore/cdk/cdk.out` asset), entryPoint `main.js`,
+  `lastUpdatedAt 2026-09-07T22:13:36Z` — before the repair commit
+  (2026-09-08T02:23Z). The repaired container is NOT deployed.
+- The newest CloudWatch boot attempt still crashes with addendum 4's
+  Crash 1 verbatim: `ENOENT /var/task/schemas/hacp/v0.1-draft/
+  task-packet.schema.json` under `/var/task`. Any invoke today burns
+  the 30s init window; READY is proof of nothing.
+- Runtime `environmentVariables` carry only WD_AGENT_DATA_DIR,
+  WD_AGENT_PORT, WD_PROVIDER — no `WD_MACHINE_TOKEN_HASH`, so even a
+  healthy boot would fail every invocation closed with
+  `MACHINE_AUTH_DISABLED`.
+- The account session (root-equivalent) covers the manual gate's AWS
+  permissions. The EC2 console host's env (`WD_AGENTCORE_ENDPOINT`,
+  `WD_MACHINE_TOKEN`) is not verifiable from a laptop and remains
+  Joe's on-host check.
+
+Blockers to a real AC-6 cycle, in order: (1) owner decision on the
+`WD_MACHINE_TOKEN_HASH` injection mechanism, (2) authorized redeploy of
+the repaired container (`deploy --dry-run` diff review first), (3) console
+host env config, (4) `npm run test:agentcore-live` from a credentialed
+host.
+
+## Day 9 addendum 2 — synth recursion found and fixed; dry-run clean (2026-09-08)
+
+Joe decided blocker (1): the hash is installed **post-deploy** via
+`aws bedrock-agentcore-control update-agent-runtime --environment-variables`
+(no secret in tracked config; must be re-applied after every deploy
+because a tracked-config deploy drops it — checklist step 3 records this).
+
+Then the authorized `deploy --dry-run` failed: CDK synth died with
+ENAMETOOLONG. Root cause: the container source asset stages the repo-root
+build context into `cdk.out/asset.<hash>`, and `ContainerSourceAsset`
+appends force-keep patterns for the Dockerfile's ancestor directories
+AFTER the user `.dockerignore` — with `agentcore/Dockerfile`, the
+`!agentcore` ancestor negation re-included the `agentcore` subtree in
+CDK's DOCKER ignore matcher, so the staging swept `agentcore/cdk/cdk.out`
+into itself and nested until paths overflowed (one synth run went 8+ deep;
+the old cdk.out had accumulated 9 levels / 2.3 GB). Fix: move the
+Dockerfile to the context root (`agentcore.json` `dockerfile: "Dockerfile"`),
+so force-keep emits only `!Dockerfile` and the `agentcore/cdk` exclusion
+holds. After the move: clean cdk.out, `agentcore validate` Valid, dry-run
+and `--diff` both green.
+
+Diff review (read-only): the CodeZip → Container move updates
+`AWS::BedrockAgentCore::Runtime` IN PLACE (`CodeConfiguration` →
+`ContainerConfiguration`, runtime ID unchanged, no replacement); all else
+is additive (ECR repo + KMS key, CodeBuild project, Lambda build trigger,
+ECR-pull/KMS-decrypt grants). Real deploy awaits Joe's authorization.
+
+## Day 9 addendum 3 — first container deploy failed + the replace fix (2026-09-08)
+
+Joe ran the real deploy (deploy-20260908-143109): 5m13s, FAILED, clean
+rollback (UPDATE_ROLLBACK_COMPLETE; the freshly created ECR/KMS/CodeBuild/
+IAM resources deleted; the old runtime untouched). The handler error:
+
+    Resource handler returned message: "Invalid request provided: Agent
+    artifact type cannot be updated" (HandlerErrorCode: InvalidRequest)
+
+on AWS::BedrockAgentCore::Runtime. Lesson, now proven by the service: the
+CDK `--diff` "[~] in-place update" was a fiction at the API level — the
+AgentCore control plane forbids changing an existing runtime's artifact
+type entirely. The runtime resource must be REPLACED.
+
+Fix in the vendored stack (agentcore/cdk/lib/cdk-stack.ts): after
+constructing AgentCoreApplication, every `aws_bedrockagentcore.CfnRuntime`
+gets `overrideLogicalId('AgentRuntimeContainer<index>')` — CloudFormation
+then creates the container runtime fresh and deletes the CodeZip one in a
+single deploy. Accepted consequence: the runtime ID and ARN change;
+WD_AGENTCORE_ENDPOINT must be updated wherever configured, and the
+checklist's hash-patch step no longer hardcodes an ID.
+
+Side effects of the failed attempt worth keeping: the CloudWatch log group
+`...-1mF5fr45DG-DEFAULT` survives with the boot-crash history; the runtime
+itself is unchanged (still READY, still the broken CodeZip), so a READY
+status still proves nothing; the console-side live-dispatch config was
+never set, so nothing downstream referenced the old runtime except this
+repo's docs.
+
+
+## Day 10 — 2026-09-09: AC-6 GATE GREEN — the live cycle is proven (6/6)
+
+The full path, with each deploy lesson in its place:
+
+1. PR #32 merged (63da7cd): typed rejections ride as HTTP 200 + ok:false.
+   The platform DROPS non-2xx bodies — gate round 1 falsified the
+   dispatcher's "platform delivers typed 409s" assumption (3 gate tests
+   failed on `no invocation envelope (Received error (409))` while every
+   200 path delivered full envelopes). The dispatcher also now surfaces
+   the envelope's typed status/reason instead of a generic
+   AGENT_REJECTED placeholder.
+2. Redeploy attempt 1 failed in CodeBuild: `node:22-bookworm-slim: 429
+   Too Many Requests` from Docker Hub — anonymous pull limits are per-IP,
+   and CodeBuild's shared IPs exhaust them intermittently (same
+   Dockerfile built fine the day before). PR #33 (2f469bc): base image
+   from public.ecr.aws; local ARM64 build + container smoke green.
+3. Redeploy 2: SUCCESS in ~3.5 min. Runtime
+   `whoDecides_who_decides_agent_container-dtvXkDG2Ps` READY, container
+   artifact (ECR image), version 4 → hash re-applied per checklist step
+   3 → version 5, hash-match verified. The deploy re-applies tracked env
+   vars WITHOUT the patched hash — the documented caveat, now observed
+   live twice. AWS login grants also kept expiring (~hourly); purely
+   operational.
+4. GATE (`npm run test:agentcore-live`, token sourced from a local
+   0600 file, never in chat/commands): **6/6 pass, 0 skipped, 26.8s**:
+   - phase A DECISION_REQUIRED (17.2s — cold container boot, clean)
+   - phase B COMPLETED with bound decision/invocation/receipt evidence
+     (2.2s; successor ≠ invocation A; effect authorizedBy joins all three)
+   - identical resume → DUPLICATE, same receipt, no new successor
+   - different choice → STATE_CONFLICT; rationale-only → STATE_CONFLICT;
+     original receipt unchanged after both
+   - rejection discipline on a fresh run: INVALID_CHOICE and
+     RATIONALE_REQUIRED are typed, consume nothing, and the run still
+     completes
+   - the main lifecycle runs through ConsoleEngine with real SQLite
+     stores: running → decision_required → completed, artifacts valid,
+     displayed effect cross-bound to the runtime effect, displayed
+     resume evidence from this run's live session
+
+Deployed revision: merged dev-agentcore 2f469bc (Dockerfile ECR Public
+base) as image `whodecides/who_decides_agent:3bac0f0b…`; runtime ID/ARN
+changed from the retired CodeZip runtime exactly as the control plane's
+artifact-type immutability forced.
+
+Honest residuals: the browser-level hosted console UI was not exercised —
+the gate drives ConsoleEngine (the same engine `app/api/*` uses) with
+real stores on this host; the public EC2 host remains unconfigured.
+Machine-auth 401/503 bodies are dropped by the platform too, so auth
+failures surface as opaque transport errors (fail-closed; acceptable for
+a failure path). The gate passing is AC-6 engine evidence; closing the
+board item remains the owner's call.
+
+## Day 8 addendum 3 — state-loss recovery + deploy prerequisites (2026-09-07)
+
+After the successful deploy, `invoke` failed with `State config file not
+found`: the post-deploy cleanup commit (763e888) gitignored
+`agentcore/.cli/` as "build/cache dirs" and the cleanup deleted
+`deployed-state.json` — which is the deployment record, not cache.
+
+Lessons, all verified live:
+1. `agentcore deploy` hard-requires `uv` (brew install uv); the dependency
+   check is unconditional on @aws/agentcore 0.28.1, no skip flag.
+2. Recovery for lost state is a plain re-run of `npx agentcore deploy`:
+   CDK adopted the existing runtime in place (runtime ID
+   whoDecides_who_decides_agent-1mF5fr45DG unchanged) and rewrote the
+   state file.
+3. `agentcore import runtime` is NOT a recovery path here — it refuses
+   because `agentcore.json` already declares `who_decides_agent`, and
+   add/remove have no runtime subcommand. Raw `cdk deploy` updates AWS
+   but never writes the state file.
+4. `agentcore status --runtime-id <id>` works without local state and is
+   the fastest way to confirm a runtime is live.
+
+DEPLOY-CHECKLIST.md restructured around these (prerequisites, deploy
+sequence, recovery, resolved blockers). aws-targets.json
+REPLACE_BEFORE_DEPLOY warning retired — account verified live.
+
+## Day 8 addendum 4 — first invoke: two boot crashes behind "deploy complete"
+
+The first real invoke (22:36 UTC) returned "Runtime initialization time
+exceeded" — AgentCore's 30s init window expired because the Node process
+crashed before binding 8080. CloudWatch logs showed the true error; the
+init-timeout message alone hides it. Lesson: read runtime logs on any
+invoke failure before touching config.
+
+Crash 1 (FIXED): `src/artifacts/schemas.ts` read the seven vendored HACP
+schema JSONs via cwd-relative `readFileSync` at module load. The CodeZip
+ships only the esbuild bundle — no payload files — so under `/var/task`
+boot hit ENOENT. Fix: static JSON imports (esbuild inlines them), the same
+pattern `agent-service/fixture.ts` already used for patch-scenario.json.
+Verified: tsc clean; test:artifacts 8/8, test:agent-service 5/5,
+test:local-owner 46/46.
+
+Crash 2 (OPEN, decision needed): the boot graph imports better-sqlite3 at
+module load (`agent-core/phases.ts:25` → `consumption/store.ts:14`,
+`store-admission.ts` same chain). The native addon cannot ship in a
+CodeZip and the CLI has no externals field — this was checklist blocker
+"better-sqlite3 cannot ship in a CodeZip", never actually resolved; the
+17:12 "deploy complete" proved packaging only. Remedies for Joe:
+(a) Container build — the original fallback, no governed-code changes;
+(b) port the claim store to node:sqlite (available unflagged on the
+runtime's Node 22.23) — stays CodeZip but swaps the engine under the
+hardened admission contract, so it warrants dual review.
+
+Also open: the runtime env carries no `WD_MACHINE_TOKEN_HASH`, so once the
+runtime boots, invocations still fail closed with 503 MACHINE_AUTH_DISABLED
+until the secret-injection mechanism is chosen (`.env.local.example`:
+never in git). The start-of-session dev token's sha256 is the intended
+value once a mechanism exists.
+
+## Day 12 — 2026-09-12: PR #35 review triage — two real wedges patched
+
+Qodo's review of the final unit PR surfaced four findings; triaged against
+live code before the owner merge decision (Sourcery skipped: diff over its
+300k-char limit):
+
+1. **Stuck `resuming` after remote-confirm (patched — real).** The
+   elapsed-time sweep explicitly skips `execution_mode = 'agentcore'`
+   (state.ts advancePhases), so a crash or local persistence failure after
+   the runtime confirmed the resume — but before local finalize — left the
+   run in `resuming` forever: resubmission returned
+   `AGENT_RESUME_IN_PROGRESS`, reset threw `DECISION_IN_PROGRESS`, no new
+   runs could start. The confirmed `agent-resume` dispatch artifact (stored
+   before the effect write) is now repair evidence: the same submission
+   falls through, replays the claim, rebuilds the deterministic artifacts,
+   and wins the `resuming → completed` CAS — no redispatch, no new
+   successor. Mid-demo crash recovery no longer needs DB surgery.
+2. **Console-vs-runtime successor IDs (dispositioned — by design).** The
+   console's effect receipt cites the console's reserved claim successor;
+   the runtime's spine uses its own invocation IDs. Two spines, joined by
+   the run tag in the runtime decision ID and the stored dispatch
+   envelopes. Unifying them (Qodo's suggested fix) would change the
+   service contract mid-unit; documented in README demo boundaries
+   instead.
+3. **Terminal claim rejection wedge (patched — hard to reach, cheap to
+   close).** A rejected claim retained its intent with the run still
+   `decision_required`, wedging reset forever. Rejections are now parked
+   `blocked` (reset-archivable; intent and dispatch evidence retained).
+4. **Concurrent double-start race (dispositioned — cosmetic).** The loser
+   of the `running → starting` CAS can see a stale pre-CAS state and get
+   an error instead of idempotent success; single-operator demo, retry
+   succeeds. Not patched at deadline.
+
+Local gates after the patch: all 9 suites **125/125** (two new regression
+tests in live-dispatch: repair-without-redispatch, claim-rejection parks
+blocked + reset recovers), `tsc --noEmit` clean.
+
+### Day 12 addendum — Codex round on the patched head: all three valid, patched
+
+Codex reviewed e99e6f2 and found the follow-on gaps in the same area
+(2×P1, 1×P2); all three were verified live and patched:
+
+1. **Completion acceptance didn't validate the returned effect (P1).**
+   The predicate checked status/decisionId/receiptId/invocationB only, so
+   a runtime reporting a foreign effect, a non-dry-run, or mismatched
+   authorization references would be accepted and the console would
+   synthesize its own local effect over it. The live gate's
+   `assertCompleted` predicate (effect === choice, dry-run,
+   noExternalMutationPerformed, authorizedBy joins) is now the
+   production acceptance rule; violations are typed rejections to
+   `blocked`.
+2. **No recovery when persisting the confirmation fails (P1).** The
+   repair key is the `agent-resume` artifact — if the write itself failed
+   (transient outage), the run wedged `resuming` with no artifact. Three
+   layers now: bounded retry on the confirmation write; a resuming run
+   with NO artifact is resettable (store-level rule, SQLite + Postgres);
+   and an in-memory in-flight registry keeps genuinely in-flight resumes
+   reset-proof (the pre-existing concurrency test caught the first
+   relaxation attempt over-reaching — reset during a held dispatch must
+   still throw).
+3. **Phase-A acceptance not bound to the run (P2).** Fixture matching
+   alone would open the human gate for a stale/malformed response;
+   `decisionId === decision-svc-<run>` and non-empty `invocationA` are
+   now required in the production predicate (the live gate already
+   asserted both).
+
+Gates: all 9 suites **129/129** (four new live-dispatch regression
+tests), `tsc --noEmit` clean.

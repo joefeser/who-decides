@@ -426,3 +426,16 @@ test('provisioning completion restarts the phase clock (review round 7)', async 
     await cleanup(dir, engine)
   }
 })
+
+test('reset cannot archive a decision whose durable intent is still being recorded', async () => {
+  const { engine, dir } = freshEngine()
+  try {
+    await runToDecision(engine, dir)
+    const runId = (await engine.getState()).runId
+    const store = (engine as unknown as { runs: import('./store/store').RunStore }).runs
+    const intent = await store.acquireDecisionIntent(runId, 'reserved-successor', JSON.stringify({ choice: 'defer' }))
+    assert.ok(intent.decision_json)
+    await assert.rejects(engine.reset(), /DECISION_IN_PROGRESS/)
+    assert.equal(Number((await store.getRunRow(runId))!.archived), 0)
+  } finally { await cleanup(dir, engine) }
+})

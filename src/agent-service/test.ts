@@ -6,15 +6,13 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Agent, InterruptResponseContent } from '@strands-agents/sdk'
-import { readFileSync as rf } from 'node:fs'
 import type { Scenario } from '../artifacts/build'
-import {} from './server'
+import { server } from './server'
+import { patchScenario } from './fixture'
 import { startPhase, resumePhase } from '../agent-core/phases'
 import type { ServiceContext } from '../agent-core/phases'
 
-const fixture: Scenario = JSON.parse(
-  rf(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-) as Scenario
+const fixture: Scenario = patchScenario
 
 /** Synthetic runtime: interrupt on A, endTurn on B, snapshot always fresh
  * (loadSnapshot is what phase B must call to reconstruct). */
@@ -91,7 +89,7 @@ test('phase B rejects invalid inputs and a competing claim fails closed', async 
     const done = await resumePhase(ctx, { tag: 'svc-bad', choice: 'defer', rationale: 'not now, revisit later' }, factory)
     assert.equal(done.status, 'COMPLETED')
     const conflict = await resumePhase(ctx, { tag: 'svc-bad', choice: 'create_draft_pr', rationale: 'changed' }, factory)
-    assert.equal(conflict.status, 'DUPLICATE')
+    assert.equal(conflict.status, 'STATE_CONFLICT')
 
     // Unknown tag
     const unknown = await resumePhase(ctx, { tag: 'never-started', choice: 'defer', rationale: 'x' }, factory)
@@ -131,6 +129,85 @@ test('HTTP surface: /ping health and /invocations routing with typed statuses', 
     assert.equal(state.choice, 'send_back')
     assert.equal(state.rationale, 'send it back', 'the recorded rationale is exactly what was submitted')
   } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('/ping returns the AgentCore health body ({"status":"Healthy"})', async () => {
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const port = (server.address() as { port: number }).port
+    const res = await fetch(`http://127.0.0.1:${port}/ping`)
+    assert.equal(res.status, 200)
+    const body = await res.json() as Record<string, unknown>
+    // The platform health check reads the status field (runtime HTTP contract)
+    assert.equal(body.status, 'Healthy')
+    assert.equal(body.service, 'who-decides-agent')
+  } finally {
+    server.closeIdleConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+test('scoped artifacts retain scenario meaning and receipt references join the saved stop', async () => {
+  const { ctx, dir } = freshContext()
+  try {
+    await startPhase(ctx, { tag: 'scope-proof' }, syntheticRuntime())
+    await resumePhase(ctx, { tag: 'scope-proof', choice: 'defer', rationale: 'keep original values' }, syntheticRuntime())
+    const read = (name: string) => JSON.parse(readFileSync(path.join(ctx.dataDir, 'runs/scope-proof', name), 'utf8'))
+    const packet = read('01-task-packet.json')
+    assert.equal(packet.created_by, fixture.human_operator)
+    assert.equal(packet.target_label, `dependency ${fixture.package}`)
+    assert.equal(read('05-consumption-receipt.json').decisionRequestId, read('03-stop-response.json').stop_id)
+    const scoped = (await import('../agent-core/phases')).scopedFixture(fixture, 'scope-proof')
+    assert.deepEqual(scoped.decision_request, fixture.decision_request)
+    assert.equal(scoped.to_version, fixture.to_version)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('HTTP invocations enforce body credentials and conflicting resumes fail', async () => {
+  const { createAgentServer } = await import('./server')
+  const { createMachineAuth } = await import('./machine-auth')
+  const { createHash } = await import('node:crypto')
+  const { ctx, dir } = freshContext()
+  const token = 'synthetic-http-test-token'
+  const http = createAgentServer(ctx, createMachineAuth({ tokenHash: createHash('sha256').update(token).digest('hex') }), syntheticRuntime())
+  await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(http.address() as { port: number }).port}/invocations`
+  const invoke = (body: unknown) => fetch(url, { method: 'POST', body: JSON.stringify(body) })
+  try {
+    const missing = await invoke({ kind: 'decision-run', sessionId: 'http-proof' })
+    assert.equal(missing.status, 401)
+    assert.equal((await missing.json()).error, 'MACHINE_AUTH_REQUIRED')
+    const a = await invoke({ kind: 'decision-run', sessionId: 'http-proof', credential: token })
+    assert.equal(a.status, 200)
+    assert.equal((await a.json()).result.status, 'DECISION_REQUIRED')
+    const payload = { kind: 'decision-resume', sessionId: 'http-proof', credential: token, choice: 'defer', rationale: 'HTTP proof' }
+    const b = await invoke(payload)
+    assert.equal(b.status, 200)
+    assert.equal((await b.json()).result.status, 'COMPLETED')
+    assert.equal((await (await invoke(payload)).json()).result.status, 'DUPLICATE')
+    // Managed-runtime contract: typed rejections ride as HTTP 200 with
+    // ok:false — the platform drops non-2xx bodies, so a 409 would reach the
+    // caller as an opaque transport error with no typed status at all.
+    const conflict = await invoke({ ...payload, choice: 'create_draft_pr' })
+    assert.equal(conflict.status, 200)
+    const conflictBody = await conflict.json()
+    assert.equal(conflictBody.ok, false)
+    assert.equal(conflictBody.result.status, 'STATE_CONFLICT')
+
+    // Invalid choices reject typed on a fresh run without consuming it
+    await invoke({ kind: 'decision-run', sessionId: 'http-invalid', credential: token })
+    const invalid = await invoke({ kind: 'decision-resume', sessionId: 'http-invalid', credential: token, choice: 'ship_it', rationale: 'x' })
+    assert.equal(invalid.status, 200)
+    const invalidBody = await invalid.json()
+    assert.equal(invalidBody.ok, false)
+    assert.equal(invalidBody.result.status, 'INVALID_INPUT')
+    const after = await invoke({ kind: 'decision-resume', sessionId: 'http-invalid', credential: token, choice: 'defer', rationale: 'still completable' })
+    assert.equal((await after.json()).result.status, 'COMPLETED', 'a typed rejection must not consume the run')
+  } finally {
+    http.closeIdleConnections()
+    await new Promise<void>(resolve => http.close(() => resolve()))
     rmSync(dir, { recursive: true, force: true })
   }
 })

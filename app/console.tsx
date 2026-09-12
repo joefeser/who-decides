@@ -15,7 +15,7 @@ type Milestone = { label: string, detail: string, at: string }
 type ConsoleState = {
   schema: string
   runId: string
-  state: 'ready' | 'running' | 'decision_required' | 'resuming' | 'completed'
+  state: 'ready' | 'running' | 'decision_required' | 'resuming' | 'completed' | 'blocked'
   invocationA: string | null
   invocationB: string | null
   startedAt: string | null
@@ -35,10 +35,14 @@ type ConsoleState = {
   artifacts: Array<{ name: string, kind: string, valid: boolean }>
   heading: string
   subheading: string
+  agentDispatchError: string | null
+  executionMode: string
+  agent: { ok: boolean, error?: string, result?: { result?: { status?: string } } } | null
   authenticated: boolean
 }
 
 const STATE_TONE: Record<ConsoleState['state'], string> = {
+  blocked: 'border-red-700 bg-red-950/40',
   ready: 'border-slate-700 bg-slate-900/60',
   running: 'border-indigo-800 bg-indigo-950/40',
   decision_required: 'border-amber-600 bg-amber-950/30',
@@ -109,6 +113,7 @@ export default function Console() {
   const [choice, setChoice] = useState<string>('')
   const [rationale, setRationale] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [replaying, setReplaying] = useState(false)
   const choiceRef = useRef<HTMLFieldSetElement>(null)
@@ -124,6 +129,11 @@ export default function Console() {
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  useEffect(() => {
+    setChoice('')
+    setRationale('')
+  }, [state?.runId])
 
   // Watch mode is server-decided. While loading (state === null) the console
   // is conservatively read-only; the sign-in disclosure only renders once a
@@ -150,12 +160,18 @@ export default function Console() {
   }, [state?.state, state?.authenticated])
 
   async function startRun() {
+    if (starting) return
+    if (state?.agentDispatchError) { setError(state.agentDispatchError); return }
+    setStarting(true)
     setError(null)
     try {
-      await fetch('/api/run', { method: 'POST' })
+      const response = await fetch('/api/run', { method: 'POST' })
+      if (!response.ok) setError((await response.json()).error ?? 'RUN_FAILED')
       await refresh()
     } catch {
       setError('NETWORK_ERROR: could not reach the console server')
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -168,7 +184,7 @@ export default function Console() {
       const response = await fetch('/api/decision', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ choice, rationale, idempotencyKey: `console:${state?.runId}` }),
+        body: JSON.stringify({ runId: state?.runId, choice, rationale, idempotencyKey: `console:${state?.runId}` }),
       })
       if (!response.ok) {
         const body = await response.json().catch(() => ({ error: 'UNKNOWN' }))
@@ -179,6 +195,7 @@ export default function Console() {
           return
         }
         setError(body.error ?? 'UNKNOWN')
+        await refresh()
         return
       }
       await refresh()
@@ -192,7 +209,8 @@ export default function Console() {
   async function attemptDuplicate() {
     setReplaying(true)
     try {
-      await fetch('/api/replay', { method: 'POST' })
+      const response = await fetch('/api/replay', { method: 'POST' })
+      if (!response.ok) setError((await response.json()).error ?? 'PROBE_FAILED')
       await refresh()
     } catch {
       setError('NETWORK_ERROR: probe not recorded — check the server and retry')
@@ -202,7 +220,8 @@ export default function Console() {
   }
 
   async function resetConsole() {
-    await fetch('/api/state', { method: 'DELETE' }).catch(() => {})
+    const response = await fetch('/api/state', { method: 'DELETE' }).catch(() => null)
+    if (!response?.ok) { setError(response ? (await response.json()).error : 'RESET_NETWORK_ERROR'); return }
     setChoice('')
     setRationale('')
     await refresh()
@@ -244,9 +263,10 @@ export default function Console() {
             <>
               <button
                 onClick={startRun}
-                className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
+                disabled={starting}
+                className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Run the demo
+                {starting ? 'Starting…' : 'Run the demo'}
               </button>
               <p className="text-xs text-slate-500">
                 One click starts invocation A. It never preselects your decision.
@@ -268,6 +288,13 @@ export default function Console() {
             ))}
           </ol>
           {readOnly && watchNotice}
+        </div>
+      )}
+
+      {state.state === 'blocked' && (
+        <div className="space-y-3">
+          <p role="alert" className="text-red-300">{state.agent?.error ?? state.agent?.result?.result?.status ?? 'The live run could not be confirmed.'}</p>
+          {!readOnly && <button onClick={resetConsole} className="text-sm underline">Archive stopped run</button>}
         </div>
       )}
 
@@ -335,6 +362,10 @@ export default function Console() {
         </div>
       )}
 
+      {error && state.state !== 'decision_required' && <p role="alert" className="text-red-300">{error}</p>}
+      {state.agentDispatchError && <p role="alert" className="text-red-300">{state.agentDispatchError}</p>}
+      <p className="text-xs text-slate-500">{state.executionMode === 'agentcore' ? 'Live AgentCore run · fixture scenario · dry-run effects' : 'Deterministic demo · simulated preparation and verification'}</p>
+
       {state.state === 'completed' && (
         <div className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -357,7 +388,7 @@ export default function Console() {
           </div>
 
           <div>
-            <h3 className="mb-2 text-sm font-semibold text-slate-200">Typed artifacts — validated against HACP v0.1-draft</h3>
+            <h3 className="mb-2 text-sm font-semibold text-slate-200">Artifacts — HACP records and local execution receipts</h3>
             <ul className="flex flex-wrap gap-2">
               {state.artifacts.map(a => (
                 <li

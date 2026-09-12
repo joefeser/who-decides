@@ -18,7 +18,7 @@ import { Agent, InterruptResponseContent } from '@strands-agents/sdk'
 import type { Interrupt } from '@strands-agents/sdk'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
-  buildAgentReport,
+  buildAgentReport, scopeScenario as scopedFixture,
 } from '../artifacts/build'
 import type { Scenario } from '../artifacts/build'
 import { assertValid } from '../artifacts/schemas'
@@ -29,27 +29,7 @@ import { decisionTool, promptFor } from './tool'
 import { assertSafeSlug, mkdirDurable, reserveExclusive, saveRunState, syncDir, writeDurableJson } from './durable'
 import type { AgentRuntime, ResumeInput, ResumeOutput, RunState, StartInput, StartOutput } from './types'
 
-/** Returns a deep copy of the fixture with EVERY id-bearing field suffixed
- * with the run tag — one stamping point so packets, findings, stops,
- * decisions, and reports all join consistently within a run and never
- * collide across runs (review P1). The scopeKeys set covers primary ids
- * AND cross-references (packet_id/target_id/evidence_refs/report_id). */
-function scopedFixture(f: Scenario, tag: string): Scenario {
-  const scopeValue = (value: unknown): unknown => {
-    if (typeof value === 'string') return value.includes(tag) ? value : `${value}-${tag}`
-    if (Array.isArray(value)) return value.map(scopeValue)
-    if (value && typeof value === 'object') {
-      const out: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = ID_KEYS.has(k) && typeof v === 'string' ? `${v}-${tag}` : scopeValue(v)
-      }
-      return out
-    }
-    return value
-  }
-  return scopeValue(f) as Scenario
-}
-const ID_KEYS = new Set(['packet_id', 'target_id', 'stop_id', 'report_id', 'finding_id', 'finding_tradeoff_id', 'decision_id', 'run_id'])
+export { scopeScenario as scopedFixture } from '../artifacts/build'
 
 export type ServiceContext = {
   /** Root for all per-run state, snapshots, leases, artifacts. On the
@@ -186,6 +166,9 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
   const prior = loadServiceState(ctx, input.tag)
   if (!prior) return { status: 'INVALID_INPUT', reason: `no run started for tag ${input.tag}` }
   if (prior.phase === 'completed') {
+    if (prior.choice !== input.choice || prior.rationale !== input.rationale) {
+      return { status: 'STATE_CONFLICT', reason: 'completed run holds a different decision' }
+    }
     return { status: 'DUPLICATE', decisionId: prior.decisionId, receiptId: prior.receiptId }
   }
   if (prior.phase !== 'awaiting_decision') {
@@ -229,100 +212,98 @@ export async function resumePhase(ctx: ServiceContext, input: ResumeInput, runti
     chosenOption: state.choice,
     rationale: state.rationale,
     decidedAt: state.decidedAt,
-    decisionRequestId: f.stop_id,
+    decisionRequestId: scopedFixture(f, input.tag).stop_id,
     permittedAction: 'dry-run receipt for the approved branch (no external mutation)',
   }
   const store = new ConsumptionStore(ctx.claimDb)
-  const claim = store.claim(decisionRecord, state.invocationB, decisionDigest(decisionRecord))
-  if (claim.status === 'rejected') {
-    store.close()
-    const outcome = `DECISION_ALREADY_CLAIMED:${claim.reason} — ${claim.detail}`
-    saveRunState(stateFile(ctx, input.tag), { ...state, phase: 'rejected', outcome })
-    return { status: 'CLAIM_REJECTED', reason: outcome }
-  }
-  if (claim.status === 'replayed') {
-    store.close()
-    return { status: 'HUMAN_DECISION_REQUIRED', reason: 'existing claim does not authorize reexecution' }
-  }
+  try {
+    const claim = store.claim(decisionRecord, state.invocationB, decisionDigest(decisionRecord))
+    if (claim.status === 'rejected') {
+      const outcome = `DECISION_ALREADY_CLAIMED:${claim.reason} — ${claim.detail}`
+      saveRunState(stateFile(ctx, input.tag), { ...state, phase: 'rejected', outcome })
+      return { status: 'CLAIM_REJECTED', reason: outcome }
+    }
+    if (claim.status === 'replayed') {
+      return { status: 'HUMAN_DECISION_REQUIRED', reason: 'existing claim does not authorize reexecution' }
+    }
 
-  // ── Invocation B: reconstruct the agent from the snapshot, resume ───────
-  // A FRESH runtime is built and loaded from the persisted snapshot — this
-  // is the cross-instance resume the service exists to prove (a new
-  // microVM with the same session state behaves identically).
-  const snapshot = JSON.parse(readFileSync(snapshotFile(ctx, input.tag), 'utf8')) as Parameters<Agent['loadSnapshot']>[0]
-  const { agent } = runtimeFactory(f)
-  agent.loadSnapshot(snapshot)
-  const interruptId = interruptIdFromSnapshot(snapshot)
-  const resumed = await agent.invoke([
-    new InterruptResponseContent({ interruptId, response: { choice: state.choice, rationale: state.rationale } }),
-  ])
-  if (resumed.stopReason !== 'endTurn') {
-    store.close()
-    throw new Error(`INVARIANT: resume should end the turn, got ${resumed.stopReason}`)
-  }
+    // ── Invocation B: reconstruct the agent from the snapshot, resume ───────
+    // A FRESH runtime is built and loaded from the persisted snapshot — this
+    // is the cross-instance resume the service exists to prove (a new
+    // microVM with the same session state behaves identically).
+    const snapshot = JSON.parse(readFileSync(snapshotFile(ctx, input.tag), 'utf8')) as Parameters<Agent['loadSnapshot']>[0]
+    const { agent } = runtimeFactory(f)
+    agent.loadSnapshot(snapshot)
+    const interruptId = interruptIdFromSnapshot(snapshot)
+    const resumed = await agent.invoke([
+      new InterruptResponseContent({ interruptId, response: { choice: state.choice, rationale: state.rationale } }),
+    ])
+    if (resumed.stopReason !== 'endTurn') {
+      throw new Error(`INVARIANT: resume should end the turn, got ${resumed.stopReason}`)
+    }
 
-  // Live duplicate probe: a second successor must fail closed.
-  const imposter = `inv-${randomUUID()}`
-  const duplicate = store.claim(decisionRecord, imposter)
-  store.close()
-  if (duplicate.status !== 'rejected' || duplicate.reason !== 'competing_successor') {
-    throw new Error('INVARIANT: duplicate claim did not fail closed')
-  }
+    // Live duplicate probe: a second successor must fail closed.
+    const imposter = `inv-${randomUUID()}`
+    const duplicate = store.claim(decisionRecord, imposter)
+    if (duplicate.status !== 'rejected' || duplicate.reason !== 'competing_successor') {
+      throw new Error('INVARIANT: duplicate claim did not fail closed')
+    }
 
-  // ── Artifacts from runtime truth ─────────────────────────────────────────
-  const runtimeDecision = { decisionId: state.decisionId, choice: state.choice, rationale: state.rationale, decidedAt: state.decidedAt }
-  const sf = scopedFixture(f, input.tag)
-  const runtimeF = sf
-  // Hash the EXACT scoped stop bytes this run persisted (the writeJson
-  // helper uses the same 2-space serialization), so 04's evidence
-  // reference matches 03's bytes (review P1: rebuilding from the unsuffixed
-  // fixture produced a digest of bytes that were never written).
-  const persistedStop = readFileSync(path.join(runDir(ctx, input.tag), '03-stop-response.json'), 'utf8')
-  const evidenceDigest = createHash('sha256').update(persistedStop).digest('hex')
-  // Channel honesty (AC-2): when the resume arrived through the machine
-  // principal's verified service token, the artifact records the machine
-  // credential reference — never impersonating an operator session. When it
-  // did not (direct phase calls, tests), the artifact still says so plainly.
-  const humanDecision = buildHumanDecision(runtimeF, runtimeDecision, evidenceDigest, {
-    channel: (await import('../agent-service/machine-auth')).isAttestedMachinePrincipal(input.machinePrincipal)
-      ? {
-          interaction: 'api',
-          sessionReference: `machine:agentcore-runtime:${input.machinePrincipal!.credentialRef}`,
-          authEventRef: 'machine-service-token',
-        }
-      : {
-          interaction: 'api',
-          sessionReference: `agentcore-service:${input.tag}`,
-          authEventRef: 'unverified-direct-phase-call',
-        },
-  })
-  assertValid('human-decision', humanDecision)
+    // ── Artifacts from runtime truth ─────────────────────────────────────────
+    const runtimeDecision = { decisionId: state.decisionId, choice: state.choice, rationale: state.rationale, decidedAt: state.decidedAt }
+    const sf = scopedFixture(f, input.tag)
+    const runtimeF = sf
+    // Hash the EXACT scoped stop bytes this run persisted (the writeJson
+    // helper uses the same 2-space serialization), so 04's evidence
+    // reference matches 03's bytes (review P1: rebuilding from the unsuffixed
+    // fixture produced a digest of bytes that were never written).
+    const persistedStop = readFileSync(path.join(runDir(ctx, input.tag), '03-stop-response.json'), 'utf8')
+    const evidenceDigest = createHash('sha256').update(persistedStop).digest('hex')
+    // Channel honesty (AC-2): when the resume arrived through the machine
+    // principal's verified service token, the artifact records the machine
+    // credential reference — never impersonating an operator session. When it
+    // did not (direct phase calls, tests), the artifact still says so plainly.
+    const humanDecision = buildHumanDecision(runtimeF, runtimeDecision, evidenceDigest, {
+      channel: (await import('../agent-service/machine-auth')).isAttestedMachinePrincipal(input.machinePrincipal)
+        ? {
+            interaction: 'api',
+            sessionReference: `machine:agentcore-runtime:${input.machinePrincipal!.credentialRef}`,
+            authEventRef: 'machine-service-token',
+          }
+        : {
+            interaction: 'api',
+            sessionReference: `agentcore-service:${input.tag}`,
+            authEventRef: 'unverified-direct-phase-call',
+          },
+    })
+    assertValid('human-decision', humanDecision)
 
-  const effect = {
-    schema: 'who-decides.effect-receipt.v0',
-    effect: state.choice,
-    mode: 'dry-run',
-    exactPayload: state.choice === 'create_draft_pr'
-      ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, payloadSource: 'host-constructed from fixture (model output advisory only)' }
-      : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', payloadSource: 'host-constructed from fixture (model output advisory only)' },
-    noExternalMutationPerformed: true,
-    authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
-  }
-  const report = buildAgentReport(runtimeF, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
-  assertValid('agent-report', report)
+    const effect = {
+      schema: 'who-decides.effect-receipt.v0',
+      effect: state.choice,
+      mode: 'dry-run',
+      exactPayload: state.choice === 'create_draft_pr'
+        ? { repo: 'example/kestrel-app', title: `Security: ${f.package} ${f.to_version}`, branch: `security/${f.package}-${f.to_version}`, payloadSource: 'host-constructed from fixture (model output advisory only)' }
+        : { outcome: state.choice === 'send_back' ? 'no PR created — work returned' : 'nothing executed — deferred', payloadSource: 'host-constructed from fixture (model output advisory only)' },
+      noExternalMutationPerformed: true,
+      authorizedBy: { decisionId: state.decisionId, consumptionReceiptId: claim.receipt.receiptId, successorInvocationId: state.invocationB },
+    }
+    const report = buildAgentReport(runtimeF, runtimeDecision, claim.receipt.receiptId, claim.receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
+    assertValid('agent-report', report)
 
-  writeArtifact(ctx, input.tag, '04-human-decision.json', humanDecision)
-  writeArtifact(ctx, input.tag, '05-consumption-receipt.json', claim.receipt)
-  writeArtifact(ctx, input.tag, '06-effect-receipt.json', effect)
-  writeArtifact(ctx, input.tag, '07-agent-report.json', report)
-  writeArtifact(ctx, input.tag, '00-service-run-summary.json', {
-    tag: input.tag, decisionId: state.decisionId, invocationA: state.invocationA, invocationB: state.invocationB,
-    humanChoice: state.choice, receiptId: claim.receipt.receiptId, duplicateProbe: 'REJECTED (competing_successor)',
-  })
-  syncDir(runDir(ctx, input.tag))
-  saveRunState(stateFile(ctx, input.tag), { ...state, phase: 'completed', receiptId: claim.receipt.receiptId })
+    writeArtifact(ctx, input.tag, '04-human-decision.json', humanDecision)
+    writeArtifact(ctx, input.tag, '05-consumption-receipt.json', claim.receipt)
+    writeArtifact(ctx, input.tag, '06-effect-receipt.json', effect)
+    writeArtifact(ctx, input.tag, '07-agent-report.json', report)
+    writeArtifact(ctx, input.tag, '00-service-run-summary.json', {
+      tag: input.tag, decisionId: state.decisionId, invocationA: state.invocationA, invocationB: state.invocationB,
+      humanChoice: state.choice, receiptId: claim.receipt.receiptId, duplicateProbe: 'REJECTED (competing_successor)',
+    })
+    syncDir(runDir(ctx, input.tag))
+    saveRunState(stateFile(ctx, input.tag), { ...state, phase: 'completed', receiptId: claim.receipt.receiptId })
 
-  return { status: 'COMPLETED', decisionId: state.decisionId, invocationB: state.invocationB, receiptId: claim.receipt.receiptId, effect }
+    return { status: 'COMPLETED', decisionId: state.decisionId, invocationB: state.invocationB, receiptId: claim.receipt.receiptId, effect }
+  } finally { store.close() }
 }
 
 /** The interrupt id nested inside a session snapshot (the t2 spike lesson:

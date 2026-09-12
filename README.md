@@ -41,12 +41,16 @@ hackathon (AWS / Strands Agents SDK), September 2026. The core loop is proven:
 a real Strands agent on Bedrock stops at a typed decision request, resumes on
 a recorded human decision, and every artifact validates against the vendored
 HACP schemas. See [docs/roadmap.md](docs/roadmap.md) and
-[docs/spike-log.md](docs/spike-log.md) for evidence.
+[docs/spike-log.md](docs/spike-log.md) for evidence. The full build epic —
+every milestone from the governed design debate through the AgentCore
+deployment — is on the public
+[who-decides project board](https://github.com/users/joefeser/projects/1).
 
 ## Quickstart
 
 ```sh
-npm install
+nvm use   # Node 22, matching CI and the runtime image
+npm ci
 ```
 
 The decision console is deterministic and needs no model credentials. It
@@ -136,6 +140,54 @@ Pull requests are reviewed by Codex under the
 target `dev`; promotion to `main` is a separate human-mediated PR. Merge
 commits only, never squash. Qodo remains disabled.
 
+## How this was built
+
+The build is a human-gated multi-agent loop: implementation sessions do the
+work, independent bot and agent reviewers attack each PR, and the human
+owner triages, dispositions, and merges. Everything below is sourced from
+[docs/spike-log.md](docs/spike-log.md) — the day-by-day evidence record;
+claims without a recorded measurement are marked TODO rather than guessed.
+
+**Models (roles).** Bedrock `global.anthropic.claude-sonnet-4-6`
+(us-east-1) is the documented default agent model, adopted after a
+measured commit-or-pivot gate (spike-log Day 2b). An OpenAI-compatible
+endpoint (gpt-4o, smoke-tested Day 1) remains the escape hatch via
+`WD_PROVIDER=openai-compatible`. The decision console itself calls no
+model — it replays a fixture deterministically.
+
+**Prices (only what was measured).** The Day 2b gate recorded 7,206 input
+/ 2,152 output tokens ≈ **$0.054** per full run at the then-listed $3/$15
+per-million-token rates, against a $5 ceiling. The Day 4 end-to-end pass
+(both invocations, 5.6 s) was "in line with" that measurement; no exact
+figure was recorded for it. AgentCore Runtime was surveyed (Day 7) at
+$0.0895/vCPU-hour + $0.00945/GB-hour with a 128 MB floor. TODO: later
+passes recorded no per-run cost measurements, and total spend is not
+tracked in this repository.
+
+**Review claims (what actually converged).** Not every PR converged
+cleanly, and the log says so. Convergence examples with receipts: PR #1
+(console) — 11 bot findings triaged, 8 patched in the PR. PR #4 (live
+loop) — eleven review rounds across Codex/Qodo passes, including two
+reviews wrongly called clean before the real findings landed; the loop
+produced the claim-first restructure, durable crash recovery, and the
+no-takeover reservation posture. PR #13 (public demo) — 13 findings
+across three passes. PR #15 (Postgres adapters) — two Codex rounds plus
+an independent second-family pass, verified 88/88 SQLite + 49/49
+Postgres. AC-1 (agent service) — three review rounds. PR #10 merged only
+by explicit owner override after repeated rounds kept surfacing real
+findings — the ceiling on review is the human's, by design.
+
+**Deployed-agent evidence.** The AgentCore packaging repair (Node 22
+ARM64 container, native SQLite) is validated by local gates — unit
+suites, build, `agentcore validate`, and a container smoke test — and by
+the strict live gate. `npm run test:agentcore-live` (see
+[deploy/PROVISION.md](deploy/PROVISION.md) and
+[agentcore/DEPLOY-CHECKLIST.md](agentcore/DEPLOY-CHECKLIST.md)) ran
+against the deployed container runtime on 2026-09-09 and passed **6/6,
+0 skipped, 26.8 s** — a real A → human decision → B cycle through the
+production dispatcher and `ConsoleEngine`, plus duplicate/conflict/
+rejection discipline on typed dispatches (spike-log Day 10).
+
 ## Demo boundaries (honest scope)
 
 The decision console (`npm run console`, port 3100) is a **single-operator
@@ -152,6 +204,25 @@ demo with public watch mode**:
 - Public hosting requires HTTPS and the reverse proxy setup in
   [deploy/PROVISION.md](deploy/PROVISION.md). `npm run console` is the local
   development server; the hosted deployment uses a production build.
+- Preparation and verification are fixture simulations. Task-packet initial
+  approval hashes are illustrative, not signature verification. Runtime machine
+  authentication proves the relay credential, not an independently verified
+  human act; the console retains the originating operator-session decision.
+- Live mode uses both `WD_AGENTCORE_ENDPOINT` and `WD_MACHINE_TOKEN`. Live
+  runs advance only on confirmed AgentCore responses; failures stay visible.
+  Unset both variables and restart for deterministic mode. See
+  [the deployment checklist](agentcore/DEPLOY-CHECKLIST.md).
+- Live mode keeps **two artifact spines**: the console persists its own
+  decision → consumption-receipt → effect-receipt chain (whose
+  `successorInvocationId` is the console's reserved claim successor), while
+  the AgentCore runtime persists its own spine with its own invocation IDs.
+  The spines are joined by the run tag embedded in the runtime's decision ID
+  and by the full dispatch envelopes the console stores per invocation —
+  not by sharing one invocation ID space.
+- If a live resume is confirmed remotely but the console dies before
+  finalizing, resubmitting the same decision repairs the run idempotently
+  (no redispatch). A terminal claim rejection parks the run as `blocked`,
+  which reset may archive; audit artifacts are retained either way.
 - The prepared effect is always a **dry-run**: the exact payload is recorded and
   shown, and no external mutation is performed in any branch.
 - Resetting the console archives the current run; completed run records and

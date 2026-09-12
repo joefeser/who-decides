@@ -8,12 +8,11 @@
  * Start: WD_AGENT_DATA_DIR=/mnt/data/agent WD_AGENT_PORT=8080 npm run agent:start
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import type { Scenario } from '../artifacts/build'
 import { startPhase, resumePhase } from '../agent-core/phases'
 import { createMachineAuth, attestMachinePrincipal } from './machine-auth'
-import type { ServiceContext } from '../agent-core/phases'
+import { patchScenario } from './fixture'
+import type { ServiceContext, RuntimeFactory } from '../agent-core/phases'
 
 const PORT = Number(process.env.WD_AGENT_PORT ?? 8080)
 const DATA_DIR = process.env.WD_AGENT_DATA_DIR ?? path.resolve(process.cwd(), '.tmp/agent-service')
@@ -21,13 +20,7 @@ const DATA_DIR = process.env.WD_AGENT_DATA_DIR ?? path.resolve(process.cwd(), '.
 // configuration keeps claims with the run state they protect (review finding).
 const CLAIM_DB = process.env.WD_AGENT_CLAIM_DB ?? path.join(DATA_DIR, 'consumption.db')
 
-function loadFixture(): Scenario {
-  return JSON.parse(
-    readFileSync(path.resolve(process.cwd(), 'fixtures/patch-scenario.json'), 'utf8'),
-  ) as Scenario
-}
-
-const ctx: ServiceContext = { dataDir: DATA_DIR, claimDb: CLAIM_DB, fixture: loadFixture() }
+const ctx: ServiceContext = { dataDir: DATA_DIR, claimDb: CLAIM_DB, fixture: patchScenario }
 const machineAuth = createMachineAuth({ tokenHash: process.env.WD_MACHINE_TOKEN_HASH })
 
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -55,9 +48,12 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(bytes)
 }
 
-const server = createServer(async (req, res) => {
+export function createAgentServer(serviceContext: ServiceContext = ctx, machineAuthenticator = machineAuth, runtimeFactory?: RuntimeFactory) {
+return createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/ping') {
-    return send(res, 200, { ok: true, service: 'who-decides-agent', dataDir: DATA_DIR })
+    // AgentCore HTTP protocol contract: the platform health check reads the
+    // {"status":"Healthy"} body (spike-log Day 7; runtime-service-contract).
+    return send(res, 200, { status: 'Healthy', service: 'who-decides-agent', dataDir: serviceContext.dataDir })
   }
   if (req.method === 'POST' && req.url === '/invocations') {
     // Machine-principal gate (AC-2, review round-2 P1): the documented
@@ -75,8 +71,8 @@ const server = createServer(async (req, res) => {
     }
     const bodyCredential = typeof payload.credential === 'string' ? payload.credential : undefined
     const auth = bodyCredential !== undefined
-      ? machineAuth.authorizeCredential(bodyCredential)
-      : machineAuth.authorize(req as unknown as Request)
+      ? machineAuthenticator.authorizeCredential(bodyCredential)
+      : machineAuthenticator.authorize(req as unknown as Request)
     if (!auth.ok) {
       const status = auth.error === 'MACHINE_AUTH_REQUIRED' || auth.error === 'MACHINE_AUTH_INVALID' ? 401 : 503
       return send(res, status, { ok: false, error: auth.error })
@@ -90,15 +86,21 @@ const server = createServer(async (req, res) => {
     }
     try {
       if (kind === 'decision-run') {
-        const result = await startPhase(ctx, { tag })
-        return send(res, result.status === 'ENVIRONMENT_BLOCKED' || result.status === 'HUMAN_DECISION_REQUIRED' ? 409 : 200, { ok: true, result })
+        const result = await startPhase(serviceContext, { tag }, runtimeFactory)
+        // Managed-runtime contract (live-gate evidence, 2026-09-08): the
+        // AgentCore platform drops non-2xx bodies — a 409 arrives at the
+        // caller as an opaque transport error. Application-level outcomes
+        // therefore ride as HTTP 200 and the CALLER derives success from the
+        // envelope; ok mirrors the typed status.
+        const ok = result.status === 'DECISION_REQUIRED'
+        return send(res, 200, { ok, result })
       }
       if (kind === 'decision-resume') {
         const choice = typeof payload.choice === 'string' ? payload.choice : ''
         const rationale = typeof payload.rationale === 'string' ? payload.rationale : ''
-        const result = await resumePhase(ctx, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) })
-        const conflict = result.status === 'INVALID_INPUT' || result.status === 'STATE_CONFLICT' || result.status === 'CLAIM_REJECTED'
-        return send(res, conflict ? 409 : 200, { ok: !conflict, result })
+        const result = await resumePhase(serviceContext, { tag, choice, rationale, machinePrincipal: attestMachinePrincipal(auth) }, runtimeFactory)
+        const ok = result.status === 'COMPLETED' || result.status === 'DUPLICATE'
+        return send(res, 200, { ok, result })
       }
       return send(res, 400, { ok: false, error: `UNKNOWN_KIND:${String(kind)}` })
     } catch (err) {
@@ -107,6 +109,9 @@ const server = createServer(async (req, res) => {
   }
   return send(res, 404, { ok: false, error: 'NOT_FOUND' })
 })
+}
+
+const server = createAgentServer()
 
 // The listener starts ONLY when run directly as the service entry point —
 // never when the module is imported (tests, future host embedding). This

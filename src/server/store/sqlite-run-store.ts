@@ -55,6 +55,7 @@ export class SqliteRunStore implements RunStore {
         PRIMARY KEY (run_id, name)
       );
     `)
+    try { this.db.exec("ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'deterministic'") } catch { /* column exists */ }
     // Pre-column databases (dev .tmp): add the columns in place.
     try { this.db.exec("ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
     try { this.db.exec("ALTER TABLE artifacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
@@ -68,17 +69,17 @@ export class SqliteRunStore implements RunStore {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existing = this.db
-        .prepare('SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
+        .prepare('SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
         .get(tenantId) as RunRow | undefined
       if (existing && existing.state !== 'completed') {
         this.db.exec('COMMIT')
         return existing
       }
       this.db
-        .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson)
+        .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic')
       this.db.exec('COMMIT')
-      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt }
+      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic' }
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err
@@ -89,13 +90,17 @@ export class SqliteRunStore implements RunStore {
     // Atomic first-writer-wins, synchronous body (see file header).
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const existing = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ?').get(runId) as DecisionIntentRow | undefined
-      if (existing?.decision_json) {
+      const existing = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ? AND archived = 0').get(runId) as DecisionIntentRow | undefined
+      if (!existing) {
+        this.db.exec('COMMIT')
+        return { decision_json: null, invocation_b: null }
+      }
+      if (existing.decision_json) {
         this.db.exec('COMMIT')
         return existing
       }
       this.db
-        .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL')
+        .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL AND archived = 0')
         .run(invocationB, decisionJson, runId)
       this.db.exec('COMMIT')
       return { decision_json: decisionJson, invocation_b: invocationB }
@@ -107,14 +112,14 @@ export class SqliteRunStore implements RunStore {
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {
     return this.db
-      .prepare('SELECT id, state, phase_changed_at FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
+      .prepare('SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
       .get(tenantId) as RunRow | undefined
   }
 
   async insertRun(run: NewRun): Promise<void> {
     this.db
-      .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson)
+      .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic')
   }
 
   async markProvisioned(runId: string): Promise<boolean> {
@@ -144,8 +149,8 @@ export class SqliteRunStore implements RunStore {
 
   async finalizeDecision(runId: string, expectedState: string, state: string, phaseChangedAt: string, receiptJson: string, effectJson: string): Promise<boolean> {
     const result = this.db
-      .prepare('UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ? WHERE id = ? AND state = ? AND archived = 0')
-      .run(state, phaseChangedAt, receiptJson, effectJson, runId, expectedState)
+      .prepare("UPDATE runs SET state = ?, phase_changed_at = ?, receipt_json = ?, effect_json = ?, completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END WHERE id = ? AND state = ? AND archived = 0")
+      .run(state, phaseChangedAt, receiptJson, effectJson, state, phaseChangedAt, runId, expectedState)
     return result.changes > 0
   }
 
@@ -179,7 +184,16 @@ export class SqliteRunStore implements RunStore {
   }
 
   async archiveTenantRuns(tenantId: string): Promise<void> {
-    this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
+    this.db.transaction(() => {
+      // A resuming AgentCore run blocks reset only while its confirmation
+      // artifact exists: a run stuck resuming with NO agent-resume artifact
+      // (dispatch hung, or the confirmation could not be persisted through
+      // a sustained outage) has no repair evidence — reset is its only
+      // recovery, and keeping it blocked forever wedges the console.
+      const pending = this.db.prepare("SELECT 1 FROM runs WHERE tenant_id = ? AND archived = 0 AND decision_json IS NOT NULL AND (state = 'decision_required' OR (state = 'resuming' AND execution_mode = 'agentcore' AND EXISTS (SELECT 1 FROM artifacts WHERE run_id = runs.id AND name = 'agent-resume')))").get(tenantId)
+      if (pending) throw new Error('DECISION_IN_PROGRESS')
+      this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
+    }).immediate()
   }
 
   async retractProvisioningRun(runId: string): Promise<boolean> {

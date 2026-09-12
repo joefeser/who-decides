@@ -1,13 +1,22 @@
 /* HACP v0.1-draft artifact validation. Schemas are vendored under
  * schemas/hacp/v0.1-draft/ (Apache-2.0, from github.com/joefeser/hacp —
  * see docs/disclosure.md). Every artifact the demo emits is validated
- * against the real upstream contract before it counts. */
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
+ * against the real upstream contract before it counts.
+ *
+ * Like fixtures/patch-scenario.json (agent-service/fixture.ts), the schema
+ * JSON is imported directly so esbuild inlines it into the AgentCore
+ * CodeZip bundle — the packager ships only the bundle, and a
+ * cwd-relative readFileSync crashed the runtime at boot (/var/task has no
+ * schemas/ directory; spike-log Day 8 addendum 4). */
 import Ajv2020 from 'ajv/dist/2020'
 import addFormats from 'ajv-formats'
-
-export const SCHEMA_DIR = path.resolve(process.cwd(), 'schemas/hacp/v0.1-draft')
+import commonDefsJson from '../../schemas/hacp/v0.1-draft/common-defs.schema.json'
+import taskPacketJson from '../../schemas/hacp/v0.1-draft/task-packet.schema.json'
+import humanDecisionJson from '../../schemas/hacp/v0.1-draft/human-decision.schema.json'
+import agentReportJson from '../../schemas/hacp/v0.1-draft/agent-report.schema.json'
+import reviewFindingJson from '../../schemas/hacp/v0.1-draft/review-finding.schema.json'
+import stopResponseJson from '../../schemas/hacp/v0.1-draft/stop-response.schema.json'
+import evidenceSetJson from '../../schemas/hacp/v0.1-draft/evidence-set.schema.json'
 
 export type ArtifactKind =
   | 'task-packet'
@@ -20,30 +29,28 @@ export type ArtifactKind =
 const ajv = new Ajv2020({ allErrors: true, strict: false })
 addFormats(ajv)
 
-const SCHEMA_FILES: Record<ArtifactKind, string> = {
-  'task-packet': 'task-packet.schema.json',
-  'human-decision': 'human-decision.schema.json',
-  'agent-report': 'agent-report.schema.json',
-  'review-finding': 'review-finding.schema.json',
-  'stop-response': 'stop-response.schema.json',
-  'evidence-set': 'evidence-set.schema.json',
+type SchemaObject = { $id: string } & Record<string, unknown>
+
+const SCHEMAS: Record<ArtifactKind, SchemaObject> = {
+  'task-packet': taskPacketJson as SchemaObject,
+  'human-decision': humanDecisionJson as SchemaObject,
+  'agent-report': agentReportJson as SchemaObject,
+  'review-finding': reviewFindingJson as SchemaObject,
+  'stop-response': stopResponseJson as SchemaObject,
+  'evidence-set': evidenceSetJson as SchemaObject,
 }
 
 // Register shared schemas (common-defs + every artifact family) under their
 // declared $id so cross-refs resolve; validators compile by $ref.
-for (const file of Object.values(SCHEMA_FILES).concat('common-defs.schema.json')) {
-  const schema = JSON.parse(readFileSync(path.join(SCHEMA_DIR, file), 'utf8'))
-  const id = schema.$id as string
-  if (!ajv.getSchema(id)) ajv.addSchema(schema)
+for (const schema of [...Object.values(SCHEMAS), commonDefsJson as SchemaObject]) {
+  if (!ajv.getSchema(schema.$id)) ajv.addSchema(schema)
 }
 
-const validators = new Map<ArtifactKind, ReturnType<typeof ajv.compile>>()
-for (const [kind, file] of Object.entries(SCHEMA_FILES) as Array<[ArtifactKind, string]>) {
-  const schema = JSON.parse(readFileSync(path.join(SCHEMA_DIR, file), 'utf8'))
-  const id = schema.$id as string
-  if (!ajv.getSchema(id)) ajv.addSchema(schema)
-  validators.set(kind, ajv.compile({ $ref: id }))
-}
+const validators = new Map<ArtifactKind, ReturnType<typeof ajv.compile>>(
+  (Object.entries(SCHEMAS) as Array<[ArtifactKind, SchemaObject]>).map(
+    ([kind, schema]) => [kind, ajv.compile({ $ref: schema.$id })],
+  ),
+)
 
 export type ValidationResult =
   | { valid: true, kind: ArtifactKind }

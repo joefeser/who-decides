@@ -13,6 +13,8 @@ out/
 .env
 .env.*
 !.env.example
+# agentcore local-secrets template is committed; agentcore/.env.local stays ignored
+!agentcore/.env.local.example
 
 # logs
 npm-debug.log*
@@ -39,3 +41,6 @@ next-env.d.ts
 # supersedes the broader .agent-control/ rule — keep only this narrow one)
 .agent-control/tmp/
 .agent-control/pr-loop-handoffs/
+agentcore/cdk/node_modules/
+agentcore/.cache/
+agentcore/.cli/

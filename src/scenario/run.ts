@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   }
   // Real digest (raw hex; the builder adds the sha256: prefix) of the
   // invocation-A evidence the decision responds to.
-  const evidenceDigest = createHash('sha256').update(JSON.stringify(stop)).digest('hex')
+  const evidenceDigest = createHash('sha256').update(JSON.stringify(stop, null, 2)).digest('hex')
   const humanDecision = buildHumanDecision(s, runtimeDecision, evidenceDigest)
   assertValid('human-decision', humanDecision)
   artifacts.push({ name: 'human-decision', kind: 'human-decision', artifact: humanDecision })
@@ -88,20 +88,20 @@ async function main(): Promise<void> {
   // 4 — dry-run effect receipt (the effect; no external mutation).
   const dryRunEffect = {
     schema: 'who-decides.effect-receipt.v0',
-    effect: 'create_draft_pr',
+    effect: s.human_choice.decision,
     mode: 'dry-run',
-    exactPayload: {
+    exactPayload: s.human_choice.decision === 'create_draft_pr' ? {
       repo: 'example/kestrel-app',
       title: `Security: ${s.package} ${s.to_version}`,
       body: `${s.advisory}\n\nRuntime floor moves ${s.tradeoff.from} → ${s.tradeoff.to}. ${s.tradeoff.who_is_affected}.`,
       branch: `security/${s.package}-${s.to_version}`,
-    },
+    } : { outcome: s.human_choice.decision === 'send_back' ? 'work returned; no PR created' : 'deferred; nothing executed' },
     noExternalMutationPerformed: true,
     authorizedBy: { decisionId: s.decision_id, consumptionReceiptId: receipt.receiptId, successorInvocationId: invocationB },
   }
 
   // 5 — the agent report correlates decision → outcome.
-  const report = buildAgentReport(s, runtimeDecision, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''))
+  const report = buildAgentReport(s, runtimeDecision, receipt.receiptId, receipt.decisionDigest.replace('sha256:', ''), { simulatedWorkspace: true })
   assertValid('agent-report', report)
   artifacts.push({ name: 'agent-report', kind: 'agent-report', artifact: report })
 
