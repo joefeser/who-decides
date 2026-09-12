@@ -113,6 +113,7 @@ export default function Console() {
   const [choice, setChoice] = useState<string>('')
   const [rationale, setRationale] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [replaying, setReplaying] = useState(false)
   const choiceRef = useRef<HTMLFieldSetElement>(null)
@@ -159,7 +160,9 @@ export default function Console() {
   }, [state?.state, state?.authenticated])
 
   async function startRun() {
+    if (starting) return
     if (state?.agentDispatchError) { setError(state.agentDispatchError); return }
+    setStarting(true)
     setError(null)
     try {
       const response = await fetch('/api/run', { method: 'POST' })
@@ -167,6 +170,8 @@ export default function Console() {
       await refresh()
     } catch {
       setError('NETWORK_ERROR: could not reach the console server')
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -258,9 +263,10 @@ export default function Console() {
             <>
               <button
                 onClick={startRun}
-                className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400"
+                disabled={starting}
+                className="rounded-lg bg-indigo-600 px-5 py-2.5 font-medium hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Run the demo
+                {starting ? 'Starting…' : 'Run the demo'}
               </button>
               <p className="text-xs text-slate-500">
                 One click starts invocation A. It never preselects your decision.

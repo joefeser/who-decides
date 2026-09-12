@@ -453,7 +453,14 @@ export class ConsoleEngine {
     if (row.execution_mode !== 'agentcore') return { ok: true }
     if (!dispatcher.isEnabled()) return { ok: false, error: 'AGENT_DISPATCH_UNAVAILABLE' }
     if (!(await this.runs.updateRunPhase(runId, 'running', 'starting', new Date().toISOString()))) {
-      return row.state === 'decision_required' ? { ok: true } : { ok: false, error: 'AGENT_START_IN_PROGRESS_OR_STOPPED' }
+      // Another start may have reserved or finished phase A since our read.
+      // Accept that shared run without redispatching; a failed or archived
+      // run still reports its stop instead of claiming an accepted start.
+      const latest = await this.runs.getRunRow(runId)
+      if (!latest || latest.tenant_id !== this.tenant || Number(latest.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
+      return ['starting', 'decision_required', 'resuming', 'completed'].includes(latest.state ?? '')
+        ? { ok: true }
+        : { ok: false, error: 'AGENT_START_IN_PROGRESS_OR_STOPPED' }
     }
     const dispatched = await dispatcher.dispatch({ kind: 'decision-run', sessionId: runId })
     const response = dispatched.result?.result as Record<string, unknown> | undefined

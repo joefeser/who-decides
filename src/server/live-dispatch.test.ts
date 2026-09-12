@@ -27,6 +27,53 @@ function age(dir: string) {
   db.close()
 }
 
+test('concurrent starts accept the shared run while dispatching phase A once', async () => {
+  let release!: () => void
+  let entered!: () => void
+  const began = new Promise<void>(resolve => { entered = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  let starts = 0
+  const t = setup(async payload => {
+    starts++; entered(); await held
+    return startResult(payload.sessionId)
+  })
+  let first: Promise<{ ok: boolean }> | undefined
+  try {
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    first = t.engine.dispatchStart(runId, t.dispatcher)
+    await began
+    assert.equal((await t.engine.startRun(false, t.dispatcher)).runId, runId)
+    assert.deepEqual(await t.engine.dispatchStart(runId, t.dispatcher), { ok: true })
+    assert.equal((await t.engine.getState()).state, 'running')
+    release()
+    assert.equal((await first).ok, true)
+    assert.deepEqual(await t.engine.dispatchStart(runId, t.dispatcher), { ok: true })
+    assert.equal(starts, 1)
+  } finally { release(); await first; await t.close() }
+})
+
+test('a lost start reservation rereads the row after phase A completes', async () => {
+  let starts = 0
+  const t = setup(async payload => { starts++; return startResult(payload.sessionId) })
+  try {
+    const { runId } = await t.engine.startRun(false, t.dispatcher)
+    const update = t.runs.updateRunPhase.bind(t.runs)
+    let overtaken = false
+    t.runs.updateRunPhase = async (...args) => {
+      if (args[1] === 'running' && !overtaken) {
+        overtaken = true
+        assert.equal((await t.engine.dispatchStart(runId, t.dispatcher)).ok, true)
+      }
+      return update(...args)
+    }
+    assert.deepEqual(await t.engine.dispatchStart(runId, t.dispatcher), { ok: true })
+    assert.equal((await t.engine.getState()).state, 'decision_required')
+    assert.equal(starts, 1)
+    await t.engine.reset()
+    assert.deepEqual(await t.engine.dispatchStart(runId, t.dispatcher), { ok: false, error: 'RUN_CHANGED' })
+  } finally { await t.close() }
+})
+
 test('failed live start never reaches the human gate or completion by elapsed time', async () => {
   const t = setup(async () => { throw new Error('synthetic runtime unavailable') })
   try {
@@ -39,6 +86,7 @@ test('failed live start never reaches the human gate or completion by elapsed ti
     assert.equal(state.state, 'blocked')
     assert.match(state.agent!.error!, /runtime unavailable/)
     assert.equal(state.effect, null)
+    assert.deepEqual(await t.engine.dispatchStart(runId, t.dispatcher), { ok: false, error: 'AGENT_START_IN_PROGRESS_OR_STOPPED' })
   } finally { await t.close() }
 })
 
@@ -224,14 +272,22 @@ test('a resuming run with no confirmation artifact stays resettable', async () =
   } finally { await t.close() }
 })
 
-test('a phase-A response not bound to this run never opens the human gate', async () => {
-  const t = setup(async payload => payload.kind === 'decision-run'
-    ? { ok: true, result: { status: 'DECISION_REQUIRED', decisionId: 'decision-svc-someone-else', invocationA: 'stale-invocation', decisionRequest: { patchId: `${f.package}-${f.to_version}`, question: f.decision_request.question, options: f.decision_request.options } } }
-    : completed(payload.sessionId, payload.choice))
-  try {
-    const { runId } = await t.engine.startRun(false, t.dispatcher)
-    assert.equal((await t.engine.dispatchStart(runId, t.dispatcher)).ok, false)
-    assert.equal((await t.engine.getState()).state, 'blocked')
-    assert.equal((await t.engine.getState()).decisionRequest, null)
-  } finally { await t.close() }
-})
+for (const [label, invalidBinding] of Object.entries({
+  'foreign decision': { decisionId: 'decision-svc-someone-else' },
+  'missing decision': { decisionId: undefined },
+  'missing invocation': { invocationA: undefined },
+  'empty invocation': { invocationA: '' },
+})) {
+  test(`a phase-A response with ${label} never opens the human gate`, async () => {
+    const t = setup(async payload => {
+      const response = startResult(payload.sessionId)
+      return { ...response, result: { ...response.result, ...invalidBinding } }
+    })
+    try {
+      const { runId } = await t.engine.startRun(false, t.dispatcher)
+      assert.equal((await t.engine.dispatchStart(runId, t.dispatcher)).ok, false)
+      assert.equal((await t.engine.getState()).state, 'blocked')
+      assert.equal((await t.engine.getState()).decisionRequest, null)
+    } finally { await t.close() }
+  })
+}
