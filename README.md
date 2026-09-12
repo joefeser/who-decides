@@ -46,6 +46,10 @@ every milestone from the governed design debate through the AgentCore
 deployment — is on the public
 [who-decides project board](https://github.com/users/joefeser/projects/1).
 
+**Live demo:** <https://who-decides.88mphserver.com> — public watch mode is
+read-only; sign in as the operator (passcode in the hackathon submission)
+to run the demo end to end. Deployed per [deploy/PROVISION.md](deploy/PROVISION.md).
+
 ## Quickstart
 
 ```sh

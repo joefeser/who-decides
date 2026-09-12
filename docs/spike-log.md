@@ -1015,3 +1015,20 @@ Codex reviewed e99e6f2 and found the follow-on gaps in the same area
 
 Gates: all 9 suites **129/129** (four new live-dispatch regression
 tests), `tsc --noEmit` clean.
+
+### Day 12 addendum 2 — the public live demo is up (2026-09-12)
+
+`https://who-decides.88mphserver.com` — single t4g.micro (Ubuntu 24.04
+ARM, us-east-2, Elastic IP), console in deterministic mode under systemd,
+fronted by Caddy (rate-limit build) with a Let's Encrypt cert. Deployed
+end-to-end from PROVISION.md in one session. Health battery verified from
+an external vantage: public /api/state 200, unauthenticated mutations
+401, operator login + run start 200, HSTS/nosniff/referrer headers
+present, server header stripped.
+
+Domain notes for the record: `extensions.io` DNS is consolidating into
+the root AWS account (zone created, record staged, 101domain NS change
+pending registrar approval — flipped late or post-hackathon, the demo
+does not depend on it). `hacp.io` already serves the HACP standard and
+stays reserved for it. The demo runs on a subdomain of 88mphserver.com
+via GoDaddy DNS.

@@ -83,28 +83,35 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   }
 
   return (
-    <details className="text-sm">
-      <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Operator sign-in</summary>
-      <form onSubmit={signIn} className="mt-2 flex flex-wrap items-center gap-2">
+    <form
+      onSubmit={signIn}
+      aria-label="Operator sign-in"
+      className="rounded-lg border border-slate-700 bg-slate-900/70 p-4"
+    >
+      <h3 className="mb-1 text-sm font-semibold text-slate-200">Operator sign-in</h3>
+      <p className="mb-3 text-xs text-slate-400">
+        Visitors watch in read-only mode. The operator passcode unlocks running the demo and deciding.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
         <input
           type="password"
           value={passcode}
           onChange={e => setPasscode(e.target.value)}
           aria-label="Operator passcode"
           placeholder="Operator passcode"
-          autoComplete="off"
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
+          autoComplete="one-time-code"
+          className="min-w-56 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus-visible:border-amber-500 focus-visible:outline-none"
         />
         <button
           type="submit"
           disabled={signingIn || !passcode}
-          className="rounded-lg border border-slate-600 px-4 py-1.5 text-sm hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {signingIn ? 'Signing in…' : 'Sign in'}
         </button>
-        {error && <p className="w-full text-sm text-red-400" role="alert">Stopped: {error}</p>}
-      </form>
-    </details>
+      </div>
+      {error && <p className="mt-2 text-sm text-red-400" role="alert">Stopped: {error}</p>}
+    </form>
   )
 }
 
@@ -227,31 +234,55 @@ export default function Console() {
     await refresh()
   }
 
+  async function signOut() {
+    await fetch('/api/operator/logout', { method: 'POST' }).catch(() => null)
+    setChoice('')
+    setRationale('')
+    await refresh()
+  }
+
   if (!state) {
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
 
-  const watchNotice = (
-    <div className="space-y-4">
-      <p className="rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200" role="note">
-        Awaiting the operator&rsquo;s decision — this console is read-only for visitors.
-      </p>
-      <OperatorSignIn onSignedIn={refresh} />
-    </div>
-  )
+  const watchNotice = <OperatorSignIn onSignedIn={refresh} />
 
   const canSubmit = state.state === 'decision_required' && choice !== '' && rationale.trim().length > 0 && !submitting
 
+  // Operator-voiced copy ("waiting for you") must not address visitors who
+  // cannot decide; revoice the one state that does.
+  const visitorVoice = readOnly && state.state === 'decision_required'
+    ? { heading: 'Decision required — waiting for the operator', subheading: 'The agent stopped and asked a human to decide. Visitors watch; the operator decides.' }
+    : null
+
   return (
+    <>
     <section
       aria-live="polite"
       className={`rounded-2xl border p-6 transition-colors ${STATE_TONE[state.state]}`}
     >
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-xl font-semibold" role="status">{state.heading}</h2>
-        <span className="font-mono text-xs text-slate-400">{state.state}</span>
+        <h2 className="text-xl font-semibold" role="status">{visitorVoice?.heading ?? state.heading}</h2>
+        <div className="flex items-center gap-3">
+          {!readOnly && (
+            <button onClick={signOut} className="text-xs text-slate-400 underline hover:text-slate-200">
+              Sign out
+            </button>
+          )}
+          <span className="font-mono text-xs text-slate-400">{state.state}</span>
+        </div>
       </div>
-      <p className="mb-6 text-sm text-slate-300">{state.subheading}</p>
+      <p className="mb-6 text-sm text-slate-300">{visitorVoice?.subheading ?? state.subheading}</p>
+
+      {/* Visitors read the read-only frame BEFORE the state it describes —
+          the state cards below (decision request, receipts) are things they
+          are watching, not things addressed to them (live-demo QA). */}
+      {readOnly && (
+        <p role="note" className="mb-6 rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200">
+          You&rsquo;re watching this console in read-only mode — decisions belong to the operator.
+          Sign in below to run the demo yourself.
+        </p>
+      )}
 
       {state.state === 'ready' && (
         <div className="space-y-4">
@@ -259,7 +290,7 @@ export default function Console() {
             The demo seeds a bounded task packet: a security patch whose runtime floor moves —
             a real judgment call the agent cannot own.
           </p>
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <>
               <button
                 onClick={startRun}
@@ -287,7 +318,6 @@ export default function Console() {
               </li>
             ))}
           </ol>
-          {readOnly && watchNotice}
         </div>
       )}
 
@@ -309,7 +339,7 @@ export default function Console() {
             <p className="mt-2 text-sm text-amber-300/90">Who is affected: {state.decisionRequest.whoIsAffected}</p>
             <p className="mt-1 font-mono text-xs text-slate-500">evidence: {state.decisionRequest.tradeoffFindingId}</p>
           </div>
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <form onSubmit={submitDecision} className="space-y-5">
               <fieldset ref={choiceRef} tabIndex={-1} className="space-y-2" aria-label="Your decision">
                 <legend className="mb-2 text-sm font-medium text-slate-200">Your decision — nothing is selected for you:</legend>
@@ -358,7 +388,6 @@ export default function Console() {
           <p className="animate-pulse text-sm text-sky-300" role="status">
             Starting new invocation… claiming the decision exactly once…
           </p>
-          {readOnly && watchNotice}
         </div>
       )}
 
@@ -368,6 +397,10 @@ export default function Console() {
 
       {state.state === 'completed' && (
         <div className="space-y-5">
+          <p className="font-mono text-xs text-slate-500">
+            run {state.runId} · started {state.startedAt ?? '—'} · completed {state.completedAt ?? '—'} —
+            this page renders live server state; the same JSON is served at <span className="text-slate-300">GET /api/state</span>
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg bg-slate-900/70 p-4">
               <h3 className="mb-1 text-sm font-semibold text-emerald-300">Consumption receipt</h3>
@@ -430,7 +463,7 @@ export default function Console() {
             </div>
           )}
 
-          {readOnly ? watchNotice : (
+          {!readOnly && (
             <button onClick={resetConsole} className="text-xs text-slate-500 underline hover:text-slate-300">
               Reset demo
             </button>
@@ -438,5 +471,11 @@ export default function Console() {
         </div>
       )}
     </section>
+
+    {/* The sign-in card belongs to the page, not to any run state —
+        rendering it inside the state card made it read as part of the
+        completed-run panel (live-demo QA). */}
+    {readOnly && <div className="mt-8">{watchNotice}</div>}
+    </>
   )
 }
