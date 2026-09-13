@@ -565,14 +565,15 @@ export class ConsoleEngine {
    * tenant's console is cleared; other tenants' runs are untouched. */
   /** The current run's persisted artifact JSON (watch-mode evidence surface).
    * Public by design: artifacts are the receipts the demo claims to show.
-   * Returns the serving run's id with the JSON so callers can refuse to
-   * attribute evidence to a run it did not come from (review: provenance). */
-  async getArtifact(name: string): Promise<{ runId: string, json: string } | undefined> {
+   * Returns the current run's id EVEN WHEN the named artifact is not (yet)
+   * persisted — e.g. a still-running run has no human-decision yet — so
+   * callers can distinguish "the run changed" from "evidence missing"
+   * and never report absence for a run that is not being served (review). */
+  async getArtifact(name: string): Promise<{ runId: string, json: string | undefined } | undefined> {
     await this.ready
     const run = await this.currentRun()
     if (!run) return undefined
-    const json = await this.runs.getArtifactJson(run.id, name)
-    return json === undefined ? undefined : { runId: run.id, json }
+    return { runId: run.id, json: await this.runs.getArtifactJson(run.id, name) }
   }
 
   async reset(): Promise<void> {
