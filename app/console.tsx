@@ -262,9 +262,13 @@ export default function Console() {
     const runId = state?.runId
     try {
       const response = await fetch(`/api/artifacts/${encodeURIComponent(name)}?run=${encodeURIComponent(runId ?? '')}`, { cache: 'no-store' })
+      // Read the body BEFORE re-checking selection: a slow download can
+      // still be in flight when the viewer switches pills, and a guard run
+      // before the await would pass while the body lands late (review P2).
+      const body = response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND'
       if (openArtifactRef.current !== name) return // viewer moved on; drop the stale body
       if (response.status === 409) { openArtifactRef.current = null; setOpenArtifact(null); setArtifactJson(null); return }
-      setArtifactJson(response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND')
+      setArtifactJson(body)
     } catch {
       if (openArtifactRef.current === name) setArtifactJson('NETWORK_ERROR: could not load the artifact')
     }
