@@ -115,6 +115,12 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   )
 }
 
+/** HACP artifacts link to the vendored schema in the public repo; the two
+ * local execution receipts have no HACP schema and stay unlinked. */
+const SCHEMA_LINKS: Record<string, string> = Object.fromEntries([
+  'task-packet', 'review-finding', 'stop-response', 'human-decision', 'agent-report',
+].map(kind => [kind, `https://github.com/joefeser/who-decides/blob/main/schemas/hacp/v0.1-draft/${kind}.schema.json`]))
+
 export default function Console() {
   const [state, setState] = useState<ConsoleState | null>(null)
   const [choice, setChoice] = useState<string>('')
@@ -123,6 +129,8 @@ export default function Console() {
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [replaying, setReplaying] = useState(false)
+  const [openArtifact, setOpenArtifact] = useState<string | null>(null)
+  const [artifactJson, setArtifactJson] = useState<string | null>(null)
   const choiceRef = useRef<HTMLFieldSetElement>(null)
 
   const refresh = useCallback(async () => {
@@ -232,6 +240,18 @@ export default function Console() {
     setChoice('')
     setRationale('')
     await refresh()
+  }
+
+  async function toggleArtifact(name: string) {
+    if (openArtifact === name) { setOpenArtifact(null); setArtifactJson(null); return }
+    setOpenArtifact(name)
+    setArtifactJson(null)
+    try {
+      const response = await fetch(`/api/artifacts/${encodeURIComponent(name)}`, { cache: 'no-store' })
+      setArtifactJson(response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND')
+    } catch {
+      setArtifactJson('NETWORK_ERROR: could not load the artifact')
+    }
   }
 
   async function signOut() {
@@ -421,17 +441,47 @@ export default function Console() {
           </div>
 
           <div>
-            <h3 className="mb-2 text-sm font-semibold text-slate-200">Artifacts — HACP records and local execution receipts</h3>
+            <h3 className="mb-2 text-sm font-semibold text-slate-200">
+              Artifacts — HACP records and local execution receipts
+              <span className="ml-2 font-normal text-xs text-slate-500">
+                click one to see the validated JSON this run produced
+              </span>
+            </h3>
             <ul className="flex flex-wrap gap-2">
               {state.artifacts.map(a => (
-                <li
-                  key={a.name}
-                  className={`rounded-full border px-3 py-1 font-mono text-xs ${a.valid ? 'border-emerald-700/70 text-emerald-300' : 'border-red-700 text-red-400'}`}
-                >
-                  {a.name} {a.valid ? '✓' : '✗'}
+                <li key={a.name} className="contents">
+                  <button
+                    onClick={() => { void toggleArtifact(a.name) }}
+                    aria-expanded={openArtifact === a.name}
+                    className={`rounded-full border px-3 py-1 font-mono text-xs ${a.valid ? 'border-emerald-700/70 text-emerald-300 hover:border-emerald-400' : 'border-red-700 text-red-400'} ${openArtifact === a.name ? 'bg-slate-800' : ''}`}
+                  >
+                    {a.name} {a.valid ? '✓' : '✗'}
+                  </button>
+                  {SCHEMA_LINKS[a.kind] && (
+                    <a
+                      href={SCHEMA_LINKS[a.kind]}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="the JSON Schema this artifact validates against (vendored in the repo)"
+                      className="self-center text-[10px] text-slate-500 underline hover:text-slate-300"
+                    >
+                      schema↗
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>
+            {openArtifact && (
+              <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-3">
+                <p className="mb-2 font-mono text-xs text-slate-400">
+                  {openArtifact} — persisted artifact for run {state.runId} · also at{' '}
+                  <span className="text-slate-300">GET /api/artifacts/{openArtifact}</span>
+                </p>
+                <pre className="max-h-72 overflow-auto font-mono text-[11px] leading-relaxed text-slate-300">
+                  {artifactJson ?? 'loading…'}
+                </pre>
+              </div>
+            )}
           </div>
 
           {state.decision && (
