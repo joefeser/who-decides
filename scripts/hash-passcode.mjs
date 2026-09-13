@@ -17,6 +17,6 @@ if (value.length < 12) {
 const hash = createHash('sha256').update(value).digest('hex')
 console.log(hash)
 console.log('# paste into .env.local (console) or /etc/who-decides.env (host):')
-console.log(`# WD_OPERATOR_PASSCODE_HASH=${hash}`)
-console.log('# for the AgentCore runtime instead (see agentcore/.env.local.example):')
+console.log(`WD_OPERATOR_PASSCODE_HASH=${hash}`)
+console.log('# only if you run the agent service yourself (agentcore/.env.local.example):')
 console.log(`# WD_MACHINE_TOKEN_HASH=${hash}`)
