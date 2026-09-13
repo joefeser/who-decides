@@ -448,22 +448,6 @@ export default function Console() {
 
       {error && state.state !== 'decision_required' && <p role="alert" className="text-red-300">{error}</p>}
 
-      {/* Run record — the current workflow's event line, derived from the
-          same receipt-backed fields the state serves (no separate log
-          store; every row cites its source). */}
-      <div className="mt-8 rounded-lg border border-slate-700 bg-slate-900/70 p-4">
-        <h3 className="mb-2 text-sm font-semibold text-slate-200">Run record — what happened, when</h3>
-        <ol className="space-y-1 font-mono text-xs text-slate-300">
-          <li>{clockOf(state.startedAt)} · invocation A started ({state.invocationA ?? '—'})</li>
-          <li>{clockOf(state.decision?.decidedAt)} · human decision recorded: {state.decision ? `${state.decision.choice} — “${state.decision.rationale}”` : '—'}</li>
-          <li>{clockOf(state.consumption?.claimedAt)} · decision claimed exactly once → {state.consumption?.successorInvocationId ?? '—'} (receipt {state.consumption?.receiptId ?? '—'})</li>
-          <li>{clockOf(state.completedAt)} · approved branch executed; run completed{state.invocationB ? ` (${state.invocationB})` : ''}</li>
-          {state.replayProbe && <li className="text-red-300">· duplicate resume probe: {state.replayProbe.result} — {state.replayProbe.detail}</li>}
-        </ol>
-        <p className="mt-2 text-[11px] text-slate-500">
-          Every row is derived from the run&rsquo;s receipts and timestamps in GET /api/state — nothing on this page is client-side narrative.
-        </p>
-      </div>
       {state.agentDispatchError && <p role="alert" className="text-red-300">{state.agentDispatchError}</p>}
       <p className="text-xs text-slate-500">{state.executionMode === 'agentcore' ? 'Live AgentCore run · fixture scenario · dry-run effects' : 'Deterministic demo · simulated preparation and verification'}</p>
 
@@ -572,6 +556,23 @@ export default function Console() {
           )}
         </div>
       )}
+      {/* Run record — the current workflow's event line, derived from the
+          same receipt-backed fields the state serves (no separate log
+          store; every row cites its source). */}
+      <div className="mt-8 rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+        <h3 className="mb-2 text-sm font-semibold text-slate-200">Run record — what happened, when</h3>
+        <ol className="space-y-1 font-mono text-xs text-slate-300">
+          <li>{clockOf(state.startedAt)} · invocation A started ({state.invocationA ?? '—'})</li>
+          <li>{clockOf(state.decision?.decidedAt)} · human decision recorded: {state.decision ? `${state.decision.choice} — “${state.decision.rationale}”` : '—'}</li>
+          <li>{clockOf(state.consumption?.claimedAt)} · decision claimed exactly once → {state.consumption?.successorInvocationId ?? '—'} (receipt {state.consumption?.receiptId ?? '—'})</li>
+          <li>{clockOf(state.completedAt)} · approved branch executed; run completed{state.invocationB ? ` (${state.invocationB})` : ''}</li>
+          {state.replayProbe && <li className="text-red-300">· duplicate resume probe: {state.replayProbe.result} — {state.replayProbe.detail}</li>}
+        </ol>
+        <p className="mt-2 text-[11px] text-slate-500">
+          Every row is derived from the run&rsquo;s receipts and timestamps in GET /api/state — nothing on this page is client-side narrative.
+        </p>
+      </div>
+
     </section>
 
     {/* The sign-in card belongs to the page, not to any run state —
