@@ -269,7 +269,11 @@ export default function Console() {
       // still be in flight when the viewer switches pills or the run
       // changes, and a guard run before the await would pass while the
       // body lands late (review P2).
-      const body = response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND'
+      // Only a 404 means the evidence is absent; any other failure is a
+      // broken evidence service and must not be reported as missing (review P2).
+      const body = response.ok
+        ? await response.text()
+        : response.status === 404 ? 'ARTIFACT_NOT_FOUND' : `ARTIFACT_SERVICE_ERROR (HTTP ${response.status}) — the evidence store failed; this is not a claim that the artifact is missing`
       if (artifactRequestRef.current !== token) return // superseded; drop the stale body
       if (response.status === 409) { artifactRequestRef.current += 1; setOpenArtifact(null); setArtifactJson(null); return }
       setArtifactJson(body)
