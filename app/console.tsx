@@ -131,10 +131,11 @@ export default function Console() {
   const [replaying, setReplaying] = useState(false)
   const [openArtifact, setOpenArtifact] = useState<string | null>(null)
   const [artifactJson, setArtifactJson] = useState<string | null>(null)
-  /** Mirrors openArtifact for async guards: a slow fetch resolving after the
-   * viewer switched pills must not overwrite the newly selected body
-   * (review: out-of-order responses). */
-  const openArtifactRef = useRef<string | null>(null)
+  /** Generation token for artifact fetches: every new open, close, or run
+   * change bumps it, so ANY response from a superseded request — including
+   * a same-name request from before a run change — is dead on arrival
+   * (review: request-identity, not name-identity). */
+  const artifactRequestRef = useRef(0)
   const choiceRef = useRef<HTMLFieldSetElement>(null)
 
   const refresh = useCallback(async () => {
@@ -153,8 +154,9 @@ export default function Console() {
     setChoice('')
     setRationale('')
     // Evidence belongs to the run that produced it: never carry an open
-    // artifact panel across a run change (review: misattribution).
-    openArtifactRef.current = null
+    // artifact panel across a run change, and kill any of its in-flight
+    // fetches (review: misattribution).
+    artifactRequestRef.current += 1
     setOpenArtifact(null)
     setArtifactJson(null)
   }, [state?.runId])
@@ -252,8 +254,9 @@ export default function Console() {
   }
 
   async function toggleArtifact(name: string) {
-    if (openArtifact === name) { openArtifactRef.current = null; setOpenArtifact(null); setArtifactJson(null); return }
-    openArtifactRef.current = name
+    // Closing also supersedes: an in-flight response must not reopen the panel.
+    const token = (artifactRequestRef.current += 1)
+    if (openArtifact === name) { setOpenArtifact(null); setArtifactJson(null); return }
     setOpenArtifact(name)
     setArtifactJson(null)
     // Pin the request to the run this render is displaying: a reset between
@@ -262,15 +265,16 @@ export default function Console() {
     const runId = state?.runId
     try {
       const response = await fetch(`/api/artifacts/${encodeURIComponent(name)}?run=${encodeURIComponent(runId ?? '')}`, { cache: 'no-store' })
-      // Read the body BEFORE re-checking selection: a slow download can
-      // still be in flight when the viewer switches pills, and a guard run
-      // before the await would pass while the body lands late (review P2).
+      // Read the body BEFORE re-checking the token: a slow download can
+      // still be in flight when the viewer switches pills or the run
+      // changes, and a guard run before the await would pass while the
+      // body lands late (review P2).
       const body = response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND'
-      if (openArtifactRef.current !== name) return // viewer moved on; drop the stale body
-      if (response.status === 409) { openArtifactRef.current = null; setOpenArtifact(null); setArtifactJson(null); return }
+      if (artifactRequestRef.current !== token) return // superseded; drop the stale body
+      if (response.status === 409) { artifactRequestRef.current += 1; setOpenArtifact(null); setArtifactJson(null); return }
       setArtifactJson(body)
     } catch {
-      if (openArtifactRef.current === name) setArtifactJson('NETWORK_ERROR: could not load the artifact')
+      if (artifactRequestRef.current === token) setArtifactJson('NETWORK_ERROR: could not load the artifact')
     }
   }
 
