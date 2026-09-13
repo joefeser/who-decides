@@ -115,6 +115,24 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   )
 }
 
+/** The invocation id that actually executed phase A: for AgentCore runs the
+ * runtime returns its own id (recorded in the agent-start artifact); the
+ * deterministic run's console-minted id IS the invocation. */
+function invocationAId(state: ConsoleState): string {
+  if (state.executionMode === 'agentcore') {
+    const runtime = (state.agent?.result as { result?: { invocationA?: string } } | undefined)?.result?.invocationA
+    if (typeof runtime === 'string' && runtime.length > 0) return runtime
+  }
+  return state.invocationA ?? '—'
+}
+
+/** Run-record clock — date included, so events crossing UTC midnight never
+ * render as if time ran backwards (receipts carry the full ISO stamps). */
+function clockOf(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return iso.slice(0, 23).replace('T', ' ') + 'Z'
+}
+
 /** HACP artifacts link to the vendored schema in the public repo; the two
  * local execution receipts have no HACP schema and stay unlinked. */
 const SCHEMA_LINKS: Record<string, string> = Object.fromEntries([
@@ -440,6 +458,7 @@ export default function Console() {
       )}
 
       {error && state.state !== 'decision_required' && <p role="alert" className="text-red-300">{error}</p>}
+
       {state.agentDispatchError && <p role="alert" className="text-red-300">{state.agentDispatchError}</p>}
       <p className="text-xs text-slate-500">{state.executionMode === 'agentcore' ? 'Live AgentCore run · fixture scenario · dry-run effects' : 'Deterministic demo · simulated preparation and verification'}</p>
 
@@ -548,6 +567,40 @@ export default function Console() {
           )}
         </div>
       )}
+      {/* Run record — the current workflow's event line, derived from the
+          same receipt-backed fields the state serves (no separate log
+          store; every row cites its source). */}
+      <div className="mt-8 rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+        <h3 className="mb-2 text-sm font-semibold text-slate-200">Run record — what happened, when</h3>
+        {/* Every row renders ONLY when its receipt-backed field exists: the box
+            never asserts an event before the record does (review), and always
+            ends with the run's current state so viewers see what's pending. */}
+        <ol className="space-y-1 font-mono text-xs text-slate-300">
+          {state.startedAt && (
+            <li>{clockOf(state.startedAt)} · invocation A started ({invocationAId(state)})</li>
+          )}
+          {state.decision && (
+            <li>{clockOf(state.decision.decidedAt)} · human decision recorded: {state.decision.choice} — “{state.decision.rationale}”</li>
+          )}
+          {state.consumption && (
+            <li>{clockOf(state.consumption.claimedAt)} · decision claimed exactly once → {state.consumption.successorInvocationId} (receipt {state.consumption.receiptId})</li>
+          )}
+          {state.completedAt && (
+            <li>{clockOf(state.completedAt)} · approved branch executed; run completed{state.invocationB ? ` (${state.invocationB})` : ''}</li>
+          )}
+          {state.replayProbe && (
+            <li className="text-red-300">· duplicate resume probe: {state.replayProbe.result} — {state.replayProbe.detail}</li>
+          )}
+          <li className="text-slate-500">
+            · current state: {state.state}{state.state !== 'completed' && state.state !== 'ready' ? ' — pending' : ''}
+            {state.state === 'ready' ? ' — nothing has happened yet' : ''}
+          </li>
+        </ol>
+        <p className="mt-2 text-[11px] text-slate-500">
+          Every row is derived from the run&rsquo;s receipts and timestamps in GET /api/state — nothing on this page is client-side narrative.
+        </p>
+      </div>
+
     </section>
 
     {/* The sign-in card belongs to the page, not to any run state —
