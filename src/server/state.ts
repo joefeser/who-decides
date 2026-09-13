@@ -564,12 +564,15 @@ export class ConsoleEngine {
    * records — HACP artifacts survive the demo loop (Codex P2). Only THIS
    * tenant's console is cleared; other tenants' runs are untouched. */
   /** The current run's persisted artifact JSON (watch-mode evidence surface).
-   * Public by design: artifacts are the receipts the demo claims to show. */
-  async getArtifact(name: string): Promise<string | undefined> {
+   * Public by design: artifacts are the receipts the demo claims to show.
+   * Returns the serving run's id with the JSON so callers can refuse to
+   * attribute evidence to a run it did not come from (review: provenance). */
+  async getArtifact(name: string): Promise<{ runId: string, json: string } | undefined> {
     await this.ready
     const run = await this.currentRun()
     if (!run) return undefined
-    return this.runs.getArtifactJson(run.id, name)
+    const json = await this.runs.getArtifactJson(run.id, name)
+    return json === undefined ? undefined : { runId: run.id, json }
   }
 
   async reset(): Promise<void> {

@@ -131,6 +131,10 @@ export default function Console() {
   const [replaying, setReplaying] = useState(false)
   const [openArtifact, setOpenArtifact] = useState<string | null>(null)
   const [artifactJson, setArtifactJson] = useState<string | null>(null)
+  /** Mirrors openArtifact for async guards: a slow fetch resolving after the
+   * viewer switched pills must not overwrite the newly selected body
+   * (review: out-of-order responses). */
+  const openArtifactRef = useRef<string | null>(null)
   const choiceRef = useRef<HTMLFieldSetElement>(null)
 
   const refresh = useCallback(async () => {
@@ -148,6 +152,11 @@ export default function Console() {
   useEffect(() => {
     setChoice('')
     setRationale('')
+    // Evidence belongs to the run that produced it: never carry an open
+    // artifact panel across a run change (review: misattribution).
+    openArtifactRef.current = null
+    setOpenArtifact(null)
+    setArtifactJson(null)
   }, [state?.runId])
 
   // Watch mode is server-decided. While loading (state === null) the console
@@ -243,14 +252,21 @@ export default function Console() {
   }
 
   async function toggleArtifact(name: string) {
-    if (openArtifact === name) { setOpenArtifact(null); setArtifactJson(null); return }
+    if (openArtifact === name) { openArtifactRef.current = null; setOpenArtifact(null); setArtifactJson(null); return }
+    openArtifactRef.current = name
     setOpenArtifact(name)
     setArtifactJson(null)
+    // Pin the request to the run this render is displaying: a reset between
+    // render and response yields 409 RUN_CHANGED, never new-run evidence
+    // under the old run's label.
+    const runId = state?.runId
     try {
-      const response = await fetch(`/api/artifacts/${encodeURIComponent(name)}`, { cache: 'no-store' })
+      const response = await fetch(`/api/artifacts/${encodeURIComponent(name)}?run=${encodeURIComponent(runId ?? '')}`, { cache: 'no-store' })
+      if (openArtifactRef.current !== name) return // viewer moved on; drop the stale body
+      if (response.status === 409) { openArtifactRef.current = null; setOpenArtifact(null); setArtifactJson(null); return }
       setArtifactJson(response.ok ? await response.text() : 'ARTIFACT_NOT_FOUND')
     } catch {
-      setArtifactJson('NETWORK_ERROR: could not load the artifact')
+      if (openArtifactRef.current === name) setArtifactJson('NETWORK_ERROR: could not load the artifact')
     }
   }
 
