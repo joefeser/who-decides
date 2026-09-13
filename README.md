@@ -61,12 +61,11 @@ The decision console is deterministic and needs no model credentials. It
 starts in public, read-only watch mode; running the demo requires operator
 sign-in.
 
-1. Choose a long operator passcode and generate its SHA-256 hash. Replace the
-   placeholder below with your chosen passcode (this command works on macOS
-   and Linux with Node installed):
+1. Choose a long operator passcode and generate its SHA-256 hash (the
+   command prints the hash plus the exact line to paste):
 
    ```sh
-   node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' 'your-long-operator-passcode'
+   npm run hash -- 'your-long-operator-passcode'
    ```
 
 2. Add the following to `.env.local` in the repository root, replacing the
