@@ -563,6 +563,19 @@ export class ConsoleEngine {
   /** Reset clears the live console without destroying completed audit
    * records — HACP artifacts survive the demo loop (Codex P2). Only THIS
    * tenant's console is cleared; other tenants' runs are untouched. */
+  /** The current run's persisted artifact JSON (watch-mode evidence surface).
+   * Public by design: artifacts are the receipts the demo claims to show.
+   * Returns the current run's id EVEN WHEN the named artifact is not (yet)
+   * persisted — e.g. a still-running run has no human-decision yet — so
+   * callers can distinguish "the run changed" from "evidence missing"
+   * and never report absence for a run that is not being served (review). */
+  async getArtifact(name: string): Promise<{ runId: string, json: string | undefined } | undefined> {
+    await this.ready
+    const run = await this.currentRun()
+    if (!run) return undefined
+    return { runId: run.id, json: await this.runs.getArtifactJson(run.id, name) }
+  }
+
   async reset(): Promise<void> {
     await this.ready
     // In-flight resumes are protected in memory: their confirmation
