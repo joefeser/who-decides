@@ -4,9 +4,9 @@ The active lane is `.agent-control/lanes/pr-review-loop.yaml`. Version 0.2 adds
 only `dev` as the development and owner-handoff target. It does not loosen the
 human-mediated `main`, `master`, or `release/**` boundary.
 
-## Verified environment (2026-09-06)
+## Environment and current CLI requirement
 
-- CLI baseline: stable ACK `>=0.5.1 <0.6.0`; the lane requires the exact
+- CLI baseline (updated 2026-09-21): stable ACK `>=0.5.2 <0.6.0`; the lane requires the exact
   onboarding, batching, freshness, and release-provenance capabilities it uses.
 - After the v0.2 policy PR is merged and `dev` is created from that exact
   approved `main`, normal feature PRs pass `--base dev`.
