@@ -327,6 +327,13 @@ export class PostgresRunStore implements RunStore {
       // while its agent-resume confirmation artifact exists — a stuck run
       // with no confirmation has no repair evidence, so reset is its only
       // recovery and must stay available.
+      // Serialize against decision acquisition BEFORE any check: under
+      // READ COMMITTED a plain check-then-archive interleaves with a
+      // decision transaction committing its outbox op between the two.
+      // Locking the tenant's live run rows first forces that transaction
+      // (whose first write is the runs-row UPDATE) to finish — or wait —
+      // before this transaction looks at anything.
+      await client.query('SELECT id FROM runs WHERE tenant_id = $1 AND archived = 0 FOR UPDATE', [tenantId])
       const pending = await client.query(
         `SELECT 1 FROM runs r WHERE r.tenant_id = $1 AND r.archived = 0 AND r.decision_json IS NOT NULL
          AND (r.state = 'decision_required' OR (r.state = 'resuming' AND r.execution_mode = 'agentcore'

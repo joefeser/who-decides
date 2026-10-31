@@ -52,6 +52,60 @@ test('discrete WD_PG fields do not require WD_PG_HOST', () => {
 })
 
 if (skipWhenNoPostgres('store-review-pg suite')) {
+  test('archive serializes against a committed decision op under READ COMMITTED', async () => {
+    const tenant = randomUUID()
+    const store = new PostgresRunStore(pgConfig())
+    await store.initialize()
+    const run = await store.ensureActiveRun(tenant, { ...candidate(tenant), runKind: 'bridge' as const })
+    const op = { runId: run.id, opKey: `wd:${run.id}:answer`, kind: 'answer' as const, targetSystem: 'chopin', payloadJson: '{"tool":"answer_decision"}' }
+    const holder = new Pool(pgConfig())
+    const client = await holder.connect()
+    try {
+      // The decision commits its op first; an external holder then pins the
+      // run row so the archive visibly queues on its leading FOR UPDATE
+      // instead of slipping a check past the committed op.
+      const decided = await store.acquireDecisionIntent(run.id, 'inv-b', '{"choice":"approve"}', op)
+      assert.ok(decided.decision_json)
+      await client.query('BEGIN')
+      await client.query('SELECT id FROM runs WHERE id = $1 FOR UPDATE', [run.id])
+      const archiving = store.archiveTenantRuns(tenant)
+      await delay(50)
+      await client.query('COMMIT')
+      await assert.rejects(() => archiving, /BRIDGE_OPS_UNRESOLVED/)
+    } finally {
+      await client.query('ROLLBACK').catch(() => {})
+      client.release()
+      await holder.end()
+      await store.close()
+    }
+  })
+
+  test('a decision racing the archive never strands its op (READ COMMITTED)', async () => {
+    const store = new PostgresRunStore(pgConfig())
+    await store.initialize()
+    try {
+      for (let i = 0; i < 20; i++) {
+        const tenant = randomUUID()
+        const run = await store.ensureActiveRun(tenant, { ...candidate(tenant), runKind: 'bridge' as const })
+        const op = { runId: run.id, opKey: `wd:${run.id}:answer`, kind: 'answer' as const, targetSystem: 'chopin', payloadJson: '{"tool":"answer_decision"}' }
+        const decision = store.acquireDecisionIntent(run.id, 'inv-b', '{"choice":"approve"}', op)
+        const archive = store.archiveTenantRuns(tenant).then(() => 'ok', (err: Error) => err.message)
+        const [decided, archived] = await Promise.all([decision, archive])
+        if (archived === 'ok') {
+          assert.equal(decided.decision_json, null, 'an archive that won must leave the decision refused')
+          const stranded = await pgQuery(
+            'SELECT count(*)::int AS n FROM outbox_ops o JOIN runs r ON r.id = o.run_id WHERE r.tenant_id = $1 AND r.archived = 0', [tenant])
+          assert.equal(Number(stranded.rows[0].n), 0, 'no op is left recorded behind the archive')
+        } else {
+          assert.match(archived, /BRIDGE_OPS_UNRESOLVED|DECISION_IN_PROGRESS/)
+          assert.ok(decided.decision_json, 'a refused archive must mean the decision committed')
+        }
+      }
+    } finally {
+      await store.close()
+    }
+  })
+
   test('a contended replay rechecks expiry before reading the winner', async () => {
     const store = new PostgresReceiptStore(pgConfig())
     const d = { ...decision(), expiresAt: new Date(Date.now() + 1500).toISOString() }
