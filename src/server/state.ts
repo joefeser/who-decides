@@ -299,12 +299,12 @@ export class ConsoleEngine {
    * persisted payload under the same op key. Terminal ops are echoed, never
    * re-dispatched. Repeat-safe by construction. Newly confirmed ops get
    * their bridge records (A3). */
-  async dispatchBridgeOps(runId: string, dispatcher: OutboxDispatcher): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
+  async dispatchBridgeOps(runId: string, dispatcher: OutboxDispatcher, options?: { force?: boolean }): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
     await this.ready
     const row = await this.runs.getRunRow(runId)
     if (!row || row.tenant_id !== this.tenant || Number(row.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
     if (row.run_kind !== 'bridge') return { ok: false, error: 'NOT_A_BRIDGE_RUN' }
-    const outcomes = await this.outbox.dispatch(runId, dispatcher)
+    const outcomes = await this.outbox.dispatch(runId, dispatcher, options)
     await this.recordConfirmedBridgeOps(runId)
     return { ok: true, outcomes }
   }
@@ -874,17 +874,11 @@ export class ConsoleEngine {
     // artifact does not exist yet, and the durable artifact rule below
     // must not let a concurrent reset archive a live dispatch.
     if (this.inflightResumes.size > 0) throw new Error('DECISION_IN_PROGRESS')
-    // An unresolved bridge operation must not be archived out of reach:
-    // the receiver may already hold its exact payload. The recoverable
-    // disposition is to dispatch (or let it resolve) first — reset then
-    // proceeds; archiving a live outbound obligation never is.
-    const active = await this.runs.getCurrentRun(this.tenant)
-    if (active?.run_kind === 'bridge') { // getCurrentRun only returns live runs
-      const unresolved = (await this.runs.getOutboxOps(active.id)).filter(
-        op => op.status === 'pending' || op.status === 'dispatched' || op.status === 'unknown',
-      )
-      if (unresolved.length > 0) throw new Error('BRIDGE_OPS_UNRESOLVED')
-    }
+    // The unresolved-bridge-operation guard rides the store's archive
+    // transaction itself: a decision committing between a separate check
+    // and the archive would strand its outbound obligation. The store
+    // refuses BRIDGE_OPS_UNRESOLVED; the recoverable disposition is to
+    // dispatch (or let it resolve) first, then reset.
     await this.runs.archiveTenantRuns(this.tenant)
   }
 

@@ -66,6 +66,8 @@ export class SqliteRunStore implements RunStore {
         created_at TEXT NOT NULL,
         dispatched_at TEXT,
         resolved_at TEXT,
+        claim_owner TEXT,
+        claimed_at TEXT,
         PRIMARY KEY (run_id, op_key)
       );
     `)
@@ -73,6 +75,8 @@ export class SqliteRunStore implements RunStore {
     try { this.db.exec("ALTER TABLE runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'native'") } catch { /* column exists */ }
     // Pre-column databases (dev .tmp): add the columns in place.
     try { this.db.exec("ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
+    try { this.db.exec("ALTER TABLE outbox_ops ADD COLUMN claim_owner TEXT") } catch { /* column exists */ }
+    try { this.db.exec("ALTER TABLE outbox_ops ADD COLUMN claimed_at TEXT") } catch { /* column exists */ }
     try { this.db.exec("ALTER TABLE artifacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
     try { this.db.exec('ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0') } catch { /* column exists */ }
   }
@@ -138,22 +142,36 @@ export class SqliteRunStore implements RunStore {
 
   async getOutboxOps(runId: string): Promise<OutboxOpRow[]> {
     return this.db
-      .prepare('SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at FROM outbox_ops WHERE run_id = ? ORDER BY created_at, rowid')
+      .prepare('SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at, claim_owner FROM outbox_ops WHERE run_id = ? ORDER BY created_at, rowid')
       .all(runId) as OutboxOpRow[]
   }
 
-  async markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean> {
-    const result = this.db
-      .prepare("UPDATE outbox_ops SET status = 'dispatched', dispatched_at = ? WHERE run_id = ? AND op_key = ? AND status = 'pending'")
-      .run(dispatchedAt, runId, opKey)
-    return result.changes > 0
+  async claimOutboxAttempt(runId: string, opKey: string, owner: string, claimedAt: string, force = false): Promise<boolean> {
+    // One immediate transaction: the claim is durable in the shared store,
+    // so a second instance (or process) sharing this database cannot enter
+    // the transport beside a live attempt. Force takes an abandoned claim —
+    // the explicit crash-recovery verb, never a guess about liveness.
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const changes = this.db
+        .prepare(`UPDATE outbox_ops
+                  SET status = 'dispatched', dispatched_at = COALESCE(dispatched_at, ?), claim_owner = ?, claimed_at = ?
+                  WHERE run_id = ? AND op_key = ? AND status IN ('pending', 'dispatched', 'unknown')
+                    AND (claim_owner IS NULL OR claim_owner = ?${force ? ' OR 1 = 1' : ''})`)
+        .run(claimedAt, owner, claimedAt, runId, opKey, owner).changes
+      this.db.exec('COMMIT')
+      return changes > 0
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   async resolveOutboxOp(runId: string, opKey: string, status: 'confirmed' | 'unknown' | 'failed', resultJson: string, resolvedAt: string): Promise<boolean> {
     // Unknown -> terminal is legal (a retry's explicit receiver response is
     // evidence); pending never resolves; terminal rows are immutable.
     const result = this.db
-      .prepare("UPDATE outbox_ops SET status = ?, result_json = ?, resolved_at = ? WHERE run_id = ? AND op_key = ? AND status IN ('dispatched', 'unknown')")
+      .prepare("UPDATE outbox_ops SET status = ?, result_json = ?, resolved_at = ?, claim_owner = NULL, claimed_at = NULL WHERE run_id = ? AND op_key = ? AND status IN ('dispatched', 'unknown')")
       .run(status, resultJson, resolvedAt, runId, opKey)
     return result.changes > 0
   }
@@ -240,6 +258,11 @@ export class SqliteRunStore implements RunStore {
       // recovery, and keeping it blocked forever wedges the console.
       const pending = this.db.prepare("SELECT 1 FROM runs WHERE tenant_id = ? AND archived = 0 AND decision_json IS NOT NULL AND (state = 'decision_required' OR (state = 'resuming' AND execution_mode = 'agentcore' AND EXISTS (SELECT 1 FROM artifacts WHERE run_id = runs.id AND name = 'agent-resume')))").get(tenantId)
       if (pending) throw new Error('DECISION_IN_PROGRESS')
+      // The bridge guard rides the SAME transaction: a decision committing
+      // between a separate check and this archive would strand its outbound
+      // obligation behind RUN_CHANGED.
+      const unresolved = this.db.prepare("SELECT 1 FROM outbox_ops o JOIN runs r ON r.id = o.run_id WHERE r.tenant_id = ? AND r.archived = 0 AND r.run_kind = 'bridge' AND o.status IN ('pending', 'dispatched', 'unknown') LIMIT 1").get(tenantId)
+      if (unresolved) throw new Error('BRIDGE_OPS_UNRESOLVED')
       this.db.prepare('UPDATE runs SET archived = 1 WHERE tenant_id = ?').run(tenantId)
     }).immediate()
   }

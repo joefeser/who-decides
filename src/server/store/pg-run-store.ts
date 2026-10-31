@@ -125,12 +125,16 @@ export class PostgresRunStore implements RunStore {
           created_at TEXT NOT NULL,
           dispatched_at TEXT,
           resolved_at TEXT,
+          claim_owner TEXT,
+          claimed_at TEXT,
           seq BIGINT GENERATED ALWAYS AS IDENTITY,
           PRIMARY KEY (run_id, op_key)
         );
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'deterministic';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT NOT NULL DEFAULT 'native';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+        ALTER TABLE outbox_ops ADD COLUMN IF NOT EXISTS claim_owner TEXT;
+        ALTER TABLE outbox_ops ADD COLUMN IF NOT EXISTS claimed_at TEXT;
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
         -- Insertion order for pre-identity tables: backfills existing rows.
@@ -204,16 +208,22 @@ export class PostgresRunStore implements RunStore {
   async getOutboxOps(runId: string): Promise<OutboxOpRow[]> {
     // ORDER BY seq = SQLite's ORDER BY rowid (enqueue order).
     const result = await this.pool.query(
-      'SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at FROM outbox_ops WHERE run_id = $1 ORDER BY seq',
+      'SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at, claim_owner FROM outbox_ops WHERE run_id = $1 ORDER BY seq',
       [runId],
     )
     return result.rows as OutboxOpRow[]
   }
 
-  async markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean> {
+  async claimOutboxAttempt(runId: string, opKey: string, owner: string, claimedAt: string, force = false): Promise<boolean> {
+    // The claim is durable in the shared store: a second instance sharing
+    // this database cannot enter the transport beside a live attempt. Force
+    // takes an abandoned claim — the explicit crash-recovery verb.
     const result = await this.pool.query(
-      "UPDATE outbox_ops SET status = 'dispatched', dispatched_at = $1 WHERE run_id = $2 AND op_key = $3 AND status = 'pending'",
-      [dispatchedAt, runId, opKey],
+      `UPDATE outbox_ops
+       SET status = 'dispatched', dispatched_at = COALESCE(dispatched_at, $1), claim_owner = $2, claimed_at = $3
+       WHERE run_id = $4 AND op_key = $5 AND status IN ('pending', 'dispatched', 'unknown')
+         AND (claim_owner IS NULL OR claim_owner = $2${force ? ' OR TRUE' : ''})`,
+      [claimedAt, owner, claimedAt, runId, opKey],
     )
     return (result.rowCount ?? 0) > 0
   }
@@ -222,7 +232,7 @@ export class PostgresRunStore implements RunStore {
     // Unknown -> terminal is legal (a retry's explicit receiver response is
     // evidence); pending never resolves; terminal rows are immutable.
     const result = await this.pool.query(
-      "UPDATE outbox_ops SET status = $1, result_json = $2, resolved_at = $3 WHERE run_id = $4 AND op_key = $5 AND status IN ('dispatched', 'unknown')",
+      "UPDATE outbox_ops SET status = $1, result_json = $2, resolved_at = $3, claim_owner = NULL, claimed_at = NULL WHERE run_id = $4 AND op_key = $5 AND status IN ('dispatched', 'unknown')",
       [status, resultJson, resolvedAt, runId, opKey],
     )
     return (result.rowCount ?? 0) > 0
@@ -323,6 +333,15 @@ export class PostgresRunStore implements RunStore {
          AND EXISTS (SELECT 1 FROM artifacts a WHERE a.run_id = r.id AND a.name = 'agent-resume'))) LIMIT 1`,
         [tenantId])
       if (pending.rowCount) throw new Error('DECISION_IN_PROGRESS')
+      // The bridge guard rides the SAME transaction as the archive: a
+      // decision committing between a separate check and this update would
+      // strand its outbound obligation behind RUN_CHANGED.
+      const unresolved = await client.query(
+        `SELECT 1 FROM outbox_ops o JOIN runs r ON r.id = o.run_id
+         WHERE r.tenant_id = $1 AND r.archived = 0 AND r.run_kind = 'bridge'
+           AND o.status IN ('pending', 'dispatched', 'unknown') LIMIT 1`,
+        [tenantId])
+      if (unresolved.rowCount) throw new Error('BRIDGE_OPS_UNRESOLVED')
       await client.query('UPDATE runs SET archived = 1 WHERE tenant_id = $1', [tenantId])
     })
   }

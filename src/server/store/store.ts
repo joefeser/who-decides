@@ -55,6 +55,8 @@ export type OutboxOpRow = {
   created_at: string
   dispatched_at: string | null
   resolved_at: string | null
+  /** The owner of the live wire attempt, or null when none is held. */
+  claim_owner: string | null
 }
 
 export type ArtifactRow = { name: string, kind: string, valid: number }
@@ -121,7 +123,11 @@ export interface RunStore {
   getOutboxOps(runId: string): Promise<OutboxOpRow[]>
   /** CAS pending -> dispatched: exactly one dispatcher owns an op's wire
    * attempt. False = already dispatched (or terminal/missing). */
-  markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean>
+  /** Durably claim an op's wire attempt, in the shared store, so instances
+   * sharing the database admit exactly one live attempt. A claim held by
+   * another owner refuses (the caller reports in_progress); `force` is the
+   * explicit crash-recovery verb that takes an abandoned claim. */
+  claimOutboxAttempt(runId: string, opKey: string, owner: string, claimedAt: string, force?: boolean): Promise<boolean>
   /** Per-op result row. Legal transitions: dispatched -> terminal,
    * unknown -> terminal (an explicit receiver response on a retry is
    * evidence, not a guess). Pending ops never resolve; terminal ops are

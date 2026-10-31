@@ -20,6 +20,7 @@
  * which is the only way 'unknown' ever becomes 'confirmed'. An explicit
  * receiver refusal on a retry may resolve it 'failed' — evidence, not a
  * guess. */
+import { randomUUID } from 'node:crypto'
 import type { RunStore, OutboxOpRow, OutboxOpKind, OutboxOpStatus } from './store/store'
 
 export type OutboxDispatchOutcome =
@@ -48,12 +49,14 @@ export type OutboxOpOutcome = {
 }
 
 export class Outbox {
-  /** One wire attempt per op per process: a second pass over an op whose
-   * attempt is still live waits for it and reports its outcome, instead of
-   * re-entering the transport beside it. A crashed process leaves the op in
-   * its last persisted state — the crash-window recovery below — which a
-   * LATER pass may re-send under the same key; that is the designed
-   * recovery, and it never overlaps a live attempt. */
+  /** This instance's identity as an attempt owner, durable in the shared
+   * store's claim: engines over the same database admit exactly one live
+   * wire attempt per op, across instances. */
+  readonly #owner = randomUUID()
+
+  /** Same-instance fast path: a second pass over an op whose attempt this
+   * instance still holds waits for it and reports its outcome. The durable
+   * claim below is what other instances see. */
   readonly #inflight = new Map<string, Promise<OutboxOpOutcome>>()
 
   constructor(private readonly runs: RunStore) {}
@@ -67,7 +70,7 @@ export class Outbox {
    *    in_progress without touching it;
    *  - dispatched/unknown ops (crash window, lost response) re-send the
    *    exact persisted payload under the same op key. */
-  async dispatch(runId: string, dispatcher: OutboxDispatcher): Promise<OutboxOpOutcome[]> {
+  async dispatch(runId: string, dispatcher: OutboxDispatcher, options?: { force?: boolean }): Promise<OutboxOpOutcome[]> {
     const ops = await this.runs.getOutboxOps(runId)
     const outcomes: OutboxOpOutcome[] = []
     for (const op of ops) {
@@ -84,7 +87,7 @@ export class Outbox {
         outcomes.push(await existing)
         continue
       }
-      const attempt = this.#attempt(runId, op, dispatcher)
+      const attempt = this.#attempt(runId, op, dispatcher, options?.force === true)
       this.#inflight.set(inflightKey, attempt)
       try {
         outcomes.push(await attempt)
@@ -98,12 +101,16 @@ export class Outbox {
   /** One op's single wire attempt: claim, transport, resolve — and when the
    * resolution CAS loses, report the AUTHORITATIVE persisted outcome rather
    * than this attempt's local result. */
-  async #attempt(runId: string, op: OutboxOpRow, dispatcher: OutboxDispatcher): Promise<OutboxOpOutcome> {
-    if (op.status === 'pending') {
-      const claimed = await this.runs.markOutboxDispatched(runId, op.op_key, new Date().toISOString())
-      if (!claimed) {
-        return { opKey: op.op_key, kind: op.kind, status: 'in_progress', replayed: false, result: null }
-      }
+  async #attempt(runId: string, op: OutboxOpRow, dispatcher: OutboxDispatcher, force: boolean): Promise<OutboxOpOutcome> {
+    // The durable claim covers every non-terminal state: a live attempt by
+    // this or another instance owns the wire, and a crashed one leaves the
+    // claim behind for the explicit force recovery — never an instant
+    // re-entry that could send beside a live attempt.
+    const claimed = await this.runs.claimOutboxAttempt(
+      runId, op.op_key, this.#owner, new Date().toISOString(), force,
+    )
+    if (!claimed) {
+      return { opKey: op.op_key, kind: op.kind, status: 'in_progress', replayed: false, result: null }
     }
     const outcome = await dispatcher({
       opKey: op.op_key,

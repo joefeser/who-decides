@@ -350,3 +350,88 @@ test('reset refuses to archive unresolved bridge operations, and proceeds once t
     await cleanup(dir, engine)
   }
 })
+
+test('the wire-attempt claim is durable: two engines over one store admit one attempt', async () => {
+  let release!: () => void
+  const held = new Promise<void>(resolve => (release = resolve))
+  let transports = 0
+  const { engine: first, dir } = freshEngine()
+  // A SECOND engine over the same database — sol's reproduction shape.
+  const second = new ConsoleEngine('default', {})
+  try {
+    const runId = await decide(first)
+    const a = first.dispatchBridgeOps(runId, async () => {
+      transports += 1
+      await held
+      return { kind: 'confirmed', result: { state: 'answered' } }
+    })
+    const b = second.dispatchBridgeOps(runId, async () => {
+      transports += 1
+      await held
+      return { kind: 'confirmed', result: { state: 'answered' } }
+    })
+    release()
+    const [fromFirst, fromSecond] = await Promise.all([a, b])
+    assert.equal(transports, 1, 'exactly one wire attempt across engines')
+    assert.ok(fromFirst.ok && fromSecond.ok)
+    assert.equal(fromFirst.outcomes?.[0]?.status, 'confirmed')
+    assert.equal(fromSecond.outcomes?.[0]?.status, 'in_progress',
+      'the second engine respects the first engine’s live claim')
+    const rows = ops(dir)
+    assert.equal(rows.filter(r => r.status === 'confirmed').length, 1)
+    assert.equal(rows[0]!.claim_owner, null, 'resolution releases the claim')
+  } finally {
+    await cleanup(dir, first)
+    await second.close()
+  }
+})
+
+test('an abandoned claim refuses ordinary dispatch and yields to the explicit force recovery', async () => {
+  const { engine, dir } = freshEngine()
+  try {
+    const runId = await decide(engine)
+    // Simulate a crashed attempt: a foreign owner holds the claim.
+    const db = new Database(path.join(dir, 'state.db'))
+    db.prepare("UPDATE outbox_ops SET status = 'dispatched', claim_owner = 'dead-instance', claimed_at = ? WHERE run_id = ?").run(new Date().toISOString(), runId)
+    db.close()
+
+    const refused = await engine.dispatchBridgeOps(runId, async () => ({ kind: 'confirmed' as const, result: {} }))
+    assert.ok(refused.ok)
+    assert.equal(refused.outcomes?.[0]?.status, 'in_progress', 'a held claim is not guessed about')
+
+    let payload: unknown = null
+    const recovered = await engine.dispatchBridgeOps(runId, async op => {
+      payload = op.payload
+      return { kind: 'confirmed' as const, result: { state: 'answered' } }
+    }, { force: true })
+    assert.ok(recovered.ok)
+    assert.equal(recovered.outcomes?.[0]?.status, 'confirmed', 'force takes the abandoned claim')
+    const persisted = JSON.parse(ops(dir).find(r => r.op_key.endsWith('answer'))!.payload_json)
+    assert.deepEqual(payload, persisted, 'recovery re-sends the EXACT persisted payload')
+    assert.equal(ops(dir).find(r => r.op_key.endsWith('answer'))!.claim_owner, null)
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
+
+test('reset and a committing decision never both win: the guard rides the archive transaction', async () => {
+  const { engine, dir } = freshEngine()
+  try {
+    const intake = await engine.startBridgeRun(envelope(), PRINCIPAL)
+    if (!intake.ok) throw new Error('intake failed')
+    const decision = engine.submitDecision('approve', 'counters and digest verified', 'race-key', CHANNEL)
+    const reset = engine.reset()
+    const [, resetResult] = await Promise.all([decision, reset.then(() => 'ok', (err: Error) => err.message)])
+    const unresolved = ops(dir).filter(r => r.status === 'pending' || r.status === 'dispatched' || r.status === 'unknown')
+    if (resetResult === 'ok') {
+      // The archive won the race: the decision must NOT have recorded an
+      // obligation behind it.
+      assert.equal(unresolved.length, 0, 'an archived run never leaves a reachable unresolved op')
+    } else {
+      // The decision won the race: reset must have refused it.
+      assert.match(resetResult, /BRIDGE_OPS_UNRESOLVED/)
+    }
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
