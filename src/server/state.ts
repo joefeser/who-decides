@@ -60,7 +60,9 @@ export type ConsoleState = {
   milestones: Milestone[]
   decisionRequest: {
     question: string
-    options: string[]
+    /** The operator chooses by ID; the label is what they read. Native
+     * fixture runs have IDs only, so their label is the ID itself. */
+    options: Array<{ id: string, label: string }>
     /** Native-run fixture fields. */
     humanTerms?: string
     whoIsAffected?: string
@@ -683,7 +685,7 @@ export class ConsoleEngine {
     const env = await this.bridgeEnvelope(runId)
     return {
       question: env.question,
-      options: env.options.map(o => o.id),
+      options: env.options.map(o => ({ id: o.id, label: o.label ?? o.id })),
       sourceSystem: env.sourceSystem,
       contextRefs: env.contextRefs,
     }
@@ -844,7 +846,7 @@ export class ConsoleEngine {
           ? await this.bridgeDecisionRequest(run.id)
           : {
               question: s!.decision_request.question,
-              options: s!.decision_request.options,
+              options: s!.decision_request.options.map((id: string) => ({ id, label: id })),
               humanTerms: s!.decision_request.human_terms,
               whoIsAffected: s!.tradeoff.who_is_affected,
               tradeoffFindingId: s!.finding_tradeoff_id,

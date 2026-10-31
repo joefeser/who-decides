@@ -88,7 +88,15 @@ test('intake creates a bridge run holding the exact envelope, opened at the huma
     assert.equal(state.runKind, 'bridge')
     assert.equal(state.invocationA, null, 'no invocation A exists for a bridge run')
     assert.equal(state.decisionRequest?.question, envelope.question)
-    assert.deepEqual(state.decisionRequest?.options, ['approve', 'send_back', 'defer'], 'options are the envelope option IDs')
+    assert.deepEqual(
+      state.decisionRequest?.options,
+      [
+        { id: 'approve', label: 'approve' },
+        { id: 'send_back', label: 'send_back' },
+        { id: 'defer', label: 'Defer to next session' },
+      ],
+      'options carry their envelope labels; unlabeled options fall back to the ID',
+    )
     assert.equal(state.decisionRequest?.sourceSystem, 'chopin')
     assert.deepEqual(state.decisionRequest?.contextRefs, envelope.contextRefs)
     assert.equal(state.decisionRequest?.humanTerms, undefined, 'no fixture fields are invented for a bridge run')

@@ -424,16 +424,19 @@ export default function Console() {
               <fieldset ref={choiceRef} tabIndex={-1} className="space-y-2" aria-label="Your decision">
                 <legend className="mb-2 text-sm font-medium text-slate-200">Your decision — nothing is selected for you:</legend>
                 {state.decisionRequest.options.map(option => (
-                  <label key={option} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2.5 hover:border-slate-500 has-checked:border-amber-500">
+                  <label key={option.id} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2.5 hover:border-slate-500 has-checked:border-amber-500">
                     <input
                       type="radio"
                       name="decision"
-                      value={option}
-                      checked={choice === option}
-                      onChange={() => setChoice(option)}
+                      value={option.id}
+                      checked={choice === option.id}
+                      onChange={() => setChoice(option.id)}
                       className="h-4 w-4 accent-amber-500"
                     />
-                    <span className="font-mono text-sm">{option}</span>
+                    <span className="text-sm">{option.label}</span>
+                    {option.label !== option.id && (
+                      <span className="font-mono text-xs text-slate-400">{option.id}</span>
+                    )}
                   </label>
                 ))}
               </fieldset>
