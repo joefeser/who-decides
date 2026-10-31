@@ -312,3 +312,62 @@ export function buildAgentReport(
 export function newInvocationId(): string {
   return `inv-${randomUUID()}`
 }
+
+/* ── Bridge records (A3) ──────────────────────────────────────────────────
+ * who-decides' own receipts for CONFIRMED outbound bridge operations —
+ * explicitly NOT HACP artifacts. Same discipline as CHOICE_TO_HACP above:
+ * a finite operation vocabulary, and a choice outside the envelope's
+ * options is a typed throw (UNKNOWN_CHOICE), never a half-record. */
+
+const BRIDGE_OPERATIONS = ['answer', 'approve'] as const
+
+export type BridgeRecordInput = {
+  runId: string
+  targetSystem: string
+  operation: string
+  idempotencyKey: string
+  /** The EXACT persisted dispatch bytes — digested, never re-derived. */
+  payloadJson: string
+  /** The receiver's confirmed result row — digested, never re-derived. */
+  resultJson: string
+  /** The option ID the operator chose. */
+  choice: string
+  /** The envelope's option IDs — the choice must be one of them. */
+  envelopeOptionIds: string[]
+  channel?: { sessionReference: string, authEventRef: string }
+  recordedAt: string
+}
+
+/** Builds `who-decides.bridge-record.v0`: what was asserted, what was sent,
+ * what came back, and the approver AS ASSERTED BY THE BRIDGE — who-decides'
+ * operator-session attribution, labeled as an assertion (the target system
+ * records its own identity; the two are never conflated). */
+export function buildBridgeRecord(input: BridgeRecordInput): Record<string, unknown> {
+  if (!(BRIDGE_OPERATIONS as readonly string[]).includes(input.operation)) {
+    throw new Error(`UNKNOWN_OPERATION:${input.operation}`)
+  }
+  // The choice vocabulary here is the envelope's own option set — dynamic
+  // per request, but finite per run; an unmapped choice is a typed throw
+  // (build.ts's UNKNOWN_CHOICE discipline).
+  if (!input.envelopeOptionIds.includes(input.choice)) {
+    throw new Error(`UNKNOWN_CHOICE:${input.choice}`)
+  }
+  return {
+    schema: 'who-decides.bridge-record.v0',
+    runId: input.runId,
+    targetSystem: input.targetSystem,
+    operation: input.operation,
+    idempotencyKey: input.idempotencyKey,
+    payloadDigest: `sha256:${sha256(input.payloadJson)}`,
+    resultDigest: `sha256:${sha256(input.resultJson)}`,
+    choice: input.choice,
+    approverAsAssertedByBridge: {
+      assertedBy: 'who-decides',
+      actor_id: input.channel ? input.channel.sessionReference : 'demo-unauthenticated-local-console',
+      actor_kind: 'human',
+      session_reference: input.channel?.sessionReference ?? 'demo-unauthenticated-local-console',
+      auth_event_ref: input.channel?.authEventRef ?? 'demo-none',
+    },
+    recordedAt: input.recordedAt,
+  }
+}

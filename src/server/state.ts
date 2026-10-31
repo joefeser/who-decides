@@ -14,7 +14,7 @@ import { assertValid, validateArtifact } from '../artifacts/schemas'
 import type { ArtifactKind } from '../artifacts/schemas'
 import {
   buildTaskPacket, buildReviewFindings, buildStopResponse, buildHumanDecision,
-  buildAgentReport, scopeScenario,
+  buildAgentReport, scopeScenario, buildBridgeRecord,
 } from '../artifacts/build'
 import type { Scenario } from '../artifacts/build'
 import { decisionDigest } from '../consumption/store'
@@ -79,7 +79,7 @@ export type ConsoleState = {
   effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
   /** Bridge-run outbound ops (A2): empty for native runs. */
   outbox: Array<{ opKey: string, kind: string, targetSystem: string, status: string, result: unknown, dispatchedAt: string | null, resolvedAt: string | null }>
-  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch' | BridgeArtifactKind, valid: boolean }>
+  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch' | 'bridge-record' | BridgeArtifactKind, valid: boolean }>
   heading: string
   subheading: string
 }
@@ -118,6 +118,32 @@ function validateReceipt(kind: 'consumption-receipt' | 'effect-receipt', artifac
     && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.decisionId === 'string'
     && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.consumptionReceiptId === 'string'
     && typeof (r.authorizedBy as Record<string, unknown> | undefined)?.successorInvocationId === 'string'
+}
+
+/* Bridge records (A3) — a SEPARATE validator by design: bridge records are
+ * explicitly not HACP artifacts and not the dry-run receipt family; the
+ * dry-run validators above are untouched. Same no-free-green-check
+ * discipline: a malformed record fails the write. Boundary fields (the
+ * operation vocabulary, full sha256 digests, the approver-as-asserted
+ * block) are enforced exactly. */
+function validateBridgeRecord(artifact: unknown): boolean {
+  if (typeof artifact !== 'object' || artifact === null) return false
+  const r = artifact as Record<string, unknown>
+  const approver = r.approverAsAssertedByBridge as Record<string, unknown> | undefined
+  return r.schema === 'who-decides.bridge-record.v0'
+    && typeof r.runId === 'string' && r.runId.length > 0
+    && typeof r.targetSystem === 'string' && r.targetSystem.length > 0
+    && (r.operation === 'answer' || r.operation === 'approve')
+    && typeof r.idempotencyKey === 'string' && r.idempotencyKey.length > 0
+    && /^sha256:[0-9a-f]{64}$/.test(r.payloadDigest as string)
+    && /^sha256:[0-9a-f]{64}$/.test(r.resultDigest as string)
+    && typeof r.choice === 'string' && r.choice.length > 0
+    && approver?.assertedBy === 'who-decides'
+    && typeof approver?.actor_id === 'string' && approver.actor_id.length > 0
+    && approver?.actor_kind === 'human'
+    && typeof approver?.session_reference === 'string' && approver.session_reference.length > 0
+    && typeof approver?.auth_event_ref === 'string' && approver.auth_event_ref.length > 0
+    && typeof r.recordedAt === 'string' && r.recordedAt.length > 0
 }
 
 export class ConsoleEngine {
@@ -271,13 +297,47 @@ export class ConsoleEngine {
    * committed, dispatch never ran) dispatch for the first time;
    * dispatched/unknown ops (crash window, lost response) re-send the EXACT
    * persisted payload under the same op key. Terminal ops are echoed, never
-   * re-dispatched. Repeat-safe by construction. */
+   * re-dispatched. Repeat-safe by construction. Newly confirmed ops get
+   * their bridge records (A3). */
   async dispatchBridgeOps(runId: string, dispatcher: OutboxDispatcher): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
     await this.ready
     const row = await this.runs.getRunRow(runId)
     if (!row || row.tenant_id !== this.tenant || Number(row.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
     if (row.run_kind !== 'bridge') return { ok: false, error: 'NOT_A_BRIDGE_RUN' }
-    return { ok: true, outcomes: await this.outbox.dispatch(runId, dispatcher) }
+    const outcomes = await this.outbox.dispatch(runId, dispatcher)
+    await this.recordConfirmedBridgeOps(runId)
+    return { ok: true, outcomes }
+  }
+
+  /** Writes the non-HACP bridge record (A3) for every CONFIRMED op that
+   * does not have one yet — idempotent by artifact name (first-writer-wins)
+   * and repeat-safe with dispatch. The record digests the EXACT persisted
+   * payload and result bytes; the approver block is the decision's operator
+   * session channel, labeled asserted-by-bridge. Only confirmed ops get
+   * records: unknown stays unknown and failed retains its typed error in
+   * the op row — a receipt never asserts what was not confirmed. */
+  private async recordConfirmedBridgeOps(runId: string): Promise<void> {
+    const env = await this.bridgeEnvelope(runId)
+    const row = await this.runs.getRunRow(runId)
+    const decision = row?.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
+    for (const op of await this.outbox.ops(runId)) {
+      if (op.status !== 'confirmed' || op.result_json === null) continue
+      const name = `bridge-record:${op.op_key}`
+      if (await this.runs.getArtifactJson(runId, name) !== undefined) continue
+      const record = buildBridgeRecord({
+        runId,
+        targetSystem: op.target_system,
+        operation: op.kind,
+        idempotencyKey: op.op_key,
+        payloadJson: op.payload_json,
+        resultJson: op.result_json,
+        choice: decision?.choice ?? '',
+        envelopeOptionIds: env.options.map(o => o.id),
+        channel: decision?.channel,
+        recordedAt: new Date().toISOString(),
+      })
+      await this.storeArtifact(runId, name, 'bridge-record', record)
+    }
   }
 
   /** A lost provisioning CAS can mean another caller finished the same
@@ -453,6 +513,7 @@ export class ConsoleEngine {
       if (this.bridgeDispatcher) {
         try {
           await this.outbox.dispatch(run.id, this.bridgeDispatcher)
+          await this.recordConfirmedBridgeOps(run.id)
         } catch { /* transport threw — op state is the honest record; resume re-sends */ }
       }
       return { ok: true }
@@ -840,12 +901,14 @@ export class ConsoleEngine {
     if (failure?.status === 'rejected') throw failure.reason
   }
 
-  private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | BridgeArtifactKind, artifact: unknown): Promise<void> {
+  private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'bridge-record' | BridgeArtifactKind, artifact: unknown): Promise<void> {
     const valid = kind === 'consumption-receipt' || kind === 'effect-receipt'
       ? validateReceipt(kind, artifact)
-      : kind === 'decision-request' || kind === 'bridge-intake' || kind === 'bridge-decision'
-        ? validateBridgeArtifact(kind, artifact)
-        : validateArtifact(kind, artifact).valid
+      : kind === 'bridge-record'
+        ? validateBridgeRecord(artifact)
+        : kind === 'decision-request' || kind === 'bridge-intake' || kind === 'bridge-decision'
+          ? validateBridgeArtifact(kind, artifact)
+          : validateArtifact(kind, artifact).valid
     if (!valid) throw new Error(`ARTIFACT_INVALID:${kind}:${name}`)
     await this.runs.storeArtifact({
       runId, tenantId: this.tenant, name, kind,

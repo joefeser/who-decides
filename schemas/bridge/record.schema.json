@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/bridge/record.v0.json",
+  "title": "Bridge record (operation receipt)",
+  "description": "who-decides' receipt for a CONFIRMED outbound bridge operation. Explicitly NOT a HACP artifact — the bridge run kind produces no HACP-schema artifacts; this is who-decides' own record enumerating exactly what was asserted: the target system, the operation, the receiver-side idempotency key, digests over the exact payload sent and the confirmed result received, and the approver AS ASSERTED BY THE BRIDGE (who-decides' operator-session attribution; the target system sees its own bot identity — the two are never conflated).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runId",
+    "targetSystem",
+    "operation",
+    "idempotencyKey",
+    "payloadDigest",
+    "resultDigest",
+    "choice",
+    "approverAsAssertedByBridge",
+    "recordedAt"
+  ],
+  "properties": {
+    "schema": {
+      "const": "who-decides.bridge-record.v0"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetSystem": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operation": {
+      "enum": [
+        "answer",
+        "approve"
+      ]
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "payloadDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "resultDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "choice": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The option ID the operator chose — the act the record asserts."
+    },
+    "approverAsAssertedByBridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertedBy",
+        "actor_id",
+        "actor_kind",
+        "session_reference",
+        "auth_event_ref"
+      ],
+      "properties": {
+        "assertedBy": {
+          "const": "who-decides"
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_kind": {
+          "const": "human"
+        },
+        "session_reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth_event_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "recordedAt": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
