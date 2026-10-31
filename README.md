@@ -91,12 +91,15 @@ sign-in.
 ```sh
 # Tests (all offline; CI runs the same plus the contention proof)
 npx tsc --noEmit
-npm run test:auth        # operator sessions, mutation guards, login rate limit
-npm run test:console     # engine: branches, idempotency, crash recovery, reset
-npm run test:artifacts   # schema validation incl. tamper-rejection
-npm run test:consumption # consume-once claims, races, expiry, replay
-npm run test:live-loop   # the live script's decision flow (synthetic runtime)
-npm run scenario         # end-to-end artifact spine, deterministic
+npm run test:auth          # operator sessions, mutation guards, login rate limit
+npm run test:console       # engine: branches, idempotency, crash recovery, reset
+npm run test:artifacts     # schema validation incl. tamper-rejection
+npm run test:consumption   # consume-once claims, races, expiry, replay
+npm run test:live-loop     # the live script's decision flow (synthetic runtime)
+npm run test:bridge        # bridge intake: strict envelopes, run kind, attribution
+npm run test:outbox        # outbox: one-tx intent, exact replay, unknown retention
+npm run test:bridge-record # non-HACP operation receipts, boundary enforcement
+npm run scenario           # end-to-end artifact spine, deterministic
 ```
 
 ### Postgres backend (optional)
@@ -133,6 +136,50 @@ executes only the approved branch as a dry-run. Artifacts land in
 `.tmp/live-run/<tag>/`. Set `WD_LIVE_TAG` (filename-safe slug) to name a run;
 rerunning a consumed tag stops typed. An OpenAI-compatible escape hatch exists
 via `WD_PROVIDER=openai-compatible` with `WD_BASE_URL`/`WD_MODEL`/`WD_API_KEY`.
+
+## Bridge intake (external decision requests)
+
+The console also accepts decision requests from an external system — built
+for the chopin bridge work demo. A machine principal submits a typed
+envelope; a **bridge run kind** holds it for the operator exactly like a
+native run, under the same single-active-run rule:
+
+```sh
+# Provision the bridge token (same hash discipline as the operator passcode):
+npm run hash -- 'your-long-bridge-token'
+# → WD_BRIDGE_TOKEN_HASH=<64-hex> in .env.local; unset = route refuses everything
+```
+
+- `POST /api/external/decisions` accepts `who-decides.decision-request.v0`
+  (question, option IDs, a coordination binding of document/question/
+  revision, context refs, digests). Validation is strict —
+  `additionalProperties: false` everywhere, so the envelope structurally
+  cannot carry an actor. Authentication is the `machine:chopin-bridge`
+  principal via `WD_BRIDGE_TOKEN_HASH` (fail closed: unset/malformed hash →
+  typed 503; missing/wrong token → typed 401). This is a distinct scoped
+  credential from the AgentCore runtime's `WD_MACHINE_TOKEN_HASH` — neither
+  can authenticate as the other's principal.
+- The operator answers bridge runs through the same console decision form
+  (operator passcode session). Actor attribution always comes from that
+  session channel — never from anything the caller sent. The machine
+  principal that delivered the request is recorded separately.
+- The **outbox** commits the decision and its outbound intent in one
+  transaction; dispatch replays only the exact persisted payload (the
+  intake-time revision — never a fresh read); a lost response leaves the
+  outcome `unknown`, retained until the receiver's idempotency confirms the
+  original result on retry. `/api/replay` remains a refusal probe.
+- Confirmed operations write a `who-decides.bridge-record.v0` receipt
+  (target, operation, idempotency key, payload/result digests, approver *as
+  asserted by the bridge*).
+
+**Demo boundaries (bridge):** the bridge run kind produces **no HACP-schema
+artifacts** — its records are who-decides' own bridge schemas, explicitly
+non-HACP until an honest mapping exists. The approver on a bridge record is
+who-decides' operator-session attribution, labeled *asserted-by-bridge*; the
+target system records its own identity, and the two are never conflated.
+Bridge-run state and artifacts are public reads like all console evidence.
+
+## Review loop
 
 ## Review loop
 
@@ -228,6 +275,10 @@ demo with public watch mode**:
   which reset may archive; audit artifacts are retained either way.
 - The prepared effect is always a **dry-run**: the exact payload is recorded and
   shown, and no external mutation is performed in any branch.
+- Bridge runs (see [Bridge intake](#bridge-intake-external-decision-requests))
+  produce no HACP-schema artifacts; their records are explicitly non-HACP,
+  and their approver field is an assertion by this bridge's operator session,
+  not an identity the target system verified.
 - Resetting the console archives the current run; completed run records and
   artifacts stay in the local database for audit.
 

@@ -34,6 +34,16 @@ This file is a status record; implementation evidence lives in
 - **ACK lane** (PR #5, then v0.2) — the PR-review loop lane is active on main;
   normal feature work targets `dev`, while promotion to `main` remains a
   separate owner-mediated PR (`.agent-control/lanes/pr-review-loop.yaml`).
+- **Bridge intake** — the console accepts external decision requests
+  (`POST /api/external/decisions`, envelope `who-decides.decision-request.v0`)
+  under a `machine:chopin-bridge` principal and holds them in a bridge run
+  kind: strict intake, operator-session actor attribution, a one-transaction
+  outbox that replays only exact persisted payloads (unknown outcomes
+  retained), and non-HACP `bridge-record.v0` receipts for confirmed
+  operations. Built for the chopin work demo; this intake is the
+  **predecessor of the decision-queue item below** — a queue is many
+  requests held at once, which is exactly the shape intake already
+  persists, minus the single-active-run restriction.
 
 ## What's next
 
@@ -44,4 +54,5 @@ This file is a status record; implementation evidence lives in
 - **HACP promotion criteria** (candidate → release): a second independent
   implementation; same-file legacy migration exercised in a real eligible
   deployment; real-effect semantics separately specified and proven.
-- **Post-hackathon:** per-visitor runs and a decision queue.
+- **Post-hackathon:** per-visitor runs and a decision queue (the queue grows
+  directly out of the bridge intake's persisted request shape).
