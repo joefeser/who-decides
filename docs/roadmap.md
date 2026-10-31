@@ -41,9 +41,9 @@ This file is a status record; implementation evidence lives in
   outbox that replays only exact persisted payloads (unknown outcomes
   retained), and non-HACP `bridge-record.v0` receipts for confirmed
   operations. Built for the chopin work demo; this intake is the
-  **predecessor of the decision-queue item below** — a queue is many
-  requests held at once, which is exactly the shape intake already
-  persists, minus the single-active-run restriction.
+  **predecessor of the decision-queue item below** — the persisted intake
+  shape is the foundation a queue builds on (many requests held at once);
+  queue behavior itself is future work.
 
 ## What's next
 

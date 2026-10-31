@@ -158,7 +158,9 @@ npm run hash -- 'your-long-bridge-token'
   principal via `WD_BRIDGE_TOKEN_HASH` (fail closed: unset/malformed hash →
   typed 503; missing/wrong token → typed 401). This is a distinct scoped
   credential from the AgentCore runtime's `WD_MACHINE_TOKEN_HASH` — neither
-  can authenticate as the other's principal.
+  can authenticate as the other's principal. The route has **no application
+  rate limiting** — machine authentication is its only gate; the operator
+  passcode rate limiter does not cover it.
 - The operator answers bridge runs through the same console decision form
   (operator passcode session). Actor attribution always comes from that
   session channel — never from anything the caller sent. The machine
@@ -178,8 +180,6 @@ non-HACP until an honest mapping exists. The approver on a bridge record is
 who-decides' operator-session attribution, labeled *asserted-by-bridge*; the
 target system records its own identity, and the two are never conflated.
 Bridge-run state and artifacts are public reads like all console evidence.
-
-## Review loop
 
 ## Review loop
 
