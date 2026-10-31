@@ -35,6 +35,7 @@ type ConsoleState = {
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
   replayProbe: { attemptedBy: string, result: string, detail: string } | null
   effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
+  outbox: Array<{ opKey: string, kind: string, targetSystem: string, status: string, result: unknown, dispatchedAt: string | null, resolvedAt: string | null }>
   artifacts: Array<{ name: string, kind: string, valid: boolean }>
   heading: string
   subheading: string
@@ -473,6 +474,21 @@ export default function Console() {
               ? 'Decision recorded — outbound dispatch is held for the outbox. Nothing completes on wall-clock.'
               : 'Starting new invocation… claiming the decision exactly once…'}
           </p>
+          {state.runKind === 'bridge' && state.outbox.length > 0 && (
+            <ul className="space-y-2" aria-label="Outbound operations">
+              {state.outbox.map(op => (
+                <li key={op.opKey} className="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2 font-mono text-xs">
+                  <span className="text-sky-300">{op.kind}</span>
+                  {' → '}{op.targetSystem}
+                  {' · '}
+                  <span className={op.status === 'confirmed' ? 'text-emerald-300' : op.status === 'unknown' ? 'text-amber-300' : op.status === 'failed' ? 'text-red-300' : 'text-slate-400'}>
+                    {op.status}
+                  </span>
+                  {op.status === 'unknown' && <span className="text-amber-300/80"> (outcome unknown — retained, never guessed)</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

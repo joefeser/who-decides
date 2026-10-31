@@ -20,6 +20,7 @@ function validEnvelope(): Record<string, unknown> {
     sourceSystem: 'chopin',
     question: 'Approve the dependency upgrade implementation graph?',
     options: [{ id: 'approve' }, { id: 'send_back' }, { id: 'defer', label: 'Defer to next session' }],
+    coordination: { documentId: 'https://chopin.test/d/abc123', questionId: 'runtime-floor', revision: 7 },
     contextRefs: ['chopin:doc:abc123', 'chopin:question:runtime-floor'],
     digests: [{ algorithm: 'sha256', value: 'a'.repeat(64), of: 'draft-graph' }],
   }
@@ -66,6 +67,9 @@ test('envelope validation is strict: extra properties, malformed shapes, and wea
     ['no digests', { ...validEnvelope(), digests: [] }],
     ['wrong schema const', { ...validEnvelope(), schema: 'who-decides.decision-request.v1' }],
     ['missing question', { ...validEnvelope(), question: undefined }],
+    ['missing coordination binding', { ...validEnvelope(), coordination: undefined }],
+    ['coordination with negative revision', { ...validEnvelope(), coordination: { documentId: 'd', questionId: 'q', revision: -1 } }],
+    ['coordination with extra field', { ...validEnvelope(), coordination: { documentId: 'd', questionId: 'q', revision: 1, actor: 'joe' } }],
     ['non-object body', 'just a string'],
     ['null body', null],
   ]

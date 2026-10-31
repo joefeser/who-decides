@@ -21,6 +21,42 @@ export type FullRunRow = Record<string, string | null>
 
 export type DecisionIntentRow = { decision_json: string | null, invocation_b: string | null }
 
+/* Outbox (A2): one row per outbound operation. The payload is persisted at
+ * ENQUEUE time, inside the same adapter transaction as the decision intent
+ * — the one-transaction rule — and the dispatcher may only ever replay these
+ * exact bytes. resultJson is the per-op result row: the receiver's response
+ * when confirmed, the typed error when failed, or an explicit
+ * outcome-unknown marker that is retained (never guessed up or down). */
+export type OutboxOpKind = 'answer' | 'approve'
+
+export type OutboxOpStatus = 'pending' | 'dispatched' | 'confirmed' | 'unknown' | 'failed'
+
+export type NewOutboxOp = {
+  runId: string
+  /** Receiver-side idempotency key (B4 replays the original result on an
+   * identical retry). Deterministic per (run, operation) so recovery
+   * reuses it without re-derivation. */
+  opKey: string
+  kind: OutboxOpKind
+  targetSystem: string
+  payloadJson: string
+}
+
+/** Read shape — snake_case columns, matching the other read rows
+ * (RunRow/DecisionIntentRow) both adapters return. */
+export type OutboxOpRow = {
+  run_id: string
+  op_key: string
+  kind: OutboxOpKind
+  target_system: string
+  payload_json: string
+  status: OutboxOpStatus
+  result_json: string | null
+  created_at: string
+  dispatched_at: string | null
+  resolved_at: string | null
+}
+
 export type ArtifactRow = { name: string, kind: string, valid: number }
 
 export type NewRun = {
@@ -73,8 +109,24 @@ export interface RunStore {
    * slot, persists (successor, decisionJson) only if none exists and returns
    * the STORED intent — a losing concurrent submission receives the winner's
    * successor and decision, never its own stale values. A missing/archived
-   * row returns null fields; it cannot authorize a claim. */
-  acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow>
+   * row returns null fields; it cannot authorize a claim.
+   *
+   * A2's one-transaction rule: when outboxOp is supplied, the outbound op
+   * row commits INSIDE this same adapter transaction — a recorded decision
+   * can never exist without its dispatch intent, and neither can commit
+   * alone. The op insert is idempotent (same-key conflict is a no-op) so a
+   * repairing retry after a crashed caller never double-enqueues. */
+  acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string, outboxOp?: NewOutboxOp): Promise<DecisionIntentRow>
+  /** Outbox ops for a run in enqueue (creation) order. */
+  getOutboxOps(runId: string): Promise<OutboxOpRow[]>
+  /** CAS pending -> dispatched: exactly one dispatcher owns an op's wire
+   * attempt. False = already dispatched (or terminal/missing). */
+  markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean>
+  /** Per-op result row. Legal transitions: dispatched -> terminal,
+   * unknown -> terminal (an explicit receiver response on a retry is
+   * evidence, not a guess). Pending ops never resolve; terminal ops are
+   * immutable. */
+  resolveOutboxOp(runId: string, opKey: string, status: 'confirmed' | 'unknown' | 'failed', resultJson: string, resolvedAt: string): Promise<boolean>
   /** CAS finalization (decision_required -> resuming): a slower duplicate
    * submission must never drag an already-completed run back to resuming.
    * False means the run already moved on — idempotent success for callers. */

@@ -10,6 +10,7 @@
     "sourceSystem",
     "question",
     "options",
+    "coordination",
     "contextRefs",
     "digests"
   ],
@@ -26,6 +27,9 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 2000
+    },
+    "coordination": {
+      "$ref": "#/$defs/coordination"
     },
     "options": {
       "type": "array",
@@ -55,6 +59,33 @@
     }
   },
   "$defs": {
+    "coordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentId",
+        "questionId",
+        "revision"
+      ],
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Target-system document locator the answer dispatches to (chopin answer_decision's id)."
+        },
+        "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Question revision the request was derived from; the answer dispatch replays exactly this revision (stale revisions are the receiver's typed refusal, never silently refreshed)."
+        }
+      }
+    },
     "option": {
       "type": "object",
       "additionalProperties": false,

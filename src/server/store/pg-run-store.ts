@@ -20,7 +20,7 @@
  * timeline in write order, as SQLite's ORDER BY rowid does). */
 import type { Pool, PoolClient } from 'pg'
 import { createPostgresPool, withPostgresTransaction } from './pg-pool'
-import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow } from './store'
+import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow, NewOutboxOp, OutboxOpRow } from './store'
 
 /** Connection config: an explicit connectionString wins; otherwise the
  * WD_PG_URL / DATABASE_URL environment is used ONLY when the caller passed
@@ -114,6 +114,20 @@ export class PostgresRunStore implements RunStore {
           seq BIGINT GENERATED ALWAYS AS IDENTITY,
           PRIMARY KEY (run_id, name)
         );
+        CREATE TABLE IF NOT EXISTS outbox_ops (
+          run_id TEXT NOT NULL,
+          op_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          target_system TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          result_json TEXT,
+          created_at TEXT NOT NULL,
+          dispatched_at TEXT,
+          resolved_at TEXT,
+          seq BIGINT GENERATED ALWAYS AS IDENTITY,
+          PRIMARY KEY (run_id, op_key)
+        );
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'deterministic';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT NOT NULL DEFAULT 'native';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
@@ -153,23 +167,65 @@ export class PostgresRunStore implements RunStore {
     })
   }
 
-  async acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow> {
-    // Atomic first-writer-wins in a single statement: the winner's UPDATE
-    // matches decision_json IS NULL; every loser's matches nothing and
-    // re-reads the STORED intent (MVCC makes check-then-act one step).
+  async acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string, outboxOp?: NewOutboxOp): Promise<DecisionIntentRow> {
+    // Atomic first-writer-wins: the winner's UPDATE matches decision_json IS
+    // NULL; every loser's matches nothing and re-reads the STORED intent.
     // Live rows only (invariant: archived rows are never mutated) — a reset
     // that archives between the caller's read and this write must not
     // persist an intent onto an archived audit row.
-    const won = await this.pool.query(
-      'UPDATE runs SET invocation_b = $2, decision_json = $3 WHERE id = $1 AND decision_json IS NULL AND archived = 0',
-      [runId, invocationB, decisionJson],
+    //
+    // A2's one-transaction rule: the outbox op commits in the SAME
+    // transaction as the winning intent — real transaction here, the
+    // counterpart of SQLite's synchronous BEGIN IMMEDIATE block.
+    return this.withTx(async client => {
+      const won = await client.query(
+        'UPDATE runs SET invocation_b = $2, decision_json = $3 WHERE id = $1 AND decision_json IS NULL AND archived = 0',
+        [runId, invocationB, decisionJson],
+      )
+      if ((won.rowCount ?? 0) > 0) {
+        if (outboxOp) {
+          // Same-key conflict is a no-op (deterministic op keys; only the
+          // intent winner reaches the insert).
+          await client.query(
+            "INSERT INTO outbox_ops (run_id, op_key, kind, target_system, payload_json, status, created_at) VALUES ($1, $2, $3, $4, $5, 'pending', $6) ON CONFLICT (run_id, op_key) DO NOTHING",
+            [outboxOp.runId, outboxOp.opKey, outboxOp.kind, outboxOp.targetSystem, outboxOp.payloadJson, new Date().toISOString()],
+          )
+        }
+        return { decision_json: decisionJson, invocation_b: invocationB }
+      }
+      const stored = await client.query('SELECT decision_json, invocation_b FROM runs WHERE id = $1 AND archived = 0', [runId])
+      const row = stored.rows[0] as DecisionIntentRow | undefined
+      if (row?.decision_json) return row
+      // A reset won; never report an unpersisted intent as accepted.
+      return { decision_json: null, invocation_b: null }
+    })
+  }
+
+  async getOutboxOps(runId: string): Promise<OutboxOpRow[]> {
+    // ORDER BY seq = SQLite's ORDER BY rowid (enqueue order).
+    const result = await this.pool.query(
+      'SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at FROM outbox_ops WHERE run_id = $1 ORDER BY seq',
+      [runId],
     )
-    if ((won.rowCount ?? 0) > 0) return { decision_json: decisionJson, invocation_b: invocationB }
-    const stored = await this.pool.query('SELECT decision_json, invocation_b FROM runs WHERE id = $1 AND archived = 0', [runId])
-    const row = stored.rows[0] as DecisionIntentRow | undefined
-    if (row?.decision_json) return row
-    // A reset won; never report an unpersisted intent as accepted.
-    return { decision_json: null, invocation_b: null }
+    return result.rows as OutboxOpRow[]
+  }
+
+  async markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean> {
+    const result = await this.pool.query(
+      "UPDATE outbox_ops SET status = 'dispatched', dispatched_at = $1 WHERE run_id = $2 AND op_key = $3 AND status = 'pending'",
+      [dispatchedAt, runId, opKey],
+    )
+    return (result.rowCount ?? 0) > 0
+  }
+
+  async resolveOutboxOp(runId: string, opKey: string, status: 'confirmed' | 'unknown' | 'failed', resultJson: string, resolvedAt: string): Promise<boolean> {
+    // Unknown -> terminal is legal (a retry's explicit receiver response is
+    // evidence); pending never resolves; terminal rows are immutable.
+    const result = await this.pool.query(
+      "UPDATE outbox_ops SET status = $1, result_json = $2, resolved_at = $3 WHERE run_id = $4 AND op_key = $5 AND status IN ('dispatched', 'unknown')",
+      [status, resultJson, resolvedAt, runId, opKey],
+    )
+    return (result.rowCount ?? 0) > 0
   }
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {

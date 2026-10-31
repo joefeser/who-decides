@@ -16,7 +16,7 @@
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow } from './store'
+import type { RunStore, RunRow, NewRun, StoredArtifact, ArtifactRow, DecisionIntentRow, FullRunRow, NewOutboxOp, OutboxOpRow } from './store'
 
 export class SqliteRunStore implements RunStore {
   private readonly db: Database.Database
@@ -55,6 +55,19 @@ export class SqliteRunStore implements RunStore {
         json TEXT NOT NULL,
         PRIMARY KEY (run_id, name)
       );
+      CREATE TABLE IF NOT EXISTS outbox_ops (
+        run_id TEXT NOT NULL,
+        op_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target_system TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        resolved_at TEXT,
+        PRIMARY KEY (run_id, op_key)
+      );
     `)
     try { this.db.exec("ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'deterministic'") } catch { /* column exists */ }
     try { this.db.exec("ALTER TABLE runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'native'") } catch { /* column exists */ }
@@ -88,8 +101,11 @@ export class SqliteRunStore implements RunStore {
     }
   }
 
-  async acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string): Promise<DecisionIntentRow> {
-    // Atomic first-writer-wins, synchronous body (see file header).
+  async acquireDecisionIntent(runId: string, invocationB: string, decisionJson: string, outboxOp?: NewOutboxOp): Promise<DecisionIntentRow> {
+    // Atomic first-writer-wins, synchronous body (see file header). The
+    // outbox op (when supplied) commits in the SAME immediate transaction —
+    // A2's one-transaction rule: decision intent and dispatch intent commit
+    // together or not at all.
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existing = this.db.prepare('SELECT decision_json, invocation_b FROM runs WHERE id = ? AND archived = 0').get(runId) as DecisionIntentRow | undefined
@@ -104,12 +120,42 @@ export class SqliteRunStore implements RunStore {
       this.db
         .prepare('UPDATE runs SET invocation_b = ?, decision_json = ? WHERE id = ? AND decision_json IS NULL AND archived = 0')
         .run(invocationB, decisionJson, runId)
+      if (outboxOp) {
+        // Same-key conflict is a no-op: only the intent winner reaches here,
+        // and a repairing retry after a crashed caller re-derives the same
+        // deterministic op — never a duplicate enqueue.
+        this.db
+          .prepare('INSERT INTO outbox_ops (run_id, op_key, kind, target_system, payload_json, status, created_at) VALUES (?, ?, ?, ?, ?, \'pending\', ?) ON CONFLICT(run_id, op_key) DO NOTHING')
+          .run(outboxOp.runId, outboxOp.opKey, outboxOp.kind, outboxOp.targetSystem, outboxOp.payloadJson, new Date().toISOString())
+      }
       this.db.exec('COMMIT')
       return { decision_json: decisionJson, invocation_b: invocationB }
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err
     }
+  }
+
+  async getOutboxOps(runId: string): Promise<OutboxOpRow[]> {
+    return this.db
+      .prepare('SELECT run_id, op_key, kind, target_system, payload_json, status, result_json, created_at, dispatched_at, resolved_at FROM outbox_ops WHERE run_id = ? ORDER BY created_at, rowid')
+      .all(runId) as OutboxOpRow[]
+  }
+
+  async markOutboxDispatched(runId: string, opKey: string, dispatchedAt: string): Promise<boolean> {
+    const result = this.db
+      .prepare("UPDATE outbox_ops SET status = 'dispatched', dispatched_at = ? WHERE run_id = ? AND op_key = ? AND status = 'pending'")
+      .run(dispatchedAt, runId, opKey)
+    return result.changes > 0
+  }
+
+  async resolveOutboxOp(runId: string, opKey: string, status: 'confirmed' | 'unknown' | 'failed', resultJson: string, resolvedAt: string): Promise<boolean> {
+    // Unknown -> terminal is legal (a retry's explicit receiver response is
+    // evidence); pending never resolves; terminal rows are immutable.
+    const result = this.db
+      .prepare("UPDATE outbox_ops SET status = ?, result_json = ?, resolved_at = ? WHERE run_id = ? AND op_key = ? AND status IN ('dispatched', 'unknown')")
+      .run(status, resultJson, resolvedAt, runId, opKey)
+    return result.changes > 0
   }
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {

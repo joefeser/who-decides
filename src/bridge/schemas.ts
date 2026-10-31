@@ -17,12 +17,21 @@ export type BridgeArtifactKind = 'decision-request' | 'bridge-intake' | 'bridge-
 
 export type DecisionRequestOption = { id: string, label?: string }
 export type DecisionRequestDigest = { algorithm: 'sha256', value: string, of?: string }
+/** The persisted dispatch binding: what the answer op targets, captured at
+ * INTAKE. The outbox replays exactly this revision — it is never refreshed
+ * from a new read of the target system. */
+export type DecisionRequestCoordination = {
+  documentId: string
+  questionId: string
+  revision: number
+}
 
 export type DecisionRequestEnvelope = {
   schema: 'who-decides.decision-request.v0'
   sourceSystem: string
   question: string
   options: DecisionRequestOption[]
+  coordination: DecisionRequestCoordination
   contextRefs: string[]
   digests: DecisionRequestDigest[]
 }

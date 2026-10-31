@@ -22,7 +22,9 @@ import type { DecisionRecord } from '../consumption/store'
 import { patchScenario } from '../agent-service/fixture'
 import { parseDecisionRequest, validateBridgeArtifact } from '../bridge/schemas'
 import type { BridgeArtifactKind, DecisionRequestEnvelope, BridgeIntakeRecord } from '../bridge/schemas'
-import type { RunStore } from './store/store'
+import { Outbox, buildAnswerOp } from './outbox'
+import type { OutboxDispatcher, OutboxOpOutcome } from './outbox'
+import type { RunStore, NewOutboxOp } from './store/store'
 import { createDefaultRunStore, createDefaultReceiptStore } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
 
@@ -75,6 +77,8 @@ export type ConsoleState = {
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
   replayProbe: { attemptedBy: string, result: string, detail: string } | null
   effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
+  /** Bridge-run outbound ops (A2): empty for native runs. */
+  outbox: Array<{ opKey: string, kind: string, targetSystem: string, status: string, result: unknown, dispatchedAt: string | null, resolvedAt: string | null }>
   artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch' | BridgeArtifactKind, valid: boolean }>
   heading: string
   subheading: string
@@ -119,6 +123,11 @@ function validateReceipt(kind: 'consumption-receipt' | 'effect-receipt', artifac
 export class ConsoleEngine {
   private readonly runs: RunStore
   private readonly receipts: ReceiptStore
+  private readonly outbox: Outbox
+  /** Optional bridge transport (A2): when wired, a recorded bridge decision
+   * dispatches its outbound ops inline; without it, ops stay pending for an
+   * explicit dispatchBridgeOps resume (tests, demo wiring, recovery). */
+  private readonly bridgeDispatcher: OutboxDispatcher | undefined
   private readonly ready: Promise<void>
   /** Runs whose live resume dispatch is currently being awaited by THIS
    * process. Reset refuses to archive an in-flight resume even before its
@@ -131,7 +140,7 @@ export class ConsoleEngine {
    * single-operator local demo behavior unchanged. */
   readonly tenant: string
 
-  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore }) {
+  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore, bridgeDispatcher?: OutboxDispatcher }) {
     this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
     // Backend selection (WD_STORE=sqlite|postgres) lives in the factory;
@@ -140,6 +149,8 @@ export class ConsoleEngine {
     // an unused adapter that close() could not reach.
     this.runs = stores?.runs ?? createDefaultRunStore(dir)
     this.receipts = stores?.receipts ?? createDefaultReceiptStore(dir)
+    this.outbox = new Outbox(this.runs)
+    this.bridgeDispatcher = stores?.bridgeDispatcher
     // The provider seam's initialize() is async (a Postgres adapter must be);
     // the engine bridges that with a ready-promise so constructors stay sync.
     this.ready = this.runs.initialize()
@@ -255,6 +266,20 @@ export class ConsoleEngine {
     return { ok: true, runId }
   }
 
+  /** Explicit outbox dispatch/resume for a bridge run (A2): drives every
+   * unresolved op through the given transport — pending ops (intent
+   * committed, dispatch never ran) dispatch for the first time;
+   * dispatched/unknown ops (crash window, lost response) re-send the EXACT
+   * persisted payload under the same op key. Terminal ops are echoed, never
+   * re-dispatched. Repeat-safe by construction. */
+  async dispatchBridgeOps(runId: string, dispatcher: OutboxDispatcher): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
+    await this.ready
+    const row = await this.runs.getRunRow(runId)
+    if (!row || row.tenant_id !== this.tenant || Number(row.archived) !== 0) return { ok: false, error: 'RUN_CHANGED' }
+    if (row.run_kind !== 'bridge') return { ok: false, error: 'NOT_A_BRIDGE_RUN' }
+    return { ok: true, outcomes: await this.outbox.dispatch(runId, dispatcher) }
+  }
+
   /** A lost provisioning CAS can mean another caller finished the same
    * work. Network I/O lets repair overtake the creator, so distinguish that
    * success from retraction without changing markProvisioned's CAS result. */
@@ -353,9 +378,9 @@ export class ConsoleEngine {
     // validation at this very line for native runs) simply does not apply to
     // a run whose question arrived from outside.
     const isBridge = row.run_kind === 'bridge'
+    const bridgeEnv = isBridge ? await this.bridgeEnvelope(run.id) : undefined
     if (isBridge) {
-      const env = await this.bridgeEnvelope(run.id)
-      if (!env.options.some(o => o.id === choice)) return { ok: false, error: 'INVALID_CHOICE' }
+      if (!bridgeEnv!.options.some(o => o.id === choice)) return { ok: false, error: 'INVALID_CHOICE' }
     } else {
       const s = scopeScenario(patchScenario, run.id)
       if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
@@ -373,12 +398,21 @@ export class ConsoleEngine {
     // successor (review findings 1+2). A crash between claim and state-write
     // leaves a retry that reuses the same successor and digest → 'replayed',
     // never a competing successor.
+    //
+    // A2 (bridge): the outbound answer op commits in the SAME store
+    // transaction — the one-transaction rule. Its payload is built here,
+    // ONCE, from persisted state only (intake envelope coordination + the
+    // choice being recorded); only the intent winner's op inserts.
+    const answerOp: NewOutboxOp | undefined = isBridge
+      ? buildAnswerOp(run.id, bridgeEnv!.coordination, choice, bridgeEnv!.sourceSystem)
+      : undefined
     const invocationB = rowInvocationB ?? `inv-${randomUUID()}`
     const decidedAt = prior?.decidedAt ?? new Date().toISOString()
     const stored = await this.runs.acquireDecisionIntent(
       run.id,
       invocationB,
       JSON.stringify({ choice: prior?.choice ?? choice, rationale: prior?.rationale ?? rationale, decidedAt, idempotencyKey: idempotencyKey ?? null, channel: prior ? prior.channel : channel }),
+      answerOp,
     )
     if (!stored.decision_json) return { ok: false, error: 'RUN_CHANGED' }
     const storedDecision = JSON.parse(stored.decision_json) as StoredDecision
@@ -400,7 +434,7 @@ export class ConsoleEngine {
       // There is no native spine here (no consumption claim, no effect
       // receipt, no agent report): the bridge run kind produces no
       // HACP-schema artifacts at all; its records are bridge schemas.
-      const env = await this.bridgeEnvelope(run.id)
+      const env = bridgeEnv!
       const intake = await this.bridgeIntake(run.id)
       const record = this.buildBridgeDecision(run.id, env, intake, {
         choice: effectiveChoice, rationale: effectiveRationale, decidedAt: authoritativeDecidedAt,
@@ -411,6 +445,15 @@ export class ConsoleEngine {
       if (!(await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString()))) {
         const latest = await this.runs.getRunRow(run.id)
         if (!latest || Number(latest.archived) !== 0 || latest.state !== 'resuming') return { ok: false, error: 'RUN_CHANGED' }
+      }
+      // With a transport wired, the outbound op dispatches inline — exact
+      // persisted payload only. A dispatcher exception must not unrecord the
+      // decision: the op stays in its persisted state (dispatched/unknown)
+      // and dispatchBridgeOps resumes it with the same bytes.
+      if (this.bridgeDispatcher) {
+        try {
+          await this.outbox.dispatch(run.id, this.bridgeDispatcher)
+        } catch { /* transport threw — op state is the honest record; resume re-sends */ }
       }
       return { ok: true }
     }
@@ -807,7 +850,7 @@ export class ConsoleEngine {
         tenantId: this.tenant, executionMode: 'deterministic', agent: null,
         runId: '', runKind: 'native', state: 'ready', invocationA: null, invocationB: null,
         startedAt: null, completedAt: null, milestones: [], decisionRequest: null,
-        decision: null, consumption: null, replayProbe: null, effect: null,
+        decision: null, consumption: null, replayProbe: null, effect: null, outbox: [],
         artifacts: [], ...HEADING.ready,
       }
     }
@@ -815,6 +858,11 @@ export class ConsoleEngine {
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
     const runKind: 'native' | 'bridge' = row.run_kind === 'bridge' ? 'bridge' : 'native'
     const s = runKind === 'native' ? scopeScenario(patchScenario, run.id) : undefined
+    const outbox = runKind === 'bridge' ? (await this.outbox.ops(run.id)).map(op => ({
+      opKey: op.op_key, kind: op.kind, targetSystem: op.target_system, status: op.status,
+      result: op.result_json === null ? null : JSON.parse(op.result_json),
+      dispatchedAt: op.dispatched_at, resolvedAt: op.resolved_at,
+    })) : []
     const artifacts = (await this.runs.listArtifacts(run.id, this.tenant))
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
     const storedDecision = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
@@ -858,6 +906,7 @@ export class ConsoleEngine {
         : null,
       replayProbe: replay,
       effect,
+      outbox,
       artifacts,
       ...HEADING[state],
     }

@@ -29,6 +29,7 @@ function validEnvelope(): Record<string, unknown> {
     sourceSystem: 'chopin',
     question: 'Approve the dependency upgrade implementation graph?',
     options: [{ id: 'approve' }, { id: 'send_back' }],
+    coordination: { documentId: 'https://chopin.test/d/abc123', questionId: 'runtime-floor', revision: 7 },
     contextRefs: ['chopin:doc:abc123'],
     digests: [{ algorithm: 'sha256', value: 'a'.repeat(64) }],
   }
