@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/bridge/decision.v0.json",
+  "title": "Bridge decision record (Gate 1 answer)",
+  "description": "The recorded human answer to a bridge-run decision request. Explicitly NOT a HACP artifact: the bridge run kind produces no HACP-schema artifacts. The actor is the operator session channel that carried the answer (build.ts attribution pattern); the intake principal is recorded alongside as the machine channel that delivered the request — the two are never conflated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runId",
+    "decisionId",
+    "sourceSystem",
+    "question",
+    "choice",
+    "rationale",
+    "decidedAt",
+    "actor",
+    "intakePrincipal",
+    "evidence"
+  ],
+  "properties": {
+    "schema": {
+      "const": "who-decides.bridge-decision.v0"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceSystem": {
+      "type": "string",
+      "minLength": 1
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "choice": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decidedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "intakePrincipal": {
+      "$ref": "#/$defs/intakePrincipal"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contextRefs",
+        "digests",
+        "requestDigest"
+      ],
+      "properties": {
+        "contextRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "digests": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "requestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_id",
+        "actor_kind",
+        "actor_verification_source",
+        "authentication_context"
+      ],
+      "properties": {
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_kind": {
+          "const": "human"
+        },
+        "actor_verification_source": {
+          "enum": [
+            "server_session_with_human_interaction",
+            "unverified_demo"
+          ]
+        },
+        "authentication_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "interaction_channel",
+            "session_reference",
+            "auth_event_ref",
+            "secret_material_present"
+          ],
+          "properties": {
+            "interaction_channel": {
+              "enum": [
+                "web_ui",
+                "cli",
+                "api",
+                "other"
+              ]
+            },
+            "session_reference": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auth_event_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "secret_material_present": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "intakePrincipal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal",
+        "credentialRef"
+      ],
+      "properties": {
+        "principal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credentialRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "of": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

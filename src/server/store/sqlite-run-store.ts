@@ -43,6 +43,7 @@ export class SqliteRunStore implements RunStore {
         effect_json TEXT,
         replay_json TEXT,
         milestones_json TEXT,
+        run_kind TEXT NOT NULL DEFAULT 'native',
         archived INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -56,6 +57,7 @@ export class SqliteRunStore implements RunStore {
       );
     `)
     try { this.db.exec("ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'deterministic'") } catch { /* column exists */ }
+    try { this.db.exec("ALTER TABLE runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'native'") } catch { /* column exists */ }
     // Pre-column databases (dev .tmp): add the columns in place.
     try { this.db.exec("ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
     try { this.db.exec("ALTER TABLE artifacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") } catch { /* column exists */ }
@@ -69,17 +71,17 @@ export class SqliteRunStore implements RunStore {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existing = this.db
-        .prepare('SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
+        .prepare('SELECT id, state, phase_changed_at, execution_mode, run_kind FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
         .get(tenantId) as RunRow | undefined
       if (existing && existing.state !== 'completed') {
         this.db.exec('COMMIT')
         return existing
       }
       this.db
-        .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic')
+        .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode, run_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic', candidate.runKind ?? 'native')
       this.db.exec('COMMIT')
-      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic' }
+      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic', run_kind: candidate.runKind ?? 'native' }
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err
@@ -112,14 +114,14 @@ export class SqliteRunStore implements RunStore {
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {
     return this.db
-      .prepare('SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
+      .prepare('SELECT id, state, phase_changed_at, execution_mode, run_kind FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1')
       .get(tenantId) as RunRow | undefined
   }
 
   async insertRun(run: NewRun): Promise<void> {
     this.db
-      .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic')
+      .prepare('INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode, run_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic', run.runKind ?? 'native')
   }
 
   async markProvisioned(runId: string): Promise<boolean> {

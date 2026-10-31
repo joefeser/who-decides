@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test:auth && npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:dispatch",
+    "test": "npm run test:auth && npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:bridge && npm run test:dispatch",
     "agent:start": "tsx src/agent-service/server.ts",
     "console": "next dev -p 3100",
     "console:build": "next build",
@@ -25,6 +25,7 @@
     "test:agentcore-live": "tsx --test src/server/agentcore-live.test.ts",
     "test:artifacts": "tsx --test src/artifacts/test.ts",
     "test:auth": "tsx --test src/server/auth.test.ts",
+    "test:bridge": "tsx --test src/server/bridge.test.ts src/bridge/route.test.ts",
     "test:console": "tsx --test src/server/test.ts",
     "test:console-pg": "tsx --test src/server/test-pg.ts",
     "test:consumption": "tsx --test src/consumption/test.ts",

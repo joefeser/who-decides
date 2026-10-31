@@ -8,6 +8,13 @@
  * against a sha256 of the configured secret; unknown principal types fail
  * closed with a typed 401.
  *
+ * The principal NAME is parameterized (same discipline, distinct scoped
+ * tokens): the agent service keeps `machine:agentcore-runtime`
+ * (WD_MACHINE_TOKEN_HASH); the bridge intake route authenticates
+ * `machine:chopin-bridge` under its own hash (WD_BRIDGE_TOKEN_HASH). Each
+ * deployment vouches for exactly one principal — a bridge token can never
+ * authenticate as the runtime principal or vice versa.
+ *
  * The artifacts record the channel honestly: interaction 'api',
  * sessionReference 'machine:agentcore-runtime', authEventRef
  * 'machine-service-token' — a verifiable machine principal, never
@@ -15,18 +22,25 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const MACHINE_PRINCIPAL = 'machine:agentcore-runtime' as const
+export const BRIDGE_PRINCIPAL = 'machine:chopin-bridge' as const
+
+export type MachinePrincipalName = typeof MACHINE_PRINCIPAL | typeof BRIDGE_PRINCIPAL
 
 export type MachineAuthConfig = {
   /** sha256 hex of the service token. Generated with:
    *  echo -n "$TOKEN" | shasum -a 256
-   * Configured via WD_MACHINE_TOKEN_HASH; absent = machine auth disabled
+   * Configured via WD_MACHINE_TOKEN_HASH (agent service) or
+   * WD_BRIDGE_TOKEN_HASH (bridge intake); absent = machine auth disabled
    * (the service refuses all invocations — fail closed, not open). */
   tokenHash: string | undefined
+  /** The principal this authenticator vouches for. Defaults to the
+   * agent-service runtime principal. */
+  principal?: MachinePrincipalName
 }
 
 export type MachinePrincipal = {
   type: 'machine'
-  principal: typeof MACHINE_PRINCIPAL
+  principal: MachinePrincipalName
   /** Stable reference for artifacts — a hash prefix of the configured
    * credential, never the credential itself. */
   credentialRef: string
@@ -42,6 +56,7 @@ function isSha256Hex(value: string): boolean {
 
 export function createMachineAuth(config: MachineAuthConfig) {
   const configured = config.tokenHash !== undefined && isSha256Hex(config.tokenHash)
+  const principalName = config.principal ?? MACHINE_PRINCIPAL
 
   return {
     /** Whether the service can accept invocations at all. When the hash is
@@ -60,7 +75,7 @@ export function createMachineAuth(config: MachineAuthConfig) {
       if (!timingSafeEqual(supplied, expected)) return { ok: false, error: 'MACHINE_AUTH_INVALID' }
       return {
         ok: true,
-        principal: { type: 'machine', principal: MACHINE_PRINCIPAL, credentialRef: `machine-token-${config.tokenHash!.slice(0, 16)}` },
+        principal: { type: 'machine', principal: principalName, credentialRef: `machine-token-${config.tokenHash!.slice(0, 16)}` },
       }
     },
 
@@ -83,7 +98,7 @@ export function createMachineAuth(config: MachineAuthConfig) {
         ok: true,
         principal: {
           type: 'machine',
-          principal: MACHINE_PRINCIPAL,
+          principal: principalName,
           credentialRef: `machine-token-${config.tokenHash!.slice(0, 16)}`,
         },
       }

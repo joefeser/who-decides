@@ -20,6 +20,8 @@ import type { Scenario } from '../artifacts/build'
 import { decisionDigest } from '../consumption/store'
 import type { DecisionRecord } from '../consumption/store'
 import { patchScenario } from '../agent-service/fixture'
+import { parseDecisionRequest, validateBridgeArtifact } from '../bridge/schemas'
+import type { BridgeArtifactKind, DecisionRequestEnvelope, BridgeIntakeRecord } from '../bridge/schemas'
 import type { RunStore } from './store/store'
 import { createDefaultRunStore, createDefaultReceiptStore } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
@@ -48,6 +50,8 @@ export type ConsoleState = {
   executionMode: string
   agent: AgentDispatchResult | null
   runId: string
+  /** 'native' — fixture scenario | 'bridge' — external decision request. */
+  runKind: 'native' | 'bridge'
   state: RunState | 'ready'
   invocationA: string | null
   invocationB: string | null
@@ -57,15 +61,19 @@ export type ConsoleState = {
   decisionRequest: {
     question: string
     options: string[]
-    humanTerms: string
-    whoIsAffected: string
-    tradeoffFindingId: string
+    /** Native-run fixture fields. */
+    humanTerms?: string
+    whoIsAffected?: string
+    tradeoffFindingId?: string
+    /** Bridge-run fields (rendered from the persisted envelope). */
+    sourceSystem?: string
+    contextRefs?: string[]
   } | null
   decision: { choice: string, rationale: string, decidedAt: string } | null
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
   replayProbe: { attemptedBy: string, result: string, detail: string } | null
   effect: { effect: string, mode: string, noExternalMutationPerformed: boolean, exactPayload: Record<string, unknown> } | null
-  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch', valid: boolean }>
+  artifacts: Array<{ name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | 'agent-dispatch' | BridgeArtifactKind, valid: boolean }>
   heading: string
   subheading: string
 }
@@ -161,6 +169,10 @@ export class ConsoleEngine {
       executionMode: dispatcher?.isEnabled() ? 'agentcore' : 'deterministic',
     })
     if (active.id !== runId) {
+      // A bridge run holds the tenant's single active slot: native
+      // provisioning must never graft fixture artifacts onto it. The
+      // operator resets (archives) the bridge run to return to native runs.
+      if (active.run_kind === 'bridge') throw new Error('BRIDGE_RUN_ACTIVE')
       // Another caller provisioned this run moments ago. Provisioning is
       // idempotent: repair any missing artifacts. If the run is still in its
       // provisioning state, complete it; if it was retracted mid-repair
@@ -186,6 +198,59 @@ export class ConsoleEngine {
       throw err
     }
     return { runId }
+  }
+
+  /** External intake for the bridge run kind (A1). Persists the exact
+   * envelope under a NEW run created directly in decision_required — there
+   * is no invocation A, no fixture scenario, and no native artifact spine.
+   * The envelope is re-validated here even when the route already checked
+   * it: engine callers (tests, future poll workers) get the same strict
+   * guarantee at the boundary that persists it.
+   *
+   * The machine principal that authenticated the intake is recorded
+   * alongside (from the auth result, never the envelope) with a digest of
+   * the exact accepted envelope bytes. It delivered the request; the actor
+   * is recorded later, at decision time, from the operator session channel.
+   *
+   * Single-active-run stays store-level: ensureActiveRun's atomic
+   * check-and-insert either wins the slot or returns the existing active
+   * run — and an external request can never merge into an existing run, so
+   * a lost race is a typed refusal, not an idempotent join (native runs may
+   * join; bridge intake may not). */
+  async startBridgeRun(envelope: unknown, principal: { principal: string, credentialRef: string }): Promise<{ ok: true, runId: string } | { ok: false, error: string }> {
+    await this.ready
+    const parsed = parseDecisionRequest(envelope)
+    if (!parsed.valid) return { ok: false, error: 'ENVELOPE_INVALID' }
+    const env = parsed.envelope
+    const runId = `run-${randomUUID()}`
+    const now = new Date().toISOString()
+    const milestones: Milestone[] = [
+      { label: 'intake', detail: `decision request from ${env.sourceSystem} · ${env.options.length} options · ${env.digests.length} digests`, at: now },
+    ]
+    const active = await this.runs.ensureActiveRun(this.tenant, {
+      id: runId, tenantId: this.tenant, invocationA: null, startedAt: now, phaseChangedAt: now,
+      milestonesJson: JSON.stringify(milestones), runKind: 'bridge',
+    })
+    if (active.id !== runId) return { ok: false, error: 'ACTIVE_RUN_EXISTS' }
+    try {
+      await this.storeArtifact(runId, 'decision-request', 'decision-request', env)
+      const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(env)).digest('hex')}`
+      await this.storeArtifact(runId, 'bridge-intake', 'bridge-intake', {
+        schema: 'who-decides.bridge-intake.v0',
+        runId, principal: principal.principal, credentialRef: principal.credentialRef,
+        receivedAt: now, requestDigest,
+      } satisfies BridgeIntakeRecord)
+      // The run IS a held decision request: it opens at the human gate, not
+      // at a running phase. A crash mid-intake leaves a provisioning run
+      // that reset can archive (no decision intent exists yet).
+      if (!(await this.runs.updateRunPhase(runId, 'provisioning', 'decision_required', now))) {
+        throw new Error(`PROVISIONING_RETRACTED:${runId}`)
+      }
+    } catch (err) {
+      await this.runs.retractProvisioningRun(runId).catch(() => { /* best-effort cleanup */ })
+      throw err
+    }
+    return { ok: true, runId }
   }
 
   /** A lost provisioning CAS can mean another caller finished the same
@@ -225,9 +290,11 @@ export class ConsoleEngine {
   /** Wall-clock phase advance — deterministic, no timers. Transitions are
    * compare-and-swap: a stale poller losing the race must not overwrite a
    * newer phase (e.g. flip a consumed run back to decision_required). The
-   * local object only advances when the CAS won. */
-  private async advancePhases(run: { id: string, state: string, phase_changed_at: string, execution_mode?: string }): Promise<void> {
-    if (run.execution_mode === 'agentcore') return
+   * local object only advances when the CAS won. Bridge runs never advance
+   * on wall-clock: their phases move on recorded acts (intake, decision,
+   * outbound dispatch), never on elapsed demo time. */
+  private async advancePhases(run: { id: string, state: string, phase_changed_at: string, execution_mode?: string, run_kind?: string }): Promise<void> {
+    if (run.execution_mode === 'agentcore' || run.run_kind === 'bridge') return
     const elapsed = Date.now() - Date.parse(run.phase_changed_at)
     if (run.state === 'running' && elapsed >= RUN_RUNNING_MS) {
       const won = await this.runs.updateRunPhase(run.id, 'running', 'decision_required', new Date().toISOString())
@@ -279,8 +346,18 @@ export class ConsoleEngine {
       if (prior) return { ok: false, error: 'DECISION_ALREADY_RECORDED' }
       return { ok: false, error: `WRONG_STATE:${run.state}` }
     }
-    const s = scopeScenario(patchScenario, run.id)
-    if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
+    // Bridge runs validate the choice against the PERSISTED INTAKE ENVELOPE,
+    // never the fixture scenario — the fixture's option set (and its
+    // validation at this very line for native runs) simply does not apply to
+    // a run whose question arrived from outside.
+    const isBridge = row.run_kind === 'bridge'
+    if (isBridge) {
+      const env = await this.bridgeEnvelope(run.id)
+      if (!env.options.some(o => o.id === choice)) return { ok: false, error: 'INVALID_CHOICE' }
+    } else {
+      const s = scopeScenario(patchScenario, run.id)
+      if (!s.decision_request.options.includes(choice)) return { ok: false, error: 'INVALID_CHOICE' }
+    }
     if (rationale.trim().length === 0) return { ok: false, error: 'RATIONALE_REQUIRED' }
     // Idempotent reuse matches BOTH key and choice; a different key is a
     // different submission, not a retry (review finding 3).
@@ -313,6 +390,32 @@ export class ConsoleEngine {
     const effectiveRationale = storedDecision.rationale
     const authoritativeDecidedAt = storedDecision.decidedAt
     const authoritativeInvocationB = stored.invocation_b ?? invocationB
+
+    if (isBridge) {
+      // Bridge decision path: record the answer with operator-channel
+      // attribution and hold the run at resuming — outbound dispatch is the
+      // outbox's concern (A2); a bridge run NEVER completes on wall-clock.
+      // There is no native spine here (no consumption claim, no effect
+      // receipt, no agent report): the bridge run kind produces no
+      // HACP-schema artifacts at all; its records are bridge schemas.
+      const env = await this.bridgeEnvelope(run.id)
+      const intake = await this.bridgeIntake(run.id)
+      const record = this.buildBridgeDecision(run.id, env, intake, {
+        choice: effectiveChoice, rationale: effectiveRationale, decidedAt: authoritativeDecidedAt,
+      }, storedDecision.channel)
+      await this.storeArtifact(run.id, 'bridge-decision', 'bridge-decision', record)
+      // CAS finalization mirrors the native path's discipline: a slower
+      // same-key duplicate that loses the race is idempotent success.
+      if (!(await this.runs.updateRunPhase(run.id, 'decision_required', 'resuming', new Date().toISOString()))) {
+        const latest = await this.runs.getRunRow(run.id)
+        if (!latest || Number(latest.archived) !== 0 || latest.state !== 'resuming') return { ok: false, error: 'RUN_CHANGED' }
+      }
+      return { ok: true }
+    }
+
+    // Native path from here: the scenario is re-derived deterministically
+    // (scopeScenario only tags IDs), identical to the validation read above.
+    const s = scopeScenario(patchScenario, run.id)
 
     const decisionId = `decision-${run.id}`
     const decisionRecord = await this.decisionRecord(run.id, decisionId, effectiveChoice, effectiveRationale, authoritativeDecidedAt)
@@ -560,6 +663,89 @@ export class ConsoleEngine {
     }
   }
 
+  /** The persisted intake envelope for a bridge run — the authoritative
+   * question and option set a bridge decision is validated against (never
+   * the fixture). Re-validated on read: a tampered artifact fails loudly
+   * instead of silently widening the decision surface. */
+  private async bridgeEnvelope(runId: string): Promise<DecisionRequestEnvelope> {
+    const json = await this.runs.getArtifactJson(runId, 'decision-request')
+    if (json === undefined) throw new Error('EVIDENCE_MISSING:decision-request')
+    const parsed = parseDecisionRequest(JSON.parse(json))
+    if (!parsed.valid) throw new Error('EVIDENCE_INVALID:decision-request')
+    return parsed.envelope
+  }
+
+  /** Console rendering of a bridge run's decision request — exactly what
+   * the persisted envelope carries: the question, the option IDs the
+   * operator may choose, and the source system's context refs. No fixture
+   * fields are invented for a bridge run. */
+  private async bridgeDecisionRequest(runId: string): Promise<NonNullable<ConsoleState['decisionRequest']>> {
+    const env = await this.bridgeEnvelope(runId)
+    return {
+      question: env.question,
+      options: env.options.map(o => o.id),
+      sourceSystem: env.sourceSystem,
+      contextRefs: env.contextRefs,
+    }
+  }
+
+  /** The persisted intake record (machine principal + envelope digest) for
+   * a bridge run. The principal recorded here is the AUTHENTICATED machine
+   * channel that delivered the request — it is cited on the decision record
+   * as intake context and is never conflated with the decision actor. */
+  private async bridgeIntake(runId: string): Promise<BridgeIntakeRecord> {
+    const json = await this.runs.getArtifactJson(runId, 'bridge-intake')
+    if (json === undefined) throw new Error('EVIDENCE_MISSING:bridge-intake')
+    const intake = JSON.parse(json) as BridgeIntakeRecord
+    if (!validateBridgeArtifact('bridge-intake', intake)) throw new Error('EVIDENCE_INVALID:bridge-intake')
+    return intake
+  }
+
+  /** Builds the Gate-1 answer record for a bridge run — explicitly NOT a
+   * HACP artifact. Attribution extends build.ts's human-decision pattern:
+   * the actor is the operator session channel that carried the answer
+   * (passcode-session honesty preserved); with no channel, the same explicit
+   * demo-unauthenticated defaults build.ts uses. The intake machine
+   * principal is recorded beside the actor, clearly labeled as the delivery
+   * channel. The envelope itself cannot carry identity — the schema has no
+   * actor field and rejects extra properties. */
+  private buildBridgeDecision(
+    runId: string,
+    env: DecisionRequestEnvelope,
+    intake: BridgeIntakeRecord,
+    d: { choice: string, rationale: string, decidedAt: string },
+    channel?: DecisionChannel,
+  ): Record<string, unknown> {
+    const actor = {
+      actor_id: channel ? channel.sessionReference : 'demo-unauthenticated-local-console',
+      actor_kind: 'human',
+      actor_verification_source: channel ? 'server_session_with_human_interaction' : 'unverified_demo',
+      authentication_context: {
+        interaction_channel: channel ? 'web_ui' : 'other',
+        session_reference: channel?.sessionReference ?? 'demo-unauthenticated-local-console',
+        auth_event_ref: channel?.authEventRef ?? 'demo-none',
+        secret_material_present: false,
+      },
+    }
+    return {
+      schema: 'who-decides.bridge-decision.v0',
+      runId,
+      decisionId: `decision-${runId}`,
+      sourceSystem: env.sourceSystem,
+      question: env.question,
+      choice: d.choice,
+      rationale: d.rationale,
+      decidedAt: d.decidedAt,
+      actor,
+      intakePrincipal: { principal: intake.principal, credentialRef: intake.credentialRef },
+      evidence: {
+        contextRefs: env.contextRefs,
+        digests: env.digests,
+        requestDigest: intake.requestDigest,
+      },
+    }
+  }
+
   /** Reset clears the live console without destroying completed audit
    * records — HACP artifacts survive the demo loop (Codex P2). Only THIS
    * tenant's console is cleared; other tenants' runs are untouched. */
@@ -598,10 +784,12 @@ export class ConsoleEngine {
     if (failure?.status === 'rejected') throw failure.reason
   }
 
-  private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt', artifact: unknown): Promise<void> {
+  private async storeArtifact(runId: string, name: string, kind: ArtifactKind | 'consumption-receipt' | 'effect-receipt' | BridgeArtifactKind, artifact: unknown): Promise<void> {
     const valid = kind === 'consumption-receipt' || kind === 'effect-receipt'
       ? validateReceipt(kind, artifact)
-      : validateArtifact(kind, artifact).valid
+      : kind === 'decision-request' || kind === 'bridge-intake' || kind === 'bridge-decision'
+        ? validateBridgeArtifact(kind, artifact)
+        : validateArtifact(kind, artifact).valid
     if (!valid) throw new Error(`ARTIFACT_INVALID:${kind}:${name}`)
     await this.runs.storeArtifact({
       runId, tenantId: this.tenant, name, kind,
@@ -615,7 +803,7 @@ export class ConsoleEngine {
       return {
         schema: 'who-decides.console-state.v1',
         tenantId: this.tenant, executionMode: 'deterministic', agent: null,
-        runId: '', state: 'ready', invocationA: null, invocationB: null,
+        runId: '', runKind: 'native', state: 'ready', invocationA: null, invocationB: null,
         startedAt: null, completedAt: null, milestones: [], decisionRequest: null,
         decision: null, consumption: null, replayProbe: null, effect: null,
         artifacts: [], ...HEADING.ready,
@@ -623,7 +811,8 @@ export class ConsoleEngine {
     }
     await this.advancePhases(run)
     const row = await this.runs.getRunRow(run.id) as Record<string, string | null>
-    const s = scopeScenario(patchScenario, run.id)
+    const runKind: 'native' | 'bridge' = row.run_kind === 'bridge' ? 'bridge' : 'native'
+    const s = runKind === 'native' ? scopeScenario(patchScenario, run.id) : undefined
     const artifacts = (await this.runs.listArtifacts(run.id, this.tenant))
       .map(a => ({ name: a.name, kind: a.kind as ArtifactKind, valid: a.valid === 1 }))
     const storedDecision = row.decision_json ? JSON.parse(row.decision_json) as StoredDecision : null
@@ -643,6 +832,7 @@ export class ConsoleEngine {
       executionMode: row.execution_mode ?? 'deterministic',
       agent: JSON.parse((await this.runs.getArtifactJson(run.id, 'agent-resume')) ?? (await this.runs.getArtifactJson(run.id, 'agent-start')) ?? 'null'),
       runId: run.id,
+      runKind,
       state,
       invocationA: row.invocation_a,
       invocationB: row.invocation_b,
@@ -650,13 +840,15 @@ export class ConsoleEngine {
       completedAt: row.completed_at,
       milestones: row.milestones_json ? JSON.parse(row.milestones_json) as Milestone[] : [],
       decisionRequest: state === 'decision_required' || state === 'resuming' || state === 'completed'
-        ? {
-            question: s.decision_request.question,
-            options: s.decision_request.options,
-            humanTerms: s.decision_request.human_terms,
-            whoIsAffected: s.tradeoff.who_is_affected,
-            tradeoffFindingId: s.finding_tradeoff_id,
-          }
+        ? runKind === 'bridge'
+          ? await this.bridgeDecisionRequest(run.id)
+          : {
+              question: s!.decision_request.question,
+              options: s!.decision_request.options,
+              humanTerms: s!.decision_request.human_terms,
+              whoIsAffected: s!.tradeoff.who_is_affected,
+              tradeoffFindingId: s!.finding_tradeoff_id,
+            }
         : null,
       decision,
       consumption: receipt

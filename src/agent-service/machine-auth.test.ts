@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { createMachineAuth, generateMachineToken, MACHINE_PRINCIPAL } from './machine-auth'
+import { createMachineAuth, generateMachineToken, MACHINE_PRINCIPAL, BRIDGE_PRINCIPAL } from './machine-auth'
 
 const TOKEN = 'test-service-token-0123456789abcdef'
 const HASH = createHash('sha256').update(TOKEN).digest('hex')
@@ -51,4 +51,31 @@ test('token generation produces a valid hash pair', () => {
   // and the generated pair authenticates
   const auth = createMachineAuth({ tokenHash })
   assert.equal(auth.authorize(requestWith(`Bearer ${token}`)).ok, true)
+})
+
+test('the principal is parameterized: the bridge principal stamps its own name, fail-closed unchanged', () => {
+  const bridge = createMachineAuth({ tokenHash: HASH, principal: BRIDGE_PRINCIPAL })
+  assert.equal(bridge.isEnabled(), true)
+  const viaHeader = bridge.authorize(requestWith(`Bearer ${TOKEN}`))
+  assert.equal(viaHeader.ok, true)
+  if (viaHeader.ok) {
+    assert.equal(viaHeader.principal.type, 'machine')
+    assert.equal(viaHeader.principal.principal, 'machine:chopin-bridge')
+    assert.match(viaHeader.principal.credentialRef, /^machine-token-[0-9a-f]{16}$/)
+    assert.ok(!JSON.stringify(viaHeader).includes(TOKEN), 'the credential itself never appears')
+  }
+  const viaCredential = bridge.authorizeCredential(TOKEN)
+  assert.equal(viaCredential.ok, true)
+  if (viaCredential.ok) assert.equal(viaCredential.principal.principal, 'machine:chopin-bridge')
+
+  // Same fail-closed errors under the bridge principal.
+  const a1 = bridge.authorize(requestWith()); assert.equal(a1.ok, false); if (!a1.ok) assert.equal(a1.error, 'MACHINE_AUTH_REQUIRED')
+  const a2 = bridge.authorize(requestWith('Bearer wrong')); assert.equal(a2.ok, false); if (!a2.ok) assert.equal(a2.error, 'MACHINE_AUTH_INVALID')
+
+  // The default stays the agent-service runtime principal — a bridge-scoped
+  // deployment and the runtime never share a principal name.
+  const runtime = createMachineAuth({ tokenHash: HASH })
+  const r = runtime.authorize(requestWith(`Bearer ${TOKEN}`))
+  assert.equal(r.ok, true)
+  if (r.ok) assert.equal(r.principal.principal, MACHINE_PRINCIPAL)
 })

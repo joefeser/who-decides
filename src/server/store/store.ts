@@ -12,6 +12,8 @@ export type RunRow = {
   id: string
   state: string
   execution_mode?: string
+  /** 'native' (fixture scenario) | 'bridge' (external decision request). */
+  run_kind?: string
   phase_changed_at: string
 }
 
@@ -26,10 +28,14 @@ export type NewRun = {
    * markProvisioned once invocation-A artifacts are durable. */
   id: string
   tenantId: string
-  invocationA: string
+  /** Native runs mint an invocation A; bridge runs have none (null). */
+  invocationA: string | null
   startedAt: string
   phaseChangedAt: string
   executionMode?: string
+  /** 'native' (default) | 'bridge' — selects the intake path; a bridge run's
+   * decision request comes from the persisted envelope, never the fixture. */
+  runKind?: 'native' | 'bridge'
   milestonesJson: string
 }
 

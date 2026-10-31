@@ -15,6 +15,7 @@ type Milestone = { label: string, detail: string, at: string }
 type ConsoleState = {
   schema: string
   runId: string
+  runKind: 'native' | 'bridge'
   state: 'ready' | 'running' | 'decision_required' | 'resuming' | 'completed' | 'blocked'
   invocationA: string | null
   invocationB: string | null
@@ -24,9 +25,11 @@ type ConsoleState = {
   decisionRequest: {
     question: string
     options: string[]
-    humanTerms: string
-    whoIsAffected: string
-    tradeoffFindingId: string
+    humanTerms?: string
+    whoIsAffected?: string
+    tradeoffFindingId?: string
+    sourceSystem?: string
+    contextRefs?: string[]
   } | null
   decision: { choice: string, rationale: string, decidedAt: string } | null
   consumption: { receiptId: string, decisionDigest: string, successorInvocationId: string, claimedAt: string } | null
@@ -396,14 +399,25 @@ export default function Console() {
 
       {state.state === 'decision_required' && state.decisionRequest && (
         <div className="space-y-5">
-          <p className="font-mono text-xs text-slate-400">
-            invocation A · {state.invocationA} — ended. No PR created.
-          </p>
+          {state.runKind === 'bridge' ? (
+            <p className="font-mono text-xs text-slate-400">
+              bridge run · request from {state.decisionRequest.sourceSystem} — held for your decision. No fixture scenario, no invocation A.
+            </p>
+          ) : (
+            <p className="font-mono text-xs text-slate-400">
+              invocation A · {state.invocationA} — ended. No PR created.
+            </p>
+          )}
           <div className="rounded-lg border border-amber-700/60 bg-slate-900/70 p-4">
             <h3 className="mb-2 text-base font-semibold text-amber-200">{state.decisionRequest.question}</h3>
-            <p className="text-sm text-slate-200">{state.decisionRequest.humanTerms}</p>
-            <p className="mt-2 text-sm text-amber-300/90">Who is affected: {state.decisionRequest.whoIsAffected}</p>
-            <p className="mt-1 font-mono text-xs text-slate-500">evidence: {state.decisionRequest.tradeoffFindingId}</p>
+            {state.decisionRequest.humanTerms && <p className="text-sm text-slate-200">{state.decisionRequest.humanTerms}</p>}
+            {state.decisionRequest.whoIsAffected && <p className="mt-2 text-sm text-amber-300/90">Who is affected: {state.decisionRequest.whoIsAffected}</p>}
+            {state.runKind === 'bridge' && state.decisionRequest.contextRefs && (
+              <p className="mt-1 font-mono text-xs text-slate-500">context: {state.decisionRequest.contextRefs.join(' · ')}</p>
+            )}
+            {state.decisionRequest.tradeoffFindingId && (
+              <p className="mt-1 font-mono text-xs text-slate-500">evidence: {state.decisionRequest.tradeoffFindingId}</p>
+            )}
           </div>
           {!readOnly && (
             <form onSubmit={submitDecision} className="space-y-5">
@@ -452,7 +466,9 @@ export default function Console() {
       {state.state === 'resuming' && (
         <div className="space-y-4">
           <p className="animate-pulse text-sm text-sky-300" role="status">
-            Starting new invocation… claiming the decision exactly once…
+            {state.runKind === 'bridge'
+              ? 'Decision recorded — outbound dispatch is held for the outbox. Nothing completes on wall-clock.'
+              : 'Starting new invocation… claiming the decision exactly once…'}
           </p>
         </div>
       )}
@@ -460,7 +476,11 @@ export default function Console() {
       {error && state.state !== 'decision_required' && <p role="alert" className="text-red-300">{error}</p>}
 
       {state.agentDispatchError && <p role="alert" className="text-red-300">{state.agentDispatchError}</p>}
-      <p className="text-xs text-slate-500">{state.executionMode === 'agentcore' ? 'Live AgentCore run · fixture scenario · dry-run effects' : 'Deterministic demo · simulated preparation and verification'}</p>
+      <p className="text-xs text-slate-500">
+        {state.runKind === 'bridge'
+          ? 'Bridge run · external decision request · records are non-HACP (who-decides bridge schemas)'
+          : state.executionMode === 'agentcore' ? 'Live AgentCore run · fixture scenario · dry-run effects' : 'Deterministic demo · simulated preparation and verification'}
+      </p>
 
       {state.state === 'completed' && (
         <div className="space-y-5">

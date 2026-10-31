@@ -101,6 +101,7 @@ export class PostgresRunStore implements RunStore {
           effect_json TEXT,
           replay_json TEXT,
           milestones_json TEXT,
+          run_kind TEXT NOT NULL DEFAULT 'native',
           archived INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -114,6 +115,7 @@ export class PostgresRunStore implements RunStore {
           PRIMARY KEY (run_id, name)
         );
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'deterministic';
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT NOT NULL DEFAULT 'native';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS archived INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
@@ -138,16 +140,16 @@ export class PostgresRunStore implements RunStore {
       // (equivalent of BEGIN IMMEDIATE; see file header for the choice).
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [LOCK_ENSURE_ACTIVE, tenantId])
       const existing = await client.query(
-        'SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
+        'SELECT id, state, phase_changed_at, execution_mode, run_kind FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
         [tenantId],
       )
       const active = existing.rows[0] as RunRow | undefined
       if (active && active.state !== 'completed') return active
       await client.query(
-        'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-        [candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic'],
+        'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode, run_kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+        [candidate.id, 'provisioning', candidate.tenantId, candidate.invocationA, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson, candidate.executionMode ?? 'deterministic', candidate.runKind ?? 'native'],
       )
-      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic' }
+      return { id: candidate.id, state: 'provisioning', phase_changed_at: candidate.phaseChangedAt, execution_mode: candidate.executionMode ?? 'deterministic', run_kind: candidate.runKind ?? 'native' }
     })
   }
 
@@ -172,7 +174,7 @@ export class PostgresRunStore implements RunStore {
 
   async getCurrentRun(tenantId: string): Promise<RunRow | undefined> {
     const result = await this.pool.query(
-      'SELECT id, state, phase_changed_at, execution_mode FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
+      'SELECT id, state, phase_changed_at, execution_mode, run_kind FROM runs WHERE archived = 0 AND tenant_id = $1 ORDER BY started_at DESC LIMIT 1',
       [tenantId],
     )
     return result.rows[0] as RunRow | undefined
@@ -180,8 +182,8 @@ export class PostgresRunStore implements RunStore {
 
   async insertRun(run: NewRun): Promise<void> {
     await this.pool.query(
-      'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic'],
+      'INSERT INTO runs (id, state, tenant_id, invocation_a, started_at, phase_changed_at, milestones_json, execution_mode, run_kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [run.id, 'provisioning', run.tenantId, run.invocationA, run.startedAt, run.phaseChangedAt, run.milestonesJson, run.executionMode ?? 'deterministic', run.runKind ?? 'native'],
     )
   }
 

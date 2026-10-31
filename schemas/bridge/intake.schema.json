@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://who-decides.example/schemas/bridge/intake.v0.json",
+  "title": "Bridge intake record",
+  "description": "Durable record of WHO delivered a decision request: the machine principal that authenticated the intake (from the server-side auth result, never the envelope) and the digest of the exact envelope bytes that were accepted. The intake principal delivered the request; it is never the decision actor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runId",
+    "principal",
+    "credentialRef",
+    "receivedAt",
+    "requestDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "who-decides.bridge-intake.v0"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "principal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "credentialRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "receivedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requestDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
