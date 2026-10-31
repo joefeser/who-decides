@@ -813,6 +813,17 @@ export class ConsoleEngine {
     // artifact does not exist yet, and the durable artifact rule below
     // must not let a concurrent reset archive a live dispatch.
     if (this.inflightResumes.size > 0) throw new Error('DECISION_IN_PROGRESS')
+    // An unresolved bridge operation must not be archived out of reach:
+    // the receiver may already hold its exact payload. The recoverable
+    // disposition is to dispatch (or let it resolve) first — reset then
+    // proceeds; archiving a live outbound obligation never is.
+    const active = await this.runs.getCurrentRun(this.tenant)
+    if (active?.run_kind === 'bridge') { // getCurrentRun only returns live runs
+      const unresolved = (await this.runs.getOutboxOps(active.id)).filter(
+        op => op.status === 'pending' || op.status === 'dispatched' || op.status === 'unknown',
+      )
+      if (unresolved.length > 0) throw new Error('BRIDGE_OPS_UNRESOLVED')
+    }
     await this.runs.archiveTenantRuns(this.tenant)
   }
 

@@ -48,6 +48,14 @@ export type OutboxOpOutcome = {
 }
 
 export class Outbox {
+  /** One wire attempt per op per process: a second pass over an op whose
+   * attempt is still live waits for it and reports its outcome, instead of
+   * re-entering the transport beside it. A crashed process leaves the op in
+   * its last persisted state — the crash-window recovery below — which a
+   * LATER pass may re-send under the same key; that is the designed
+   * recovery, and it never overlaps a live attempt. */
+  readonly #inflight = new Map<string, Promise<OutboxOpOutcome>>()
+
   constructor(private readonly runs: RunStore) {}
 
   /** Dispatch every op for a run in enqueue order. Safe to call repeatedly
@@ -70,33 +78,60 @@ export class Outbox {
         })
         continue
       }
-      if (op.status === 'pending') {
-        const claimed = await this.runs.markOutboxDispatched(runId, op.op_key, new Date().toISOString())
-        if (!claimed) {
-          outcomes.push({ opKey: op.op_key, kind: op.kind, status: 'in_progress', replayed: false, result: null })
-          continue
-        }
+      const inflightKey = `${runId}:${op.op_key}`
+      const existing = this.#inflight.get(inflightKey)
+      if (existing) {
+        outcomes.push(await existing)
+        continue
       }
-      const outcome = await dispatcher({
-        opKey: op.op_key,
-        kind: op.kind,
-        targetSystem: op.target_system,
-        payload: JSON.parse(op.payload_json),
-      })
-      const resultJson = JSON.stringify(
-        outcome.kind === 'confirmed'
-          ? { outcome: 'confirmed', result: outcome.result }
-          : outcome.kind === 'failed'
-            ? { outcome: 'failed', error: outcome.error }
-            : { outcome: 'unknown', detail: outcome.detail ?? null },
-      )
-      await this.runs.resolveOutboxOp(runId, op.op_key, outcome.kind, resultJson, new Date().toISOString())
-      outcomes.push({
-        opKey: op.op_key, kind: op.kind, status: outcome.kind, replayed: false,
-        result: JSON.parse(resultJson),
-      })
+      const attempt = this.#attempt(runId, op, dispatcher)
+      this.#inflight.set(inflightKey, attempt)
+      try {
+        outcomes.push(await attempt)
+      } finally {
+        this.#inflight.delete(inflightKey)
+      }
     }
     return outcomes
+  }
+
+  /** One op's single wire attempt: claim, transport, resolve — and when the
+   * resolution CAS loses, report the AUTHORITATIVE persisted outcome rather
+   * than this attempt's local result. */
+  async #attempt(runId: string, op: OutboxOpRow, dispatcher: OutboxDispatcher): Promise<OutboxOpOutcome> {
+    if (op.status === 'pending') {
+      const claimed = await this.runs.markOutboxDispatched(runId, op.op_key, new Date().toISOString())
+      if (!claimed) {
+        return { opKey: op.op_key, kind: op.kind, status: 'in_progress', replayed: false, result: null }
+      }
+    }
+    const outcome = await dispatcher({
+      opKey: op.op_key,
+      kind: op.kind,
+      targetSystem: op.target_system,
+      payload: JSON.parse(op.payload_json),
+    })
+    const resultJson = JSON.stringify(
+      outcome.kind === 'confirmed'
+        ? { outcome: 'confirmed', result: outcome.result }
+        : outcome.kind === 'failed'
+          ? { outcome: 'failed', error: outcome.error }
+          : { outcome: 'unknown', detail: outcome.detail ?? null },
+    )
+    const won = await this.runs.resolveOutboxOp(runId, op.op_key, outcome.kind, resultJson, new Date().toISOString())
+    if (!won) {
+      const authoritative = (await this.runs.getOutboxOps(runId)).find(row => row.op_key === op.op_key)
+      if (authoritative && (authoritative.status === 'confirmed' || authoritative.status === 'failed')) {
+        return {
+          opKey: op.op_key, kind: op.kind, status: authoritative.status, replayed: true,
+          result: authoritative.result_json === null ? null : JSON.parse(authoritative.result_json),
+        }
+      }
+    }
+    return {
+      opKey: op.op_key, kind: op.kind, status: outcome.kind, replayed: false,
+      result: JSON.parse(resultJson),
+    }
   }
 
   /** The persisted op rows, for state surfacing and audit. */

@@ -24,7 +24,7 @@ type ConsoleState = {
   milestones: Milestone[]
   decisionRequest: {
     question: string
-    options: string[]
+    options: Array<{ id: string, label: string }>
     humanTerms?: string
     whoIsAffected?: string
     tradeoffFindingId?: string

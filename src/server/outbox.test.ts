@@ -298,3 +298,55 @@ test('/api/replay stays a refusal probe: it never dispatches outbox ops', async 
     await cleanup(dir, engine)
   }
 })
+
+test('a live dispatch is not mistaken for a crashed attempt: overlapping passes share one wire attempt', async () => {
+  let release!: () => void
+  const held = new Promise<void>(resolve => (release = resolve))
+  let transports = 0
+  const { engine, dir } = freshEngine()
+  try {
+    const runId = await decide(engine)
+    const first = engine.dispatchBridgeOps(runId, async () => {
+      transports += 1
+      await held
+      return { kind: 'confirmed', result: { state: 'answered' } }
+    })
+    const second = engine.dispatchBridgeOps(runId, async () => {
+      transports += 1
+      await held
+      return { kind: 'confirmed', result: { state: 'answered' } }
+    })
+    release()
+    const [a, b] = await Promise.all([first, second])
+    assert.equal(transports, 1, 'exactly one wire attempt serves both passes')
+    assert.ok(a.ok && b.ok)
+    assert.equal(a.outcomes?.[0]?.status, 'confirmed')
+    assert.equal(b.outcomes?.[0]?.status, 'confirmed')
+    assert.deepEqual(b.outcomes?.[0]?.result, a.outcomes?.[0]?.result, 'both passes report the same attempt outcome')
+    const rows = ops(dir)
+    assert.equal(rows.filter(r => r.status === 'confirmed').length, 1)
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
+
+test('reset refuses to archive unresolved bridge operations, and proceeds once they resolve', async () => {
+  const { engine, dir } = freshEngine()
+  try {
+    const runId = await decide(engine)
+    // A pending op (no dispatcher wired, nothing dispatched yet).
+    await assert.rejects(() => engine.reset(), /BRIDGE_OPS_UNRESOLVED/,
+      'ordinary reset refuses while an outbound obligation is unresolved')
+    // The recoverable disposition: dispatch to confirmation, then reset.
+    const dispatched = await engine.dispatchBridgeOps(runId, async () => ({
+      kind: 'confirmed' as const,
+      result: { state: 'answered' },
+    }))
+    assert.ok(dispatched.ok)
+    await engine.reset()
+    const after = ops(dir).filter(r => r.status === 'pending' || r.status === 'dispatched' || r.status === 'unknown')
+    assert.equal(after.length, 0, 'nothing unresolved remains archived-out-of-reach')
+  } finally {
+    await cleanup(dir, engine)
+  }
+})
