@@ -64,12 +64,14 @@ export function isValidBearerToken(value: string): boolean {
 }
 
 type McpCallResult = {
+  /** Presence-checked (review round 3, P1): a JSON-RPC error member at all —
+   * even explicit `null` beside a result — makes the envelope malformed. */
+  error?: unknown
   result?: {
-    isError?: boolean
-    structuredContent?: { state?: string, code?: string, message?: string, settled?: unknown, [key: string]: unknown }
-    content?: Array<{ type: string, text?: string }>
+    isError?: unknown
+    structuredContent?: { state?: string, code?: unknown, message?: unknown, settled?: unknown, [key: string]: unknown }
+    content?: unknown
   }
-  error?: { code: number, message: string }
 }
 
 /** One MCP round trip: initialize → initialized → tools/call, SSE framing
@@ -132,32 +134,41 @@ async function chopinToolCall(
 }
 
 /** Whether the response carries a genuine settle: JSON-RPC 2.0 success for
- * the tools/call id on a 2xx response, no error indication, and chopin's
- * settled fields — the shape both `answered` and a B4 replay return — with
- * `choices` equal to the persisted answer. Anything that LOOKS like a
- * settle but fails verification gets a precise fixed detail (review round
- * 2, P3): the operator reconciles what actually happened. Bodies that are
- * not settle-shaped return undefined and fall through to the refusal
- * mapping. */
+ * the tools/call id on a 2xx response, an absent error member (even
+ * explicit `null` — review round 3, P1), no error indication, no refusal
+ * claim beside the settle (round 3, P1: a result claiming both settlement
+ * and refusal is malformed evidence), and chopin's settled fields — the
+ * shape both `answered` and a B4 replay return — with `choices` equal to
+ * the persisted answer. Any RECOGNIZED settle state (`answered`/`replayed`)
+ * is verified here even when incomplete, so its failure mode gets the
+ * precise unverifiable-settle detail instead of the generic fallthrough
+ * (round 3, P3). Bodies with no recognized settle state return undefined
+ * and fall through to the refusal mapping. */
 function genuineSettle(
   http: number,
   body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined,
   expectedOptionIds: readonly string[],
 ): { confirmed: true, result: unknown } | { rejected: string } | undefined {
   const structured = body?.result?.structuredContent as
-    | { state?: string, settled?: unknown, [key: string]: unknown }
+    | { state?: string, settled?: unknown, code?: unknown, [key: string]: unknown }
     | undefined
-  const looksLikeSettle = (structured?.state === 'answered' || structured?.state === 'replayed')
-    && structured?.settled !== undefined
-  if (!looksLikeSettle) return undefined
+  const state = structured?.state
+  if (state !== 'answered' && state !== 'replayed') return undefined
+  const rejected = (detail: string) => ({ rejected: `unverifiable ${state} — ${detail}` })
   if (http < 200 || http >= 300) {
-    return { rejected: `chopin settle evidence arrived on a non-2xx response (HTTP ${http})` }
+    return rejected(`settle evidence arrived on a non-2xx response (HTTP ${http})`)
   }
   if (body!.id !== CALL_ID || body!.jsonrpc !== '2.0') {
-    return { rejected: 'settle evidence is not correlated to the tool call' }
+    return rejected('settle evidence is not correlated to the tool call')
   }
-  if (body!.error || body!.result?.isError) {
-    return { rejected: 'settle evidence arrived inside an error indication' }
+  if ('error' in body!) {
+    return rejected('settle evidence arrived inside a JSON-RPC error envelope')
+  }
+  if (body!.result?.isError !== undefined && body!.result.isError !== false) {
+    return rejected('settle evidence arrived inside an error indication')
+  }
+  if (typeof structured!.code === 'string') {
+    return rejected('settle evidence claims both settlement and refusal')
   }
   const settled = structured!.settled as { choices?: unknown, by?: unknown, at?: unknown } | undefined
   if (
@@ -166,12 +177,12 @@ function genuineSettle(
     || typeof settled.by !== 'string' || settled.by.length === 0
     || typeof settled.at !== 'string' || settled.at.length === 0
   ) {
-    return { rejected: 'chopin settle lacks verifiable settled fields' }
+    return rejected('settle evidence lacks verifiable settled fields')
   }
   const choices = settled.choices as unknown[]
   const matches = choices.length === expectedOptionIds.length
     && expectedOptionIds.every(id => choices.includes(id))
-  if (!matches) return { rejected: 'chopin settle choices differ from the persisted answer' }
+  if (!matches) return rejected('settle choices differ from the persisted answer')
   return { confirmed: true, result: structured }
 }
 
@@ -196,57 +207,72 @@ export function mapChopinOutcome(
   if (body.id !== CALL_ID || body.jsonrpc !== '2.0') {
     return { kind: 'unknown', detail: 'chopin response is not correlated to the tool call' }
   }
-  if (body.error) return { kind: 'unknown', detail: `chopin RPC error ${body.error.code}` }
+  // A JSON-RPC error member at all — even explicit null — means this body
+  // carries an error envelope, whatever else it claims (round 3, P1).
+  if ('error' in body) return { kind: 'unknown', detail: 'chopin response carried an error envelope' }
   const settle = genuineSettle(http, body, expectedOptionIds)
   if (settle) {
     if ('confirmed' in settle) return { kind: 'confirmed', result: settle.result }
     return { kind: 'unknown', detail: settle.rejected }
   }
   const structured = body.result?.structuredContent
-  const refusal = structured && typeof structured.code === 'string'
-    ? structured
-    : body.result?.isError
-    ? (() => {
-        const text = body.result?.content?.find(part => part.type === 'text')?.text
-        if (!text) return undefined
+  // A terminal tool refusal requires chopin's isError marker (review round
+  // 3, P1): a bare structuredContent code alone is unattributed evidence —
+  // unknown, never failed.
+  if (body.result?.isError !== true) {
+    return { kind: 'unknown', detail: 'chopin response carried neither a settle nor a typed refusal' }
+  }
+  let code: { code: string, message?: string } | undefined
+  if (structured && typeof structured.code === 'string') {
+    code = { code: structured.code, ...(typeof structured.message === 'string' ? { message: structured.message } : {}) }
+  } else {
+    const content = body.result?.content
+    if (Array.isArray(content)) {
+      const text = content.find(part => part?.type === 'text')?.text
+      if (typeof text === 'string') {
         try {
-          const parsed = JSON.parse(text) as { code?: string, message?: string }
-          return typeof parsed.code === 'string' ? parsed : undefined
+          const parsed = JSON.parse(text) as { code?: unknown, message?: unknown }
+          if (typeof parsed.code === 'string') {
+            code = { code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) }
+          }
         } catch {
-          return undefined
+          // Not JSON — no interpretable refusal below.
         }
-      })()
-    : undefined
-  if (refusal) {
-    switch (refusal.code) {
-      // Recoverable: the condition can clear, and chopin evaluates some of
-      // these BEFORE its idempotency replay — a committed answer behind one
-      // of these must stay resumable, never failed.
-      case 'paused':
-      case 'implementation-active':
-      case 'draft-in-progress':
-      case 'state-diverged':
-      case 'document-unavailable':
-      case 'unavailable':
-        return { kind: 'unknown', detail: `chopin cannot act now: ${refusal.code}` }
-      // Terminal: explicit evidence retry can never change.
-      case 'idempotency-conflict':
-      case 'unknown-decision':
-      case 'not-allowed':
-      case 'document-archived':
-      case 'archived':
-        return { kind: 'failed', error: `chopin refused: ${refusal.code}${refusal.message ? ` — ${refusal.message}` : ''}` }
-      case 'resolved':
-        // The decision is already settled — terminal for this op, and the
-        // message names who settled it (evidence, not a guess).
-        return { kind: 'failed', error: `chopin refused: resolved${refusal.message ? ` — ${refusal.message}` : ''}` }
-      // `invalid` is ambiguous in chopin (input validation AND commit
-      // failures); anything unrecognized is evidence we cannot interpret.
-      default:
-        return { kind: 'unknown', detail: `chopin refusal left unresolved: ${refusal.code}` }
+      }
     }
   }
-  return { kind: 'unknown', detail: 'chopin response carried neither a settle nor a typed refusal' }
+  if (!code) {
+    return { kind: 'unknown', detail: 'chopin error response carried no interpretable refusal' }
+  }
+  const message = typeof code.message === 'string' ? code.message.slice(0, 200) : undefined
+  switch (code.code) {
+    // Recoverable: the condition can clear, and chopin evaluates some of
+    // these BEFORE its idempotency replay — a committed answer behind one
+    // of these must stay resumable, never failed.
+    case 'paused':
+    case 'implementation-active':
+    case 'draft-in-progress':
+    case 'state-diverged':
+    case 'document-unavailable':
+    case 'unavailable':
+      return { kind: 'unknown', detail: `chopin cannot act now: ${code.code}` }
+    // Terminal: explicit evidence retry can never change.
+    case 'idempotency-conflict':
+    case 'unknown-decision':
+    case 'not-allowed':
+    case 'document-archived':
+    case 'archived':
+      return { kind: 'failed', error: `chopin refused: ${code.code}${message ? ` — ${message}` : ''}` }
+    case 'resolved':
+      // The decision is already settled — terminal for this op, and the
+      // message names who settled it (evidence, not a guess); bounded so a
+      // receiver cannot inflate persisted diagnostics.
+      return { kind: 'failed', error: `chopin refused: resolved${message ? ` — ${message}` : ''}` }
+    // `invalid` is ambiguous in chopin (input validation AND commit
+    // failures); anything unrecognized is evidence we cannot interpret.
+    default:
+      return { kind: 'unknown', detail: `chopin refusal left unresolved: ${code.code}` }
+  }
 }
 
 /** The A2 dispatcher over chopin's MCP surface. Throws

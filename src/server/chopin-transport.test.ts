@@ -123,6 +123,51 @@ test('only the tool call response is interpreted — initialize replies never re
   if (correlated.kind === 'failed') assert.match(correlated.error, /already answered by joefeser/)
 })
 
+test('round-3 probes: error envelopes, settlement+refusal claims, marker-less codes, bare states', async () => {
+  // sol round-3 probe (a): error member present (even null) beside a result.
+  const errorNull = handshaken(json({ jsonrpc: '2.0', id: 2, error: null, result: { structuredContent: { state: 'answered', settled } } }))
+  const errorNullOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: errorNull.fetchImpl }))(answerOp())
+  assert.equal(errorNullOutcome.kind, 'unknown')
+  if (errorNullOutcome.kind === 'unknown') assert.match(errorNullOutcome.detail ?? '', /error envelope/)
+
+  // sol round-3 probe (b): a result claiming settlement AND refusal.
+  const both = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled, code: 'resolved' } } }))
+  const bothOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: both.fetchImpl }))(answerOp())
+  assert.equal(bothOutcome.kind, 'unknown')
+  if (bothOutcome.kind === 'unknown') assert.match(bothOutcome.detail ?? '', /settlement and refusal/)
+
+  // sol round-3 probe (c): a bare structuredContent code WITHOUT isError is
+  // unattributed evidence — unknown, never failed.
+  const markerless = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { code: 'resolved' } } }))
+  const markerlessOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: markerless.fetchImpl }))(answerOp())
+  assert.equal(markerlessOutcome.kind, 'unknown')
+
+  // sol round-3 probe (d): bare state without settled fields is classified
+  // unverifiable, not the generic fallthrough.
+  const bare = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered' } } }))
+  const bareOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: bare.fetchImpl }))(answerOp())
+  assert.equal(bareOutcome.kind, 'unknown')
+  if (bareOutcome.kind === 'unknown') assert.match(bareOutcome.detail ?? '', /unverifiable answered/)
+
+  // sol round-3 probe (e): isError with non-array content must not crash
+  // into "chopin unreachable" — the response arrived; say so.
+  const emptyContent = handshaken(json({ jsonrpc: '2.0', id: 2, result: { isError: true, content: {} } }))
+  const emptyOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: emptyContent.fetchImpl }))(answerOp())
+  assert.equal(emptyOutcome.kind, 'unknown')
+  if (emptyOutcome.kind === 'unknown') assert.match(emptyOutcome.detail ?? '', /no interpretable refusal/)
+  assert.notEqual(emptyOutcome.detail, 'chopin unreachable')
+
+  // Recoverable refusals via structuredContent.code under isError still map.
+  const structuredRefusal = handshaken(json({ jsonrpc: '2.0', id: 2, result: { isError: true, structuredContent: { code: 'paused' } } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: structuredRefusal.fetchImpl }))(answerOp())).kind, 'unknown')
+
+  // Terminal refusal messages are bounded in persisted diagnostics.
+  const longMessage = handshaken(json({ jsonrpc: '2.0', id: 2, result: { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'resolved', message: 'x'.repeat(500) }) }] } }))
+  const bounded = await createChopinOutboxDispatcher(config({ fetchImpl: longMessage.fetchImpl }))(answerOp())
+  assert.equal(bounded.kind, 'failed')
+  if (bounded.kind === 'failed') assert.ok(bounded.error.length < 300)
+})
+
 test('an arrived-but-unparseable response is unreadable, not unreachable', async () => {
   const garbage = fakeChopin([json('this is not json at all')])
   const outcome = await createChopinOutboxDispatcher(config({ fetchImpl: garbage.fetchImpl }))(answerOp())
