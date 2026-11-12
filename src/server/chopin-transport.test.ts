@@ -91,7 +91,42 @@ test('a B4 replay with a full settle confirms; the state string alone never does
   const foreign = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, choices: ['opt-json'] } } } }))
   const foreignOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: foreign.fetchImpl }))(answerOp())
   assert.equal(foreignOutcome.kind, 'unknown')
-  if (foreignOutcome.kind === 'unknown') assert.match(foreignOutcome.detail ?? '', /neither a settle nor a typed refusal/)
+  if (foreignOutcome.kind === 'unknown') assert.match(foreignOutcome.detail ?? '', /choices differ/)
+
+  // sol round-2 probes: settle-shaped bodies that fail envelope verification.
+  const on300 = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled } } }, 300))
+  const on300Outcome = await createChopinOutboxDispatcher(config({ fetchImpl: on300.fetchImpl }))(answerOp())
+  assert.equal(on300Outcome.kind, 'unknown')
+  if (on300Outcome.kind === 'unknown') assert.match(on300Outcome.detail ?? '', /non-2xx/)
+
+  const noEnvelope = fakeChopin([json({ id: 2, result: { structuredContent: { state: 'answered', settled } } })])
+  const noEnvelopeOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: noEnvelope.fetchImpl }))(answerOp())
+  assert.equal(noEnvelopeOutcome.kind, 'unknown')
+  if (noEnvelopeOutcome.kind === 'unknown') assert.match(noEnvelopeOutcome.detail ?? '', /not correlated/)
+})
+
+test('only the tool call response is interpreted — initialize replies never refuse an op', async () => {
+  // sol round-2 probe: a body correlated to the WRONG rpc (id 1, the
+  // initialize response) carrying a terminal refusal must stay unknown.
+  const wrongId = fakeChopin([
+    json({ jsonrpc: '2.0', id: 1, result: {} }, 200, { 'mcp-session-id': 'sess-1' }),
+    json({ jsonrpc: '2.0', id: 1, result: { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'resolved', message: 'already answered by joefeser' }) }] } }),
+  ])
+  const outcome = await createChopinOutboxDispatcher(config({ fetchImpl: wrongId.fetchImpl }))(answerOp())
+  assert.equal(outcome.kind, 'unknown')
+  if (outcome.kind === 'unknown') assert.match(outcome.detail ?? '', /not correlated/)
+
+  // A correctly correlated error response still reaches the refusal switch.
+  const rightId = handshaken(json({ jsonrpc: '2.0', id: 2, result: { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'resolved', message: 'already answered by joefeser' }) }] } }))
+  const correlated = await createChopinOutboxDispatcher(config({ fetchImpl: rightId.fetchImpl }))(answerOp())
+  assert.equal(correlated.kind, 'failed')
+  if (correlated.kind === 'failed') assert.match(correlated.error, /already answered by joefeser/)
+})
+
+test('an arrived-but-unparseable response is unreadable, not unreachable', async () => {
+  const garbage = fakeChopin([json('this is not json at all')])
+  const outcome = await createChopinOutboxDispatcher(config({ fetchImpl: garbage.fetchImpl }))(answerOp())
+  assert.deepEqual(outcome, { kind: 'unknown', detail: 'chopin returned an unreadable response (HTTP 200)' })
 })
 
 test('recoverable refusals stay unknown — a committed answer behind them resumes', async () => {

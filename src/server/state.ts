@@ -321,12 +321,16 @@ export class ConsoleEngine {
    * correcting configuration for a pending op, or after a process crash.
    * Uses the existing outbox claim (one live wire attempt per op across
    * instances); a re-submitted identical decision still returns duplicate,
-   * so this is the only path that retries dispatch. */
-  async resumeBridgeOps(runId: string): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
+   * so this is the only path that retries dispatch. WITHOUT force, a claim
+   * held by another (possibly dead) owner is respected — the outcome reads
+   * in_progress and the op stays as it is. `force` is the runbook's
+   * separate dead-owner recovery step, for use only after verifying the
+   * owning process is gone. */
+  async resumeBridgeOps(runId: string, options?: { force?: boolean }): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
     if (!this.bridgeDispatcher) {
       return { ok: false, error: this.bridgeDispatchError ?? 'BRIDGE_DISPATCHER_NOT_CONFIGURED' }
     }
-    return this.dispatchBridgeOps(runId, this.bridgeDispatcher)
+    return this.dispatchBridgeOps(runId, this.bridgeDispatcher, options)
   }
 
   /** Writes the non-HACP bridge record (A3) for every CONFIRMED op that

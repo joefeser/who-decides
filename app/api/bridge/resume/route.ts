@@ -12,9 +12,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: 'OPERATOR_AUTH_REQUIRED' }, { status: 401 })
   }
   let runId: unknown
+  let force = false
   try {
-    const body = await request.json() as { runId?: unknown }
+    const body = await request.json() as { runId?: unknown, force?: unknown }
     runId = body.runId
+    // Force is the runbook's separate dead-owner recovery step: only after
+    // verifying the owning process is gone. The ordinary route never forces.
+    force = body.force === true
   } catch {
     return NextResponse.json({ ok: false, error: 'INVALID_BODY' }, { status: 400 })
   }
@@ -22,7 +26,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: 'INVALID_RUN_ID' }, { status: 400 })
   }
   try {
-    const result = await engine.resumeBridgeOps(runId)
+    const result = await engine.resumeBridgeOps(runId, force ? { force: true } : undefined)
     return NextResponse.json(result, { status: result.ok ? 200 : 409 })
   } catch (error) {
     return NextResponse.json(

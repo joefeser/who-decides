@@ -114,45 +114,65 @@ async function chopinToolCall(
     signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
   })
   const text = await call.text()
-  const dataLine = text.split('\n').filter(line => line.startsWith('data:')).at(-1)
-  const body = dataLine
-    ? JSON.parse(dataLine.slice(5).trim()) as McpCallResult
-    : text.trim().startsWith('{')
-    ? JSON.parse(text) as McpCallResult
-    : undefined
+  // A response that arrived but cannot be parsed is "unreadable", not
+  // "unreachable" (review round 2, P3) — and its text never enters a
+  // persisted diagnostic.
+  let body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined
+  try {
+    const dataLine = text.split('\n').filter(line => line.startsWith('data:')).at(-1)
+    body = dataLine
+      ? JSON.parse(dataLine.slice(5).trim()) as McpCallResult
+      : text.trim().startsWith('{')
+      ? JSON.parse(text) as McpCallResult
+      : undefined
+  } catch {
+    return { http: call.status, body: undefined }
+  }
   return { http: call.status, body }
 }
 
-/** Whether the response carries a genuine settle: JSON-RPC success for the
- * tools/call id, no error indication, and chopin's settled fields — the
- * shape both `answered` and a B4 replay return. An error indication can
- * never confirm (sol round-1 probe b) — chopin carries its typed refusals
- * INSIDE error responses, so returning "not a settle" here lets the
- * refusal mapping below interpret them. `choices` is checked against the
- * persisted answer by the caller (`expectedOptionIds`). */
+/** Whether the response carries a genuine settle: JSON-RPC 2.0 success for
+ * the tools/call id on a 2xx response, no error indication, and chopin's
+ * settled fields — the shape both `answered` and a B4 replay return — with
+ * `choices` equal to the persisted answer. Anything that LOOKS like a
+ * settle but fails verification gets a precise fixed detail (review round
+ * 2, P3): the operator reconciles what actually happened. Bodies that are
+ * not settle-shaped return undefined and fall through to the refusal
+ * mapping. */
 function genuineSettle(
   http: number,
-  body: (McpCallResult & { id?: unknown }) | undefined,
+  body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined,
   expectedOptionIds: readonly string[],
-): { kind: 'confirmed', result: unknown } | undefined {
-  if (http >= 400 || !body) return undefined
-  if (body.id !== CALL_ID || body.error || body.result?.isError) return undefined
-  const structured = body.result?.structuredContent
-  if (!structured || (structured.state !== 'answered' && structured.state !== 'replayed')) return undefined
-  const settled = structured.settled as { choices?: unknown, by?: unknown, at?: unknown } | undefined
+): { confirmed: true, result: unknown } | { rejected: string } | undefined {
+  const structured = body?.result?.structuredContent as
+    | { state?: string, settled?: unknown, [key: string]: unknown }
+    | undefined
+  const looksLikeSettle = (structured?.state === 'answered' || structured?.state === 'replayed')
+    && structured?.settled !== undefined
+  if (!looksLikeSettle) return undefined
+  if (http < 200 || http >= 300) {
+    return { rejected: `chopin settle evidence arrived on a non-2xx response (HTTP ${http})` }
+  }
+  if (body!.id !== CALL_ID || body!.jsonrpc !== '2.0') {
+    return { rejected: 'settle evidence is not correlated to the tool call' }
+  }
+  if (body!.error || body!.result?.isError) {
+    return { rejected: 'settle evidence arrived inside an error indication' }
+  }
+  const settled = structured!.settled as { choices?: unknown, by?: unknown, at?: unknown } | undefined
   if (
     !settled || typeof settled !== 'object'
     || !Array.isArray(settled.choices) || settled.choices.length === 0
     || typeof settled.by !== 'string' || settled.by.length === 0
     || typeof settled.at !== 'string' || settled.at.length === 0
   ) {
-    return undefined
+    return { rejected: 'chopin settle lacks verifiable settled fields' }
   }
   const choices = settled.choices as unknown[]
   const matches = choices.length === expectedOptionIds.length
     && expectedOptionIds.every(id => choices.includes(id))
-  if (!matches) return undefined
-  return { kind: 'confirmed', result: structured }
+  if (!matches) return { rejected: 'chopin settle choices differ from the persisted answer' }
+  return { confirmed: true, result: structured }
 }
 
 /** Map one chopin response to an outbox outcome. Never throws: any defect in
@@ -160,18 +180,28 @@ function genuineSettle(
  * interpret, not a fabricated success. */
 export function mapChopinOutcome(
   http: number,
-  body: (McpCallResult & { id?: unknown }) | undefined,
+  body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined,
   expectedOptionIds: readonly string[] = [],
 ): OutboxDispatchOutcome {
-  const settle = genuineSettle(http, body, expectedOptionIds)
-  if (settle) return settle
   if (http === 401 || http === 403) {
     // Chopin checks Origin before credentials, so a 403 can be either — name both.
     return { kind: 'failed', error: `chopin rejected the request (HTTP ${http} — check the bridge token and the Origin allowlist)` }
   }
   if (http >= 500) return { kind: 'unknown', detail: `chopin HTTP ${http}` }
   if (!body) return { kind: 'unknown', detail: `chopin returned an unreadable response (HTTP ${http})` }
+  // Envelope correlation (review round 2, P1-2): a body that is not the
+  // tools/call response — e.g. the initialize reply replayed at us — must
+  // never be interpreted as a settle or a terminal refusal, whatever codes
+  // it carries.
+  if (body.id !== CALL_ID || body.jsonrpc !== '2.0') {
+    return { kind: 'unknown', detail: 'chopin response is not correlated to the tool call' }
+  }
   if (body.error) return { kind: 'unknown', detail: `chopin RPC error ${body.error.code}` }
+  const settle = genuineSettle(http, body, expectedOptionIds)
+  if (settle) {
+    if (settle.confirmed) return { kind: 'confirmed', result: settle.result }
+    return { kind: 'unknown', detail: settle.rejected }
+  }
   const structured = body.result?.structuredContent
   const refusal = structured && typeof structured.code === 'string'
     ? structured
