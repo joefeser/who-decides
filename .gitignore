@@ -44,3 +44,4 @@ next-env.d.ts
 agentcore/cdk/node_modules/
 agentcore/.cache/
 agentcore/.cli/
+sol-bridge-transport-review-prompt.md
