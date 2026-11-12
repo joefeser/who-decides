@@ -308,6 +308,76 @@ test('round-4 probes: contradictory witnesses and malformed attribution never se
   if (yesterdayOutcome.kind === 'unknown') assert.match(yesterdayOutcome.detail ?? '', /actor or timestamp/)
 })
 
+test('round-6 probes: both-claim objects, malformed text fields, multi-block comparison, bounded echoes', async () => {
+  // sol round-6 probe (P1): ONE text object claiming BOTH refusal and
+  // settlement — with isError + structured code `resolved` (matching the
+  // code half), the settlement half must still contradict. Was `failed`.
+  const bothClaim = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'resolved' },
+    content: [{ type: 'text', text: JSON.stringify({ code: 'resolved', state: 'answered', settled }) }],
+  } }))
+  const bothOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: bothClaim.fetchImpl }))(answerOp())
+  assert.equal(bothOutcome.kind, 'unknown')
+  if (bothOutcome.kind === 'unknown') assert.match(bothOutcome.detail ?? '', /refusal and settlement/)
+
+  // sol round-6 probe (P2): present-but-malformed text settled fields
+  // (choices not an array, by a number, at null) contradict — the
+  // comparator must not skip them for having the wrong type.
+  const malformedFields = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { choices: 'B', by: 17, at: null } }) }],
+  } }))
+  const malformedOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: malformedFields.fetchImpl }))(answerOp())
+  assert.equal(malformedOutcome.kind, 'unknown')
+  if (malformedOutcome.kind === 'unknown') assert.match(malformedOutcome.detail ?? '', /attribution/)
+
+  // sol round-6 probe (P3): the contradictory detail stays bounded even
+  // when the structured code is 500 characters.
+  const longCode = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'x'.repeat(500) },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled }) }],
+  } }))
+  const longCodeOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: longCode.fetchImpl }))(answerOp())
+  assert.equal(longCodeOutcome.kind, 'unknown')
+  if (longCodeOutcome.kind === 'unknown') assert.ok((longCodeOutcome.detail ?? '').length < 300, 'contradiction detail must be bounded')
+
+  // sol round-6 multi-block ruling: a SECOND text block carrying a
+  // different recognized claim (a refusal beside an agreeing settlement)
+  // is contradictory evidence.
+  const secondBlock = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      { type: 'text', text: JSON.stringify({ state: 'answered', settled }) },
+      { type: 'text', text: JSON.stringify({ code: 'resolved' }) },
+    ],
+  } }))
+  const secondBlockOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: secondBlock.fetchImpl }))(answerOp())
+  assert.equal(secondBlockOutcome.kind, 'unknown')
+  if (secondBlockOutcome.kind === 'unknown') assert.match(secondBlockOutcome.detail ?? '', /settle and refusal/)
+
+  // Agreeing repeats in a second block leave the outcome unchanged.
+  const agreeingRepeat = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      { type: 'text', text: JSON.stringify({ state: 'answered', settled }) },
+      { type: 'text', text: JSON.stringify({ state: 'answered', settled }) },
+    ],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: agreeingRepeat.fetchImpl }))(answerOp())).kind, 'confirmed')
+
+  // Ordinary prose in a second block adds no claim.
+  const proseSecond = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      { type: 'text', text: JSON.stringify({ state: 'answered', settled }) },
+      { type: 'text', text: 'just prose, not JSON' },
+    ],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: proseSecond.fetchImpl }))(answerOp())).kind, 'confirmed')
+})
+
 test('a malformed credential cannot construct the dispatcher nor leak through a diagnostic', async () => {
   assert.equal(isValidBearerToken(''), false)
   assert.equal(isValidBearerToken('  '), false)
