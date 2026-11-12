@@ -42,6 +42,10 @@ export type ChopinTransportConfig = {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000
+/** Claim ceiling for the agreement scan (review round 8, P2). Chopin's
+ * pinned construction yields at most a handful; anything beyond this
+ * refuses to conclude rather than skipping a late contradiction. */
+const MAX_CLAIMS = 32
 const CALL_ID = 2
 
 /** A transport configuration a caller can fix; never carries token material. */
@@ -236,28 +240,29 @@ function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) 
   return claims
 }
 
-/** Whether a text settlement witness contradicts a verified structured
- * settle. Omitted fields add no claim; PRESENT fields must be well-typed
- * AND agree (review round 6, P2): a present-but-malformed field —
- * `choices: "B"`, `by: 17`, `at: null` — is contradictory evidence, not a
- * field the comparator may skip. */
+/** Whether two settlement witnesses contradict. SYMMETRIC and
+ * supply-aware (review round 8, P2): each side's supplied fields must be
+ * well-typed, and values are compared only where BOTH witnesses supply
+ * the field — a text settle omitting choices does not disagree with a
+ * structured settle's choices. Omitted fields add no claim; present-but-
+ * malformed fields (`choices: "B"`, `by: 17`, `at: null`) contradict. */
 function textSettleContradicts(
-  witnessSettled: { choices?: unknown, by?: unknown, at?: unknown },
-  structuredSettled: { choices?: unknown, by?: unknown, at?: unknown },
+  a: { choices?: unknown, by?: unknown, at?: unknown },
+  b: { choices?: unknown, by?: unknown, at?: unknown },
 ): boolean {
-  if (witnessSettled.choices !== undefined) {
-    if (!Array.isArray(witnessSettled.choices) || !Array.isArray(structuredSettled.choices)) return true
-    const witnessChoices = witnessSettled.choices
-    const sameChoices = witnessChoices.length === structuredSettled.choices.length
-      && structuredSettled.choices.every(id => witnessChoices.includes(id))
+  for (const side of [a, b]) {
+    if (side.choices !== undefined && !Array.isArray(side.choices)) return true
+    if (side.by !== undefined && typeof side.by !== 'string') return true
+    if (side.at !== undefined && typeof side.at !== 'string') return true
+  }
+  if (Array.isArray(a.choices) && Array.isArray(b.choices)) {
+    const aChoices = a.choices
+    const sameChoices = aChoices.length === b.choices.length
+      && b.choices.every(id => aChoices.includes(id))
     if (!sameChoices) return true
   }
-  if (witnessSettled.by !== undefined) {
-    if (typeof witnessSettled.by !== 'string' || witnessSettled.by !== structuredSettled.by) return true
-  }
-  if (witnessSettled.at !== undefined) {
-    if (typeof witnessSettled.at !== 'string' || witnessSettled.at !== structuredSettled.at) return true
-  }
+  if (a.by !== undefined && b.by !== undefined && a.by !== b.by) return true
+  if (a.at !== undefined && b.at !== undefined && a.at !== b.at) return true
   return false
 }
 
@@ -315,6 +320,13 @@ export function mapChopinOutcome(
     claims.push({ source: 'structured', kind: 'refusal', code: structuredCode, ...(structuredMessage !== undefined ? { message: structuredMessage } : {}) })
   }
   claims.push(...textClaims(body))
+  // Enforced claim ceiling (review round 8, P2): an overflowing response
+  // is uncorrelatable — unknown — so a later contradiction can never be
+  // skipped by hitting the limit. Chopin's pinned one-block construction
+  // yields at most a handful; anything beyond 32 refuses to conclude.
+  if (claims.length > MAX_CLAIMS) {
+    return { kind: 'unknown', detail: 'chopin response carried too many claims to correlate' }
+  }
   for (let i = 0; i < claims.length; i++) {
     for (let j = i + 1; j < claims.length; j++) {
       const a = claims[i]!, b = claims[j]!
@@ -341,43 +353,42 @@ export function mapChopinOutcome(
       }
     }
   }
-  // Outcome selection from the internally consistent claim list.
+  // Outcome selection from the internally consistent claim list. A text
+  // refusal maps to a terminal outcome ONLY under chopin's isError marker
+  // (review round 8, P1) — without it the code is unattributed evidence:
+  // unknown. Structured refusal claims were admitted under that marker at
+  // construction.
   if (settle?.confirmed) {
     return { kind: 'confirmed', result: settle.result }
   }
-  const refusalClaim = claims.find(claim => claim.kind === 'refusal')
+  const structuredRefusalClaim = claims.find(claim => claim.source === 'structured' && claim.kind === 'refusal')
+  const textRefusalClaim = claims.find(claim => claim.source === 'text' && claim.kind === 'refusal')
+  const refusalClaim = structuredRefusalClaim ?? (body.result?.isError === true ? textRefusalClaim : undefined)
   if (!refusalClaim || refusalClaim.kind !== 'refusal') {
     return { kind: 'unknown', detail: body.result?.isError === true
       ? 'chopin error response carried no interpretable refusal'
       : 'chopin response carried neither a settle nor a typed refusal' }
   }
-  const code: { code: string, message?: string } = {
-    code: refusalClaim.code,
-    ...(refusalClaim.message !== undefined ? { message: refusalClaim.message } : {}),
-  }
-  if (!code) {
-    return { kind: 'unknown', detail: 'chopin error response carried no interpretable refusal' }
-  }
-  const message = typeof code.message === 'string' ? code.message.slice(0, 200) : undefined
-  switch (code.code) {
+  const message = typeof refusalClaim.message === 'string' ? refusalClaim.message.slice(0, 200) : undefined
+  switch (refusalClaim.code) {
     // Recoverable: the condition can clear, and chopin evaluates some of
     // these BEFORE its idempotency replay — a committed answer behind one
     // of these must stay resumable, never failed.
-    case 'paused':
-    case 'implementation-active':
-    case 'draft-in-progress':
-    case 'state-diverged':
-    case 'document-unavailable':
-    case 'unavailable':
-      return { kind: 'unknown', detail: `chopin cannot act now: ${code.code}` }
+    case "paused":
+    case "implementation-active":
+    case "draft-in-progress":
+    case "state-diverged":
+    case "document-unavailable":
+    case "unavailable":
+      return { kind: 'unknown', detail: `chopin cannot act now: ${refusalClaim.code}` }
     // Terminal: explicit evidence retry can never change.
-    case 'idempotency-conflict':
-    case 'unknown-decision':
-    case 'not-allowed':
-    case 'document-archived':
-    case 'archived':
-      return { kind: 'failed', error: `chopin refused: ${code.code}${message ? ` — ${message}` : ''}` }
-    case 'resolved':
+    case "idempotency-conflict":
+    case "unknown-decision":
+    case "not-allowed":
+    case "document-archived":
+    case "archived":
+      return { kind: 'failed', error: `chopin refused: ${refusalClaim.code}${message ? ` — ${message}` : ''}` }
+    case "resolved":
       // The decision is already settled — terminal for this op, and the
       // message names who settled it (evidence, not a guess); bounded so a
       // receiver cannot inflate persisted diagnostics.
@@ -386,7 +397,7 @@ export function mapChopinOutcome(
     // failures); anything unrecognized is evidence we cannot interpret —
     // and receiver-supplied diagnostics stay bounded (round 4, P3).
     default:
-      return { kind: 'unknown', detail: `chopin refusal left unresolved: ${code.code.slice(0, 100)}` }
+      return { kind: 'unknown', detail: `chopin refusal left unresolved: ${refusalClaim.code.slice(0, 100)}` }
   }
 }
 

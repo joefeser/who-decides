@@ -378,6 +378,70 @@ test('round-6 probes: both-claim objects, malformed text fields, multi-block com
   assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: proseSecond.fetchImpl }))(answerOp())).kind, 'confirmed')
 })
 
+test('round-8 probes: markerless text refusals, partial witnesses, claim ceiling', async () => {
+  // sol round-8 probe (P1): a text refusal WITHOUT isError is unattributed
+  // evidence — unknown, never failed — whether alone or mirrored in
+  // structuredContent.
+  const markerlessText = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    content: [{ type: 'text', text: JSON.stringify({ code: 'resolved' }) }],
+  } }))
+  const markerlessOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: markerlessText.fetchImpl }))(answerOp())
+  assert.equal(markerlessOutcome.kind, 'unknown')
+  if (markerlessOutcome.kind === 'unknown') assert.match(markerlessOutcome.detail ?? '', /neither a settle nor a typed refusal/)
+
+  const markerlessMirrored = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: false,
+    structuredContent: { code: 'resolved' },
+    content: [{ type: 'text', text: JSON.stringify({ code: 'resolved' }) }],
+  } }))
+  const mirroredOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: markerlessMirrored.fetchImpl }))(answerOp())
+  assert.equal(mirroredOutcome.kind, 'unknown')
+
+  // sol round-8 probe (P2): PARTIAL text settlements that agree confirm —
+  // values compare only where both witnesses supply the field.
+  const partialBy = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { by: 'joe' } }) }],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: partialBy.fetchImpl }))(answerOp())).kind, 'confirmed')
+
+  const emptySettled = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: {} }) }],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: emptySettled.fetchImpl }))(answerOp())).kind, 'confirmed')
+
+  const choicesOnly = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { choices: [OPTION] } }) }],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: choicesOnly.fetchImpl }))(answerOp())).kind, 'confirmed')
+
+  // But a supplied field with the WRONG VALUE still contradicts.
+  const differingBy = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { by: 'someone-else' } }) }],
+  } }))
+  const differingOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: differingBy.fetchImpl }))(answerOp())
+  assert.equal(differingOutcome.kind, 'unknown')
+  if (differingOutcome.kind === 'unknown') assert.match(differingOutcome.detail ?? '', /attribution/)
+
+  // sol round-8 probe (P2): an OVERFLOWING response (33 claims) is
+  // uncorrelatable — unknown with a bounded detail, never a conclusion
+  // that skipped a late contradiction.
+  const manyBlocks = Array.from({ length: 33 }, (_, index) => ({
+    type: 'text',
+    text: JSON.stringify(index % 2 === 0 ? { state: 'answered', settled } : { code: 'paused' }),
+  }))
+  const overflow = fakeChopin([
+    json({ jsonrpc: '2.0', id: 1, result: {} }, 200, { 'mcp-session-id': 'sess-1' }),
+    json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled }, content: manyBlocks } }),
+  ])
+  const overflowOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: overflow.fetchImpl }))(answerOp())
+  assert.equal(overflowOutcome.kind, 'unknown')
+  if (overflowOutcome.kind === 'unknown') assert.match(overflowOutcome.detail ?? '', /too many claims/)
+})
+
 test('a malformed credential cannot construct the dispatcher nor leak through a diagnostic', async () => {
   assert.equal(isValidBearerToken(''), false)
   assert.equal(isValidBearerToken('  '), false)
