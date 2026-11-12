@@ -535,9 +535,12 @@ test('round-9 probes: duplicate choices never stand in for a missing option; cap
     targetSystem: 'chopin',
     payload: { tool: 'answer_decision', arguments: { id: 'doc-1', questionId: 'card-1', revision: 2, optionIds: [OPTION, optionB], idempotencyKey: 'wd:run-9:answer' } },
   }
+  // FIXED after sol's coverage catch: the text duplicate pairs with a
+  // VERIFIED STRUCTURED SETTLE (settle-vs-settle) so the choice comparator
+  // itself fires — pairing it with a structured refusal returned unknown
+  // at the kind gate and never reached the set comparison.
   const duplicateText = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
-    isError: true,
-    structuredContent: { code: 'paused' },
+    structuredContent: { state: 'answered', settled: { choices: [OPTION, optionB], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
     content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { choices: [OPTION, OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } }) }],
   } }))
   const duplicateOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: duplicateText.fetchImpl }))(twoOptionOp)
@@ -557,6 +560,48 @@ test('round-9 probes: duplicate choices never stand in for a missing option; cap
     structuredContent: { state: 'answered', settled: { choices: [optionB, OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
   } }))
   assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: reordered.fetchImpl }))(twoOptionOp)).kind, 'confirmed')
+
+  // sol round-10 probe (P1): the PERSISTED optionIds themselves duplicated
+  // (["A","A"]) — a malformed request the current builder cannot emit, but
+  // the dispatcher accepts. Deduping expectedSet must not let a single-A
+  // settle confirm against it.
+  const duplicatedPersistedOp = {
+    opKey: 'wd:run-10:answer',
+    kind: 'answer' as const,
+    targetSystem: 'chopin',
+    payload: { tool: 'answer_decision', arguments: { id: 'doc-1', questionId: 'card-1', revision: 2, optionIds: [OPTION, OPTION], idempotencyKey: 'wd:run-10:answer' } },
+  }
+  const singleA = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+  } }))
+  const singleAOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: singleA.fetchImpl }))(duplicatedPersistedOp)
+  assert.equal(singleAOutcome.kind, 'unknown')
+
+  // sol round-10 probe (P2): overflow fires only when ADMITTING a claim
+  // would exceed the ceiling — 32 agreeing claims plus trailing prose
+  // stays confirmed.
+  const proseTail = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      ...Array.from({ length: 31 }, () => ({ type: 'text', text: JSON.stringify({ state: 'answered', settled }) })),
+      { type: 'text', text: 'ordinary prose, consumes no budget' },
+    ],
+  } }))
+  const proseOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: proseTail.fetchImpl }))(answerOp())
+  assert.equal(proseOutcome.kind, 'confirmed')
+
+  // A 33rd CLAIM (not a 33rd block) is overflow: a two-claim block pushes
+  // admission past the cap.
+  const twoClaimBlockOverflow = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      ...Array.from({ length: 31 }, () => ({ type: 'text', text: JSON.stringify({ state: 'answered', settled }) })),
+      { type: 'text', text: JSON.stringify({ code: 'paused', state: 'answered', settled }) },
+    ],
+  } }))
+  const twoClaimOverflow = await createChopinOutboxDispatcher(config({ fetchImpl: twoClaimBlockOverflow.fetchImpl }))(answerOp())
+  assert.equal(twoClaimOverflow.kind, 'unknown')
+  if (twoClaimOverflow.kind === 'unknown') assert.match(twoClaimOverflow.detail ?? '', /too many claims/)
 
   // sol round-9 probe (P2): collection stops AT the ceiling — the 33rd
   // claim lands unknown immediately, and a huge response cannot defer the

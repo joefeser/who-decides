@@ -198,7 +198,12 @@ function genuineSettle(
   // present).
   const choiceSet = new Set(choices)
   const expectedSet = new Set(expectedOptionIds)
+  // The PERSISTED ids must be unique too (review round 10, P1): a
+  // malformed request like optionIds ["A","A"] loses its duplicate to the
+  // Set — requiring expectedSet.size to match the array length keeps a
+  // deduped `["A"]` from confirming against it.
   const matches = choiceSet.size === choices.length
+    && expectedSet.size === expectedOptionIds.length
     && choiceSet.size === expectedSet.size
     && [...choiceSet].every(id => typeof id === 'string' && expectedSet.has(id))
   if (!matches) return rejected('settle choices differ from the persisted answer')
@@ -222,32 +227,38 @@ function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) 
   if (!Array.isArray(content)) return { claims: [], overflow: false }
   const claims: Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }> = []
   for (const part of content) {
-    // CAP-AWARE COLLECTION (review round 9, P2): collection stops the
-    // moment the ceiling is reached — a huge response can neither blow the
-    // spread-argument limit nor defer the overflow verdict to after the
-    // whole body was walked. Overflow is honest: the unexamined remainder
-    // could have contradicted, so nothing concludes.
-    if (claims.length >= cap) return { claims, overflow: true }
     if (part?.type !== 'text' || typeof part.text !== 'string') continue
+    // CAP-AWARE ADMISSION (review round 10, P2): overflow fires when a
+    // recognized claim would EXCEED the ceiling — ordinary prose and
+    // non-JSON blocks consume no budget, so trailing prose cannot flip an
+    // outcome that 32 agreeing claims already earned. A block contributing
+    // two claims (code beside state) can push the admission past the cap,
+    // and that too is overflow.
+    let parsed: Record<string, unknown>
     try {
-      const parsed = JSON.parse(part.text) as Record<string, unknown>
-      // One object claiming both settlement and refusal (code beside state)
-      // contributes both claims — the pairwise comparison below treats it
-      // as contradictory evidence whatever the structured side says.
-      if (typeof parsed.code === 'string') {
-        claims.push({ source: 'text', kind: 'refusal', code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) })
-      }
-      if (parsed.state === 'answered' || parsed.state === 'replayed') {
-        if (parsed.settled === undefined) {
-          claims.push({ source: 'text', kind: 'settle', state: parsed.state })
-        } else if (parsed.settled !== null && typeof parsed.settled === 'object' && !Array.isArray(parsed.settled)) {
-          claims.push({ source: 'text', kind: 'settle', state: parsed.state, settled: parsed.settled as { choices?: unknown, by?: unknown, at?: unknown } })
-        } else {
-          claims.push({ source: 'text', kind: 'settle', state: parsed.state, settledMalformed: true })
-        }
-      }
+      parsed = JSON.parse(part.text) as Record<string, unknown>
     } catch {
       continue
+    }
+    const pushes: Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }> = []
+    // One object claiming both settlement and refusal (code beside state)
+    // contributes both claims — the pairwise comparison below treats it
+    // as contradictory evidence whatever the structured side says.
+    if (typeof parsed.code === 'string') {
+      pushes.push({ source: 'text', kind: 'refusal', code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) })
+    }
+    if (parsed.state === 'answered' || parsed.state === 'replayed') {
+      if (parsed.settled === undefined) {
+        pushes.push({ source: 'text', kind: 'settle', state: parsed.state })
+      } else if (parsed.settled !== null && typeof parsed.settled === 'object' && !Array.isArray(parsed.settled)) {
+        pushes.push({ source: 'text', kind: 'settle', state: parsed.state, settled: parsed.settled as { choices?: unknown, by?: unknown, at?: unknown } })
+      } else {
+        pushes.push({ source: 'text', kind: 'settle', state: parsed.state, settledMalformed: true })
+      }
+    }
+    for (const push of pushes) {
+      if (claims.length >= cap) return { claims, overflow: true }
+      claims.push(push)
     }
   }
   return { claims, overflow: false }
