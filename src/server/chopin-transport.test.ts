@@ -522,3 +522,54 @@ test('env wiring: unset is silent, broken is a fixed configError, custody via fi
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('round-9 probes: duplicate choices never stand in for a missing option; cap stops collection', async () => {
+  // sol round-9 probe (P1): persisted and structured choices ["A","B"],
+  // text choices ["A","A"] — equal lengths, one-way membership — must not
+  // confirm. The second A stands in for the missing B only if comparison
+  // is directional; exact set membership catches it.
+  const optionB = 'opt-second'
+  const twoOptionOp = {
+    opKey: 'wd:run-9:answer',
+    kind: 'answer' as const,
+    targetSystem: 'chopin',
+    payload: { tool: 'answer_decision', arguments: { id: 'doc-1', questionId: 'card-1', revision: 2, optionIds: [OPTION, optionB], idempotencyKey: 'wd:run-9:answer' } },
+  }
+  const duplicateText = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'paused' },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { choices: [OPTION, OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } }) }],
+  } }))
+  const duplicateOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: duplicateText.fetchImpl }))(twoOptionOp)
+  assert.equal(duplicateOutcome.kind, 'unknown')
+  if (duplicateOutcome.kind === 'unknown') assert.match(duplicateOutcome.detail ?? '', /attribution|settlement/)
+
+  // The same hole in the STRUCTURED side: a verified settle whose choices
+  // duplicate one option against a two-option persisted answer.
+  const structuredDuplicate = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [OPTION, OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+  } }))
+  const duplicateStructured = await createChopinOutboxDispatcher(config({ fetchImpl: structuredDuplicate.fetchImpl }))(twoOptionOp)
+  assert.equal(duplicateStructured.kind, 'unknown')
+
+  // Order-insensitive agreement is preserved: ["B","A"] matches ["A","B"].
+  const reordered = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled: { choices: [optionB, OPTION], by: 'joe', at: '2026-11-11T00:00:00.000Z' } },
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: reordered.fetchImpl }))(twoOptionOp)).kind, 'confirmed')
+
+  // sol round-9 probe (P2): collection stops AT the ceiling — the 33rd
+  // claim lands unknown immediately, and a huge response cannot defer the
+  // verdict past an unbounded walk.
+  const blocks = Array.from({ length: 40 }, (_, index) => ({
+    type: 'text',
+    text: JSON.stringify(index % 2 === 0 ? { state: 'answered', settled } : { code: 'paused' }),
+  }))
+  const overflow = fakeChopin([
+    json({ jsonrpc: '2.0', id: 1, result: {} }, 200, { 'mcp-session-id': 'sess-1' }),
+    json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled }, content: blocks } }),
+  ])
+  const overflowOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: overflow.fetchImpl }))(answerOp())
+  assert.equal(overflowOutcome.kind, 'unknown')
+  if (overflowOutcome.kind === 'unknown') assert.match(overflowOutcome.detail ?? '', /too many claims/)
+})

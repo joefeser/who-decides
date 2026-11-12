@@ -192,8 +192,15 @@ function genuineSettle(
     return rejected('settle evidence lacks a verifiable actor or timestamp')
   }
   const choices = settled.choices as unknown[]
-  const matches = choices.length === expectedOptionIds.length
-    && expectedOptionIds.every(id => choices.includes(id))
+  // EXACT SET MEMBERSHIP (review round 9, P1): option ids must be unique
+  // and match the persisted answer as a set — one-way membership let
+  // `["A","A"]` stand in for `["A","B"]` (equal lengths, both expected ids
+  // present).
+  const choiceSet = new Set(choices)
+  const expectedSet = new Set(expectedOptionIds)
+  const matches = choiceSet.size === choices.length
+    && choiceSet.size === expectedSet.size
+    && [...choiceSet].every(id => typeof id === 'string' && expectedSet.has(id))
   if (!matches) return rejected('settle choices differ from the persisted answer')
   return { confirmed: true, result: structured }
 }
@@ -209,12 +216,18 @@ function genuineSettle(
  * plain object (null, string, number, array) marks the claim
  * settledMalformed (review round 7, P2) — omitted `settled` stays clean.
  * Ordinary prose and non-JSON blocks contribute nothing. */
-function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined):
-  Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }> {
+function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined, cap: number):
+  { claims: Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }>, overflow: boolean } {
   const content = body?.result?.content
-  if (!Array.isArray(content)) return []
+  if (!Array.isArray(content)) return { claims: [], overflow: false }
   const claims: Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }> = []
   for (const part of content) {
+    // CAP-AWARE COLLECTION (review round 9, P2): collection stops the
+    // moment the ceiling is reached — a huge response can neither blow the
+    // spread-argument limit nor defer the overflow verdict to after the
+    // whole body was walked. Overflow is honest: the unexamined remainder
+    // could have contradicted, so nothing concludes.
+    if (claims.length >= cap) return { claims, overflow: true }
     if (part?.type !== 'text' || typeof part.text !== 'string') continue
     try {
       const parsed = JSON.parse(part.text) as Record<string, unknown>
@@ -237,7 +250,7 @@ function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) 
       continue
     }
   }
-  return claims
+  return { claims, overflow: false }
 }
 
 /** Whether two settlement witnesses contradict. SYMMETRIC and
@@ -256,10 +269,15 @@ function textSettleContradicts(
     if (side.at !== undefined && typeof side.at !== 'string') return true
   }
   if (Array.isArray(a.choices) && Array.isArray(b.choices)) {
-    const aChoices = a.choices
-    const sameChoices = aChoices.length === b.choices.length
-      && b.choices.every(id => aChoices.includes(id))
-    if (!sameChoices) return true
+    // EXACT SET MEMBERSHIP, both directions (review round 9, P1): unique
+    // option ids on each side, equal sets across witnesses — `["A","A"]`
+    // does not stand in for `["A","B"]`, while `["B","A"]` agrees with
+    // `["A","B"]`.
+    const setA = new Set(a.choices)
+    const setB = new Set(b.choices)
+    if (setA.size !== a.choices.length || setB.size !== b.choices.length) return true
+    if (setA.size !== setB.size) return true
+    for (const id of setA) if (!setB.has(id)) return true
   }
   if (a.by !== undefined && b.by !== undefined && a.by !== b.by) return true
   if (a.at !== undefined && b.at !== undefined && a.at !== b.at) return true
@@ -319,14 +337,14 @@ export function mapChopinOutcome(
   if (body.result?.isError === true && structuredCode !== undefined) {
     claims.push({ source: 'structured', kind: 'refusal', code: structuredCode, ...(structuredMessage !== undefined ? { message: structuredMessage } : {}) })
   }
-  claims.push(...textClaims(body))
-  // Enforced claim ceiling (review round 8, P2): an overflowing response
-  // is uncorrelatable — unknown — so a later contradiction can never be
-  // skipped by hitting the limit. Chopin's pinned one-block construction
-  // yields at most a handful; anything beyond 32 refuses to conclude.
-  if (claims.length > MAX_CLAIMS) {
+  // CAP-AWARE COLLECTION (review round 9, P2): textClaims stops the moment
+  // the ceiling is reached and reports overflow — the verdict lands at the
+  // 33rd claim, not after an unbounded walk and spread.
+  const text = textClaims(body, MAX_CLAIMS)
+  if (text.overflow || claims.length + text.claims.length > MAX_CLAIMS) {
     return { kind: 'unknown', detail: 'chopin response carried too many claims to correlate' }
   }
+  for (const claim of text.claims) claims.push(claim)
   for (let i = 0; i < claims.length; i++) {
     for (let j = i + 1; j < claims.length; j++) {
       const a = claims[i]!, b = claims[j]!
