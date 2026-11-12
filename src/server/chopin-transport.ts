@@ -240,6 +240,12 @@ function textClaims(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) 
     } catch {
       continue
     }
+    // JSON documents can be null or primitive ("null", "5", "\"prose\"") —
+    // JSON.parse accepts all of them, and reading claim fields off such a
+    // value throws. Such a block carries no claim (review round 11, P2): a
+    // valid settlement beside it must still confirm, not crash collection
+    // into a misleading "unreachable".
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue
     const pushes: Array<{ source: 'text', kind: 'refusal', code: string, message?: string } | { source: 'text', kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown }, settledMalformed?: true }> = []
     // One object claiming both settlement and refusal (code beside state)
     // contributes both claims — the pairwise comparison below treats it

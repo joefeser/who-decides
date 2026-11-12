@@ -298,6 +298,22 @@ test('round-4 probes: contradictory witnesses and malformed attribution never se
   } }))
   assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: stateOnlyText.fetchImpl }))(answerOp())).kind, 'confirmed')
 
+  // sol round-11 probe (P2): a text block whose JSON document is `null`
+  // carries no claim and must not crash collection — the valid settlement
+  // beside it confirms, and nothing reports "unreachable".
+  const nullBlock = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [
+      { type: 'text', text: 'null' },
+      { type: 'text', text: JSON.stringify({ state: 'answered', settled }) },
+    ],
+  } }))
+  const nullBlockOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: nullBlock.fetchImpl }))(answerOp())
+  assert.equal(nullBlockOutcome.kind, 'confirmed')
+  if (nullBlockOutcome.kind === 'confirmed') {
+    assert.equal((nullBlockOutcome.result as { state: string }).state, 'answered')
+  }
+
   // sol round-4 probe (P2): malformed attribution — blank actor, or an
   // unparseable timestamp — is unverifiable, never confirmed.
   const blankBy = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, by: ' ' } } } }))
