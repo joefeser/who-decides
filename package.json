@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test:auth && npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:bridge && npm run test:outbox && npm run test:bridge-record && npm run test:dispatch",
+    "test": "npm run test:auth && npm run test:console && npm run test:artifacts && npm run test:consumption && npm run test:live-loop && npm run test:local-owner && npm run test:agent-service && npm run test:machine-auth && npm run test:bridge && npm run test:outbox && npm run test:bridge-record && npm run test:dispatch && npm run test:chopin-transport",
     "agent:start": "tsx src/agent-service/server.ts",
     "console": "next dev -p 3100",
     "console:build": "next build",
@@ -38,7 +38,8 @@
     "test:machine-auth": "tsx --test src/agent-service/machine-auth.test.ts",
     "test:outbox": "tsx --test src/server/outbox.test.ts",
     "test:pg": "npm run test:consumption-pg && npm run test:console-pg && npm run test:store-pg",
-    "test:store-pg": "tsx --test src/server/store/pg-review.test.ts"
+    "test:store-pg": "tsx --test src/server/store/pg-review.test.ts",
+    "test:chopin-transport": "tsx --test src/server/chopin-transport.test.ts"
   },
   "repository": {
     "type": "git",

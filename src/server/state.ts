@@ -24,6 +24,7 @@ import { parseDecisionRequest, validateBridgeArtifact } from '../bridge/schemas'
 import type { BridgeArtifactKind, DecisionRequestEnvelope, BridgeIntakeRecord } from '../bridge/schemas'
 import { Outbox, buildAnswerOp } from './outbox'
 import type { OutboxDispatcher, OutboxOpOutcome } from './outbox'
+import { chopinTransportFromEnv } from './chopin-transport'
 import type { RunStore, NewOutboxOp } from './store/store'
 import { createDefaultRunStore, createDefaultReceiptStore } from './store/factory'
 import type { ReceiptStore } from './store/sqlite-receipt-store'
@@ -981,5 +982,8 @@ export class ConsoleEngine {
   }
 }
 
-const engine = new ConsoleEngine()
+const engine = new ConsoleEngine(undefined, (() => {
+  const bridgeDispatcher = chopinTransportFromEnv()
+  return bridgeDispatcher ? { bridgeDispatcher } : undefined
+})())
 export default engine
