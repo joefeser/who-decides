@@ -250,6 +250,54 @@ test('round-4 probes: contradictory witnesses and malformed attribution never se
   const mirroredOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: mirrored.fetchImpl }))(answerOp())
   assert.equal(mirroredOutcome.kind, 'confirmed')
 
+  // sol round-5 probes: text SETTLEMENT witnesses participate in the
+  // comparison — chopin's pinned construction serializes the same value
+  // into both fields, so a text settlement that disagrees with the
+  // structured one is malformed evidence.
+  // (1) isError + structured `resolved` + a full text `answered` settle:
+  // refusal-claims-settlement, never failed.
+  const refusalVsSettle = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'resolved' },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled }) }],
+  } }))
+  const refusalVsSettleOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: refusalVsSettle.fetchImpl }))(answerOp())
+  assert.equal(refusalVsSettleOutcome.kind, 'unknown')
+  if (refusalVsSettleOutcome.kind === 'unknown') assert.match(refusalVsSettleOutcome.detail ?? '', /refusal and settlement/)
+
+  // (2) structured settle for choice A + text settle for choice B:
+  // contradictory attribution, never confirmed.
+  const settleVsSettle = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled: { ...settled, choices: ['opt-json'] } }) }],
+  } }))
+  const settleVsSettleOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: settleVsSettle.fetchImpl }))(answerOp())
+  assert.equal(settleVsSettleOutcome.kind, 'unknown')
+  if (settleVsSettleOutcome.kind === 'unknown') assert.match(settleVsSettleOutcome.detail ?? '', /attribution/)
+
+  // (3) a text settlement that AGREES with the structured settle confirms.
+  const agreeingText = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered', settled }) }],
+  } }))
+  const agreeingTextOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: agreeingText.fetchImpl }))(answerOp())
+  assert.equal(agreeingTextOutcome.kind, 'confirmed')
+
+  // sol round-5 probe (P2): a calendar-impossible timestamp matching the
+  // regex (Feb 31 — JS normalizes it to March) is unverifiable.
+  const february31 = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, at: '2026-02-31T00:00:00.000Z' } } } }))
+  const february31Outcome = await createChopinOutboxDispatcher(config({ fetchImpl: february31.fetchImpl }))(answerOp())
+  assert.equal(february31Outcome.kind, 'unknown')
+  if (february31Outcome.kind === 'unknown') assert.match(february31Outcome.detail ?? '', /actor or timestamp/)
+
+  // sol round-5 ruling: a code-less or state-only text beside a genuine
+  // settle adds no competing claim and confirms.
+  const stateOnlyText = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered' }) }],
+  } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: stateOnlyText.fetchImpl }))(answerOp())).kind, 'confirmed')
+
   // sol round-4 probe (P2): malformed attribution — blank actor, or an
   // unparseable timestamp — is unverifiable, never confirmed.
   const blankBy = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, by: ' ' } } } }))

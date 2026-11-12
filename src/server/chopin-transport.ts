@@ -172,12 +172,18 @@ function genuineSettle(
     return rejected('settle evidence claims both settlement and refusal')
   }
   const settled = structured!.settled as { choices?: unknown, by?: unknown, at?: unknown } | undefined
+  // The timestamp check is format AND round-trip (review round 5, P2):
+  // `2026-02-31T00:00:00.000Z` is format-shaped but calendar-impossible,
+  // and JavaScript would silently normalize it — chopin's toISOString
+  // emission always round-trips exactly.
+  const atTime = typeof settled?.at === 'string' ? new Date(settled.at) : undefined
   if (
     !settled || typeof settled !== 'object'
     || !Array.isArray(settled.choices) || settled.choices.length === 0
     || typeof settled.by !== 'string' || settled.by.trim().length === 0
     || typeof settled.at !== 'string'
     || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(settled.at)
+    || atTime === undefined || Number.isNaN(atTime.getTime()) || atTime.toISOString() !== settled.at
   ) {
     return rejected('settle evidence lacks a verifiable actor or timestamp')
   }
@@ -188,23 +194,63 @@ function genuineSettle(
   return { confirmed: true, result: structured }
 }
 
-/** A typed refusal parsed from the text content's JSON, if one is there.
- * Chopin serializes the same evidence into structuredContent AND the text
- * result (pinned construction), so this is the second, independent witness
- * for contradiction checks — and the only source when structuredContent
- * carries no code. */
-function textRefusal(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined): { code: string, message?: string } | undefined {
+/** The text content's claim, classified: chopin serializes the same
+ * evidence into structuredContent AND the text result (pinned
+ * construction), so the text is the second, independent witness for
+ * contradiction checks. A text settlement claim includes its settled
+ * object when present, so choices and attribution can be compared too
+ * (review round 5, P1). Only the first text block is read — beyond the
+ * pinned one-block construction. */
+function textWitness(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined):
+  | { kind: 'refusal', code: string, message?: string }
+  | { kind: 'settle', state: string, settled?: { choices?: unknown, by?: unknown, at?: unknown } }
+  | undefined {
   const content = body?.result?.content
   if (!Array.isArray(content)) return undefined
   const text = content.find(part => part?.type === 'text')?.text
   if (typeof text !== 'string') return undefined
   try {
-    const parsed = JSON.parse(text) as { code?: unknown, message?: unknown }
-    if (typeof parsed.code !== 'string') return undefined
-    return { code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) }
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    if (typeof parsed.code === 'string') {
+      return { kind: 'refusal', code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) }
+    }
+    if (parsed.state === 'answered' || parsed.state === 'replayed') {
+      return {
+        kind: 'settle',
+        state: parsed.state,
+        ...(parsed.settled !== undefined && typeof parsed.settled === 'object'
+          ? { settled: parsed.settled as { choices?: unknown, by?: unknown, at?: unknown } }
+          : {}),
+      }
+    }
+    return undefined
   } catch {
     return undefined
   }
+}
+
+/** Whether a text settlement witness contradicts a verified structured
+ * settle: different state, or a present settled object whose choices or
+ * attribution disagree with the structured one. A text settle that adds no
+ * competing claim (no settled object, or matching fields) does not — a
+ * code-less or `{"state":"answered"}` text beside a genuine settle
+ * confirms (sol round-5 ruling). */
+function textSettleContradicts(
+  witnessSettled: { choices?: unknown, by?: unknown, at?: unknown },
+  structuredSettled: { choices: unknown[], by?: unknown, at?: unknown },
+): boolean {
+  if (!witnessSettled) return false
+  if (Array.isArray(witnessSettled.choices) && Array.isArray(structuredSettled.choices)) {
+    const witnessChoices = witnessSettled.choices as unknown[]
+    const sameChoices = witnessChoices.length === structuredSettled.choices.length
+      && structuredSettled.choices.every(id => witnessChoices.includes(id))
+    if (!sameChoices) return true
+  }
+  if (typeof witnessSettled.by === 'string' && typeof structuredSettled.by === 'string'
+    && witnessSettled.by !== structuredSettled.by) return true
+  if (typeof witnessSettled.at === 'string' && typeof structuredSettled.at === 'string'
+    && witnessSettled.at !== structuredSettled.at) return true
+  return false
 }
 
 /** Map one chopin response to an outbox outcome. Never throws: any defect in
@@ -232,21 +278,31 @@ export function mapChopinOutcome(
   // carries an error envelope, whatever else it claims (round 3, P1).
   if ('error' in body) return { kind: 'unknown', detail: 'chopin response carried an error envelope' }
   const settle = genuineSettle(http, body, expectedOptionIds)
-  const text = textRefusal(body)
+  const witness = textWitness(body)
   const structured = body.result?.structuredContent
   const structuredCode = typeof structured?.code === 'string' ? structured.code : undefined
-  // CROSS-FIELD CONTRADICTION (review round 4, P1): chopin serializes the
-  // same evidence into structuredContent AND the text result, so the two
-  // witnesses can be compared. Where they disagree, the response is
-  // malformed evidence — unknown, never confirmed and never failed.
+  // CROSS-FIELD CONTRADICTION (review rounds 4–5, P1): chopin serializes
+  // the same evidence into structuredContent AND the text result, so the
+  // two witnesses can be compared — settlement claims included, not just
+  // refusals. Where they disagree about refusal, settlement state,
+  // choices, or attribution, the response is malformed evidence: unknown,
+  // never confirmed and never failed.
   if (settle) {
-    if ('confirmed' in settle) {
-      if (text) {
-        return { kind: 'unknown', detail: 'contradictory settle and refusal evidence in one response' }
-      }
-      return { kind: 'confirmed', result: settle.result }
+    if (!('confirmed' in settle)) return { kind: 'unknown', detail: settle.rejected }
+    const settleState = (settle.result as { state: string }).state
+    const settleSettled = (settle.result as { settled?: { choices: unknown[], by?: unknown, at?: unknown } }).settled
+    if (witness?.kind === 'refusal') {
+      return { kind: 'unknown', detail: 'contradictory settle and refusal evidence in one response' }
     }
-    return { kind: 'unknown', detail: settle.rejected }
+    if (witness?.kind === 'settle') {
+      if (witness.state !== settleState) {
+        return { kind: 'unknown', detail: `contradictory settlement state: structured ${settleState} vs text ${witness.state}` }
+      }
+      if (witness.settled && settleSettled && textSettleContradicts(witness.settled, settleSettled)) {
+        return { kind: 'unknown', detail: 'contradictory settle attribution between structured and text witnesses' }
+      }
+    }
+    return { kind: 'confirmed', result: settle.result }
   }
   // A terminal tool refusal requires chopin's isError marker (review round
   // 3, P1): a bare structuredContent code alone is unattributed evidence —
@@ -254,16 +310,22 @@ export function mapChopinOutcome(
   if (body.result?.isError !== true) {
     return { kind: 'unknown', detail: 'chopin response carried neither a settle nor a typed refusal' }
   }
-  // Both witnesses, compared (round 4, P1): structuredContent code and text
-  // code must agree before a terminal outcome is recorded. Disagreement is
+  // Both witnesses, compared (rounds 4–5, P1): a structured refusal beside
+  // a text SETTLEMENT claim contradicts, and two refusal claims must agree
+  // on the code before a terminal outcome is recorded. Disagreement is
   // malformed evidence — resumable, never failed.
-  if (structuredCode !== undefined && text !== undefined && text.code !== structuredCode) {
+  if (structuredCode !== undefined && witness?.kind === 'settle') {
+    return { kind: 'unknown', detail: `contradictory refusal and settlement evidence: structured ${structuredCode} vs text ${witness.state}` }
+  }
+  if (witness?.kind === 'refusal' && structuredCode !== undefined && witness.code !== structuredCode) {
     return { kind: 'unknown', detail: 'contradictory refusal evidence in one response' }
   }
   const code: { code: string, message?: string } | undefined =
     structuredCode !== undefined
       ? { code: structuredCode, ...(typeof structured?.message === 'string' ? { message: structured.message } : {}) }
-      : text
+      : witness?.kind === 'refusal'
+      ? { code: witness.code, ...(witness.message !== undefined ? { message: witness.message } : {}) }
+      : undefined
   if (!code) {
     return { kind: 'unknown', detail: 'chopin error response carried no interpretable refusal' }
   }
