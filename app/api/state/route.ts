@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   // Health surface: a configured-but-failed dispatcher startup (SDK missing)
   // is visible here, not silent (review P2). Pretty-printed so a judge
   // curling the watch surface can read the same state the page renders.
-  const payload = { ...state, authenticated: await requireOperator(request), agentDispatchError: agentDispatcherError()?.message ?? null }
+  const payload = { ...state, authenticated: await requireOperator(request), agentDispatchError: agentDispatcherError()?.message ?? null, bridgeDispatchError: engine.bridgeDispatchError ?? null }
   return new NextResponse(JSON.stringify(payload, null, 2), {
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   })

@@ -166,8 +166,13 @@ export class ConsoleEngine {
    * tenant pool, with separate state directories. The default keeps the
    * single-operator local demo behavior unchanged. */
   readonly tenant: string
+  /** Fixed, sanitized reason the configured chopin target is broken. Absent
+   * when no target was configured (an intentional unset) and when everything
+   * is healthy — the console distinguishes "not configured" from "configured
+   * wrong" without exposing token material. */
+  readonly bridgeDispatchError: string | undefined
 
-  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore, bridgeDispatcher?: OutboxDispatcher }) {
+  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore, bridgeDispatcher?: OutboxDispatcher }, bridgeDispatchError?: string) {
     this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
     // Backend selection (WD_STORE=sqlite|postgres) lives in the factory;
@@ -178,6 +183,7 @@ export class ConsoleEngine {
     this.receipts = stores?.receipts ?? createDefaultReceiptStore(dir)
     this.outbox = new Outbox(this.runs)
     this.bridgeDispatcher = stores?.bridgeDispatcher
+    this.bridgeDispatchError = bridgeDispatchError
     // The provider seam's initialize() is async (a Postgres adapter must be);
     // the engine bridges that with a ready-promise so constructors stay sync.
     this.ready = this.runs.initialize()
@@ -308,6 +314,19 @@ export class ConsoleEngine {
     const outcomes = await this.outbox.dispatch(runId, dispatcher, options)
     await this.recordConfirmedBridgeOps(runId)
     return { ok: true, outcomes }
+  }
+
+  /** Production resume (review round 1, P2): drives every unresolved op of a
+   * bridge run through the CONFIGURED transport — after a timeout, after
+   * correcting configuration for a pending op, or after a process crash.
+   * Uses the existing outbox claim (one live wire attempt per op across
+   * instances); a re-submitted identical decision still returns duplicate,
+   * so this is the only path that retries dispatch. */
+  async resumeBridgeOps(runId: string): Promise<{ ok: boolean, error?: string, outcomes?: OutboxOpOutcome[] }> {
+    if (!this.bridgeDispatcher) {
+      return { ok: false, error: this.bridgeDispatchError ?? 'BRIDGE_DISPATCHER_NOT_CONFIGURED' }
+    }
+    return this.dispatchBridgeOps(runId, this.bridgeDispatcher)
   }
 
   /** Writes the non-HACP bridge record (A3) for every CONFIRMED op that
@@ -982,8 +1001,8 @@ export class ConsoleEngine {
   }
 }
 
-const engine = new ConsoleEngine(undefined, (() => {
-  const bridgeDispatcher = chopinTransportFromEnv()
-  return bridgeDispatcher ? { bridgeDispatcher } : undefined
-})())
+const engine = (() => {
+  const wiring = chopinTransportFromEnv()
+  return new ConsoleEngine(undefined, wiring.dispatcher ? { bridgeDispatcher: wiring.dispatcher } : undefined, wiring.configError)
+})()
 export default engine
