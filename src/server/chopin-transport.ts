@@ -199,7 +199,7 @@ export function mapChopinOutcome(
   if (body.error) return { kind: 'unknown', detail: `chopin RPC error ${body.error.code}` }
   const settle = genuineSettle(http, body, expectedOptionIds)
   if (settle) {
-    if (settle.confirmed) return { kind: 'confirmed', result: settle.result }
+    if ('confirmed' in settle) return { kind: 'confirmed', result: settle.result }
     return { kind: 'unknown', detail: settle.rejected }
   }
   const structured = body.result?.structuredContent
