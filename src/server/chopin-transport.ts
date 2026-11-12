@@ -136,14 +136,15 @@ async function chopinToolCall(
 /** Whether the response carries a genuine settle: JSON-RPC 2.0 success for
  * the tools/call id on a 2xx response, an absent error member (even
  * explicit `null` — review round 3, P1), no error indication, no refusal
- * claim beside the settle (round 3, P1: a result claiming both settlement
- * and refusal is malformed evidence), and chopin's settled fields — the
- * shape both `answered` and a B4 replay return — with `choices` equal to
- * the persisted answer. Any RECOGNIZED settle state (`answered`/`replayed`)
- * is verified here even when incomplete, so its failure mode gets the
- * precise unverifiable-settle detail instead of the generic fallthrough
- * (round 3, P3). Bodies with no recognized settle state return undefined
- * and fall through to the refusal mapping. */
+ * claim beside the settle (round 3, P1), malformed-free settled
+ * attribution (round 4, P2: a nonblank actor and a timestamp in chopin's
+ * emitted ISO-with-milliseconds format — `by: " "` / `at: "yesterday"` are
+ * not evidence), and `choices` equal to the persisted answer. Any
+ * RECOGNIZED settle state (`answered`/`replayed`) is verified here even
+ * when incomplete, so its failure mode gets the precise
+ * unverifiable-settle detail instead of the generic fallthrough. Bodies
+ * with no recognized settle state return undefined and fall through to the
+ * refusal mapping. */
 function genuineSettle(
   http: number,
   body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined,
@@ -174,16 +175,36 @@ function genuineSettle(
   if (
     !settled || typeof settled !== 'object'
     || !Array.isArray(settled.choices) || settled.choices.length === 0
-    || typeof settled.by !== 'string' || settled.by.length === 0
-    || typeof settled.at !== 'string' || settled.at.length === 0
+    || typeof settled.by !== 'string' || settled.by.trim().length === 0
+    || typeof settled.at !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(settled.at)
   ) {
-    return rejected('settle evidence lacks verifiable settled fields')
+    return rejected('settle evidence lacks a verifiable actor or timestamp')
   }
   const choices = settled.choices as unknown[]
   const matches = choices.length === expectedOptionIds.length
     && expectedOptionIds.every(id => choices.includes(id))
   if (!matches) return rejected('settle choices differ from the persisted answer')
   return { confirmed: true, result: structured }
+}
+
+/** A typed refusal parsed from the text content's JSON, if one is there.
+ * Chopin serializes the same evidence into structuredContent AND the text
+ * result (pinned construction), so this is the second, independent witness
+ * for contradiction checks — and the only source when structuredContent
+ * carries no code. */
+function textRefusal(body: (McpCallResult & { id?: unknown, jsonrpc?: unknown }) | undefined): { code: string, message?: string } | undefined {
+  const content = body?.result?.content
+  if (!Array.isArray(content)) return undefined
+  const text = content.find(part => part?.type === 'text')?.text
+  if (typeof text !== 'string') return undefined
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown, message?: unknown }
+    if (typeof parsed.code !== 'string') return undefined
+    return { code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) }
+  } catch {
+    return undefined
+  }
 }
 
 /** Map one chopin response to an outbox outcome. Never throws: any defect in
@@ -211,36 +232,38 @@ export function mapChopinOutcome(
   // carries an error envelope, whatever else it claims (round 3, P1).
   if ('error' in body) return { kind: 'unknown', detail: 'chopin response carried an error envelope' }
   const settle = genuineSettle(http, body, expectedOptionIds)
+  const text = textRefusal(body)
+  const structured = body.result?.structuredContent
+  const structuredCode = typeof structured?.code === 'string' ? structured.code : undefined
+  // CROSS-FIELD CONTRADICTION (review round 4, P1): chopin serializes the
+  // same evidence into structuredContent AND the text result, so the two
+  // witnesses can be compared. Where they disagree, the response is
+  // malformed evidence — unknown, never confirmed and never failed.
   if (settle) {
-    if ('confirmed' in settle) return { kind: 'confirmed', result: settle.result }
+    if ('confirmed' in settle) {
+      if (text) {
+        return { kind: 'unknown', detail: 'contradictory settle and refusal evidence in one response' }
+      }
+      return { kind: 'confirmed', result: settle.result }
+    }
     return { kind: 'unknown', detail: settle.rejected }
   }
-  const structured = body.result?.structuredContent
   // A terminal tool refusal requires chopin's isError marker (review round
   // 3, P1): a bare structuredContent code alone is unattributed evidence —
   // unknown, never failed.
   if (body.result?.isError !== true) {
     return { kind: 'unknown', detail: 'chopin response carried neither a settle nor a typed refusal' }
   }
-  let code: { code: string, message?: string } | undefined
-  if (structured && typeof structured.code === 'string') {
-    code = { code: structured.code, ...(typeof structured.message === 'string' ? { message: structured.message } : {}) }
-  } else {
-    const content = body.result?.content
-    if (Array.isArray(content)) {
-      const text = content.find(part => part?.type === 'text')?.text
-      if (typeof text === 'string') {
-        try {
-          const parsed = JSON.parse(text) as { code?: unknown, message?: unknown }
-          if (typeof parsed.code === 'string') {
-            code = { code: parsed.code, ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}) }
-          }
-        } catch {
-          // Not JSON — no interpretable refusal below.
-        }
-      }
-    }
+  // Both witnesses, compared (round 4, P1): structuredContent code and text
+  // code must agree before a terminal outcome is recorded. Disagreement is
+  // malformed evidence — resumable, never failed.
+  if (structuredCode !== undefined && text !== undefined && text.code !== structuredCode) {
+    return { kind: 'unknown', detail: 'contradictory refusal evidence in one response' }
   }
+  const code: { code: string, message?: string } | undefined =
+    structuredCode !== undefined
+      ? { code: structuredCode, ...(typeof structured?.message === 'string' ? { message: structured.message } : {}) }
+      : text
   if (!code) {
     return { kind: 'unknown', detail: 'chopin error response carried no interpretable refusal' }
   }
@@ -269,9 +292,10 @@ export function mapChopinOutcome(
       // receiver cannot inflate persisted diagnostics.
       return { kind: 'failed', error: `chopin refused: resolved${message ? ` — ${message}` : ''}` }
     // `invalid` is ambiguous in chopin (input validation AND commit
-    // failures); anything unrecognized is evidence we cannot interpret.
+    // failures); anything unrecognized is evidence we cannot interpret —
+    // and receiver-supplied diagnostics stay bounded (round 4, P3).
     default:
-      return { kind: 'unknown', detail: `chopin refusal left unresolved: ${code.code}` }
+      return { kind: 'unknown', detail: `chopin refusal left unresolved: ${code.code.slice(0, 100)}` }
   }
 }
 

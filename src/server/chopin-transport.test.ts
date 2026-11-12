@@ -201,6 +201,63 @@ test('terminal refusals resolve failed; ambiguous ones never do', async () => {
   // RPC-level errors are unknown, never failed.
   const rpc = handshaken(json({ jsonrpc: '2.0', id: 2, error: { code: -32602, message: 'bad params' } }))
   assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: rpc.fetchImpl }))(answerOp())).kind, 'unknown')
+  // Receiver-supplied diagnostics stay bounded — even the unknown-code echo.
+  const longCode = await refused('x'.repeat(500))
+  assert.equal(longCode.kind, 'unknown')
+  if (longCode.kind === 'unknown') assert.ok((longCode.detail ?? '').length < 200, 'unknown-code echo must be bounded')
+})
+
+test('round-4 probes: contradictory witnesses and malformed attribution never settle', async () => {
+  // sol round-4 probe (a): a valid structured settle paired with a text
+  // refusal — chopin serializes the same value into both, so disagreement
+  // is malformed evidence, never a confirmation.
+  const settlePlusRefusal = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ code: 'paused' }) }],
+  } }))
+  const contradictA = await createChopinOutboxDispatcher(config({ fetchImpl: settlePlusRefusal.fetchImpl }))(answerOp())
+  assert.equal(contradictA.kind, 'unknown')
+  if (contradictA.kind === 'unknown') assert.match(contradictA.detail ?? '', /contradictory/)
+
+  // sol round-4 probe (b): isError with structured `resolved` and text
+  // `paused` — disagreement between the two witnesses must stay resumable,
+  // never failed.
+  const contradictB = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'resolved' },
+    content: [{ type: 'text', text: JSON.stringify({ code: 'paused' }) }],
+  } }))
+  const contradictBOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: contradictB.fetchImpl }))(answerOp())
+  assert.equal(contradictBOutcome.kind, 'unknown')
+  if (contradictBOutcome.kind === 'unknown') assert.match(contradictBOutcome.detail ?? '', /contradictory/)
+
+  // Witnesses agreeing still map: isError with BOTH witnesses carrying the
+  // same recoverable code.
+  const agreeing = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    isError: true,
+    structuredContent: { code: 'paused' },
+    content: [{ type: 'text', text: JSON.stringify({ code: 'paused' }) }],
+  } }))
+  const agreeingOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: agreeing.fetchImpl }))(answerOp())
+  assert.equal(agreeingOutcome.kind, 'unknown')
+  if (agreeingOutcome.kind === 'unknown') assert.match(agreeingOutcome.detail ?? '', /cannot act now: paused/)
+
+  // A genuine settle whose text mirrors it without a refusal still confirms.
+  const mirrored = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
+    structuredContent: { state: 'answered', settled },
+    content: [{ type: 'text', text: JSON.stringify({ state: 'answered' }) }],
+  } }))
+  const mirroredOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: mirrored.fetchImpl }))(answerOp())
+  assert.equal(mirroredOutcome.kind, 'confirmed')
+
+  // sol round-4 probe (P2): malformed attribution — blank actor, or an
+  // unparseable timestamp — is unverifiable, never confirmed.
+  const blankBy = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, by: ' ' } } } }))
+  assert.equal((await createChopinOutboxDispatcher(config({ fetchImpl: blankBy.fetchImpl }))(answerOp())).kind, 'unknown')
+  const yesterdayAt = handshaken(json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { state: 'answered', settled: { ...settled, at: 'yesterday' } } } }))
+  const yesterdayOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: yesterdayAt.fetchImpl }))(answerOp())
+  assert.equal(yesterdayOutcome.kind, 'unknown')
+  if (yesterdayOutcome.kind === 'unknown') assert.match(yesterdayOutcome.detail ?? '', /actor or timestamp/)
 })
 
 test('a malformed credential cannot construct the dispatcher nor leak through a diagnostic', async () => {
