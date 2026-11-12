@@ -263,7 +263,7 @@ test('round-4 probes: contradictory witnesses and malformed attribution never se
   } }))
   const refusalVsSettleOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: refusalVsSettle.fetchImpl }))(answerOp())
   assert.equal(refusalVsSettleOutcome.kind, 'unknown')
-  if (refusalVsSettleOutcome.kind === 'unknown') assert.match(refusalVsSettleOutcome.detail ?? '', /refusal and settlement/)
+  if (refusalVsSettleOutcome.kind === 'unknown') assert.match(refusalVsSettleOutcome.detail ?? '', /settlement and refusal/)
 
   // (2) structured settle for choice A + text settle for choice B:
   // contradictory attribution, never confirmed.
@@ -319,7 +319,7 @@ test('round-6 probes: both-claim objects, malformed text fields, multi-block com
   } }))
   const bothOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: bothClaim.fetchImpl }))(answerOp())
   assert.equal(bothOutcome.kind, 'unknown')
-  if (bothOutcome.kind === 'unknown') assert.match(bothOutcome.detail ?? '', /refusal and settlement/)
+  if (bothOutcome.kind === 'unknown') assert.match(bothOutcome.detail ?? '', /settlement and refusal/)
 
   // sol round-6 probe (P2): present-but-malformed text settled fields
   // (choices not an array, by a number, at null) contradict — the
@@ -355,7 +355,7 @@ test('round-6 probes: both-claim objects, malformed text fields, multi-block com
   } }))
   const secondBlockOutcome = await createChopinOutboxDispatcher(config({ fetchImpl: secondBlock.fetchImpl }))(answerOp())
   assert.equal(secondBlockOutcome.kind, 'unknown')
-  if (secondBlockOutcome.kind === 'unknown') assert.match(secondBlockOutcome.detail ?? '', /settle and refusal/)
+  if (secondBlockOutcome.kind === 'unknown') assert.match(secondBlockOutcome.detail ?? '', /settlement and refusal/)
 
   // Agreeing repeats in a second block leave the outcome unchanged.
   const agreeingRepeat = handshaken(json({ jsonrpc: '2.0', id: 2, result: {
