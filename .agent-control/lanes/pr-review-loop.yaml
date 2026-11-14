@@ -2,7 +2,7 @@
 # The v0.2 policy adds only `dev` as the development/owner-handoff target.
 # `main`, `master`, and release branches remain human-mediated.
 agentControl:
-  requiredVersion: ">=0.5.1 <0.6.0"
+  requiredVersion: ">=0.5.2 <0.6.0"
   channel: stable
   allowPrerelease: false
   requiredCapabilities:
