@@ -85,3 +85,11 @@ Offline authoring validates document syntax and explicit visuals. It skips the h
 Follow the [human walkthrough](private-local-human-walkthrough.md) for a repeatable synthetic request and read-only status check. See [recorded validation](private-local-validation.md) for the automated results and limits.
 
 Start the local supervisor, sign in to both apps, inspect a synthetic request and its state/reason, choose an answer, stop/restart, and confirm the same decision is shown. Record the human result separately. No migration flow, private employer scan, PR merge, or deployment is authorized by the proof itself.
+
+## Human reconsideration (local SQLite profile)
+
+Reopen an answered card in Chopin's browser Decisions tab. Who-Decides cannot reopen it over MCP. On the confirmed local bridge screen choose **Check reopened card**: this reads Chopin, checks that `previous` matches the original confirmed answer's choices/actor/time, and opens a fresh held run. It archives the old run without deleting its decision or outbox receipts. The successor links its predecessor through the request's context references. Concurrent observations create one successor atomically.
+
+The tested checkout resets the shared-draft revision to zero on reopen. A cycle therefore binds the prior run and attributed previous settlement, card, current question/options and revision; revision alone is insufficient. A new human choice gets a new run-derived outbox key. Lost-response recovery for that choice still uses the same persisted payload/key. Before recording a fresh choice, the server re-reads the card and refuses if the observed cycle changed. This is a preflight, not an atomic lock across applications: Chopin's answer revision check remains the receiver guard; its revision reuse does not provide a globally unique cycle token. Do not treat this PoC as a concurrent multi-writer approval system.
+
+This optional transition is implemented for SQLite only and exposed only in the private-local profile. Hosted/demo duplicate-resume diagnostics remain unchanged. A mismatched previous answer, unresolved prior delivery, unsupported multi-question card, unavailable read, or changed card stops observation. No implementation approval or migration is performed.

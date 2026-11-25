@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import engine from '../../../src/server/state'
 import { agentDispatcherError } from '../../../src/server/agent-dispatch-wiring'
 import { requireOperator } from '../../../src/server/auth'
-import { evidenceAccessDenied } from '../../../src/server/evidence-access'
+import { privateEvidenceEnabled, evidenceAccessDenied } from '../../../src/server/evidence-access'
 
 /** Demo watch mode is public; private-local requires an operator session. `authenticated` tells the console
  * whether to render operator affordances (run/decide/reset/probe). */
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   // Health surface: a configured-but-failed dispatcher startup (SDK missing)
   // is visible here, not silent (review P2). Pretty-printed so a judge
   // curling the watch surface can read the same state the page renders.
-  const payload = { ...state, authenticated: await requireOperator(request), agentDispatchError: agentDispatcherError()?.message ?? null, bridgeDispatchError: engine.bridgeDispatchError ?? null }
+  const payload = { ...state, privateLocal: privateEvidenceEnabled(), authenticated: await requireOperator(request), agentDispatchError: agentDispatcherError()?.message ?? null, bridgeDispatchError: engine.bridgeDispatchError ?? null }
   return new NextResponse(JSON.stringify(payload, null, 2), {
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   })

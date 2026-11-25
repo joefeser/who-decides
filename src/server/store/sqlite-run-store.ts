@@ -81,6 +81,23 @@ export class SqliteRunStore implements RunStore {
     try { this.db.exec('ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0') } catch { /* column exists */ }
   }
 
+  async supersedeBridgeRun(tenantId: string, priorId: string, candidate: NewRun, artifacts: StoredArtifact[]): Promise<string> {
+    return this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT id FROM runs WHERE id = ? AND tenant_id = ?').get(candidate.id, tenantId) as { id: string } | undefined
+      if (existing) return existing.id
+      const current = this.db.prepare('SELECT id, run_kind FROM runs WHERE archived = 0 AND tenant_id = ? ORDER BY started_at DESC LIMIT 1').get(tenantId) as { id: string, run_kind: string } | undefined
+      if (current?.id !== priorId || current.run_kind !== 'bridge') throw new Error('RUN_CHANGED')
+      const ops = this.db.prepare('SELECT status FROM outbox_ops WHERE run_id = ?').all(priorId) as { status: string }[]
+      if (ops.length !== 1 || ops[0].status !== 'confirmed') throw new Error('PRIOR_DELIVERY_UNCONFIRMED')
+      if (candidate.tenantId !== tenantId || artifacts.some(a => a.tenantId !== tenantId || a.runId !== candidate.id)) throw new Error('CYCLE_SCOPE_MISMATCH')
+      this.db.prepare('UPDATE runs SET archived = 1 WHERE id = ? AND tenant_id = ?').run(priorId, tenantId)
+      this.db.prepare("INSERT INTO runs (id,state,tenant_id,invocation_a,started_at,phase_changed_at,milestones_json,run_kind) VALUES (?,'decision_required',?,NULL,?,?,?,'bridge')")
+        .run(candidate.id, tenantId, candidate.startedAt, candidate.phaseChangedAt, candidate.milestonesJson)
+      for (const a of artifacts) this.db.prepare('INSERT INTO artifacts (run_id,tenant_id,name,kind,valid,json) VALUES (?,?,?,?,?,?)').run(a.runId,a.tenantId,a.name,a.kind,a.valid ? 1 : 0,a.json)
+      return candidate.id
+    }).immediate()
+  }
+
   async ensureActiveRun(tenantId: string, candidate: NewRun): Promise<RunRow> {
     // One-active-run enforced inside a synchronous immediate transaction: a
     // concurrent caller cannot slip a second active run between check and

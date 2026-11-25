@@ -42,6 +42,7 @@ type ConsoleState = {
   agentDispatchError: string | null
   executionMode: string
   agent: { ok: boolean, error?: string, result?: { result?: { status?: string } } } | null
+  privateLocal?: boolean
   authenticated: boolean
 }
 
@@ -271,6 +272,18 @@ export default function Console() {
     } finally {
       setReplaying(false)
     }
+  }
+
+  async function checkReopenedCard() {
+    if (!state || replaying) return
+    setReplaying(true); setError('')
+    try {
+      const response = await fetch('/api/bridge/reconcile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runId: state.runId }) })
+      const body = await response.json()
+      if (!response.ok) setError(body.error ?? 'REOPEN_OBSERVATION_FAILED')
+      else { setChoice(''); setRationale(''); await refresh() }
+    } catch { setError('CHOPIN_SNAPSHOT_UNAVAILABLE') }
+    finally { setReplaying(false) }
   }
 
   /** Bridge duplicate-resume probe (P3): the same gate-proof as the native
@@ -519,7 +532,14 @@ export default function Console() {
               ))}
             </ul>
           )}
-          {state.runKind === 'bridge' && state.outbox.length > 0
+          {state.privateLocal && state.runKind === 'bridge' && state.outbox.length > 0 && state.outbox.every(op => op.status === 'confirmed') && !readOnly && (
+            <div className="rounded-lg border border-slate-700 p-4">
+              <h3>Answer delivered to Chopin</h3>
+              <p>To reconsider, reopen the card in Chopin’s Decisions tab. Your previous answer remains in history.</p>
+              <button onClick={checkReopenedCard} disabled={replaying} className="mt-3 rounded border px-4 py-2">{replaying ? 'Checking…' : 'Check reopened card'}</button>
+            </div>
+          )}
+          {!state.privateLocal && state.runKind === 'bridge' && state.outbox.length > 0
             && state.outbox.every(op => op.status === 'confirmed')
             && (state.replayProbe || !readOnly) && (
             <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">

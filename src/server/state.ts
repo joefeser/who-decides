@@ -1,3 +1,4 @@
+import { reopenedRequest } from './reopened-decision'
 /* Console state engine — the deterministic spine behind the M3 console.
  * Durable server records are authoritative (RULING M3); the browser only
  * polls. State machine: ready → running → decision_required → resuming →
@@ -154,6 +155,7 @@ export class ConsoleEngine {
   /** Optional bridge transport (A2): when wired, a recorded bridge decision
    * dispatches its outbound ops inline; without it, ops stay pending for an
    * explicit dispatchBridgeOps resume (tests, demo wiring, recovery). */
+  private readonly bridgeReader?: (documentId: string) => Promise<unknown>
   private readonly bridgeDispatcher: OutboxDispatcher | undefined
   private readonly ready: Promise<void>
   /** Runs whose live resume dispatch is currently being awaited by THIS
@@ -172,7 +174,7 @@ export class ConsoleEngine {
    * wrong" without exposing token material. */
   readonly bridgeDispatchError: string | undefined
 
-  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore, bridgeDispatcher?: OutboxDispatcher }, bridgeDispatchError?: string) {
+  constructor(tenant: string = process.env.WD_TENANT_ID ?? 'default', stores?: { runs?: RunStore, receipts?: ReceiptStore, bridgeDispatcher?: OutboxDispatcher, bridgeReader?: (documentId: string) => Promise<unknown> }, bridgeDispatchError?: string) {
     this.tenant = tenant
     const dir = process.env.WD_CONSOLE_DIR ?? DB_DIR
     // Backend selection (WD_STORE=sqlite|postgres) lives in the factory;
@@ -182,6 +184,7 @@ export class ConsoleEngine {
     this.runs = stores?.runs ?? createDefaultRunStore(dir)
     this.receipts = stores?.receipts ?? createDefaultReceiptStore(dir)
     this.outbox = new Outbox(this.runs)
+    this.bridgeReader = stores?.bridgeReader
     this.bridgeDispatcher = stores?.bridgeDispatcher
     this.bridgeDispatchError = bridgeDispatchError
     // The provider seam's initialize() is async (a Postgres adapter must be);
@@ -297,6 +300,32 @@ export class ConsoleEngine {
       throw err
     }
     return { ok: true, runId }
+  }
+
+  async observeReopenedDecision(runId: string): Promise<{ ok: true, runId: string }> {
+    await this.ready
+    if (!this.bridgeReader || !this.runs.supersedeBridgeRun) throw new Error('REOPEN_OBSERVATION_UNAVAILABLE')
+    const row = await this.runs.getRunRow(runId)
+    if (!row || row.tenant_id !== this.tenant || row.run_kind !== 'bridge') throw new Error('RUN_CHANGED')
+    const env = await this.bridgeEnvelope(runId)
+    const ops = await this.runs.getOutboxOps(runId)
+    if (ops.length !== 1 || ops[0].status !== 'confirmed' || !ops[0].result_json) throw new Error('PRIOR_DELIVERY_UNCONFIRMED')
+    const snapshot = await this.bridgeReader(env.coordination.documentId)
+    const observed = reopenedRequest(env, snapshot, JSON.parse(ops[0].result_json), runId)
+    const id = `run-reopen-${observed.digest}`
+    const now = new Date().toISOString()
+    const intake = await this.bridgeIntake(runId)
+    const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(observed.envelope)).digest('hex')}`
+    const artifacts = [
+      { name: 'decision-request', kind: 'decision-request', value: observed.envelope },
+      { name: 'bridge-intake', kind: 'bridge-intake', value: { ...intake, runId: id, receivedAt: now, requestDigest } },
+    ].map(a => ({ runId: id, tenantId: this.tenant, name: a.name, kind: a.kind, valid: validateBridgeArtifact(a.kind as BridgeArtifactKind, a.value), json: JSON.stringify(a.value) }))
+    if (artifacts.some(a => !a.valid)) throw new Error('REOPEN_EVIDENCE_INVALID')
+    await this.runs.supersedeBridgeRun(this.tenant, runId, {
+      id, tenantId: this.tenant, invocationA: null, startedAt: now, phaseChangedAt: now, runKind: 'bridge',
+      milestonesJson: JSON.stringify([{ label: 'reopened', detail: `Human reopened Chopin card; supersedes ${runId}. Previous choices ${observed.previous.choices.join(", ")} by ${observed.previous.by} at ${observed.previous.at}. Fresh human choice required.`, at: now }]),
+    }, artifacts)
+    return { ok: true, runId: id }
   }
 
   /** Explicit outbox dispatch/resume for a bridge run (A2): drives every
@@ -495,6 +524,18 @@ export class ConsoleEngine {
     // a run whose question arrived from outside.
     const isBridge = row.run_kind === 'bridge'
     const bridgeEnv = isBridge ? await this.bridgeEnvelope(run.id) : undefined
+    if (isBridge && run.id.startsWith('run-reopen-') && !prior) {
+      try {
+        const priorRef = bridgeEnv!.contextRefs.filter(ref => ref.startsWith('who-decides:prior-run:')).at(-1)
+        if (!priorRef || !this.bridgeReader) throw new Error('CYCLE_UNAVAILABLE')
+        const priorId = priorRef.slice('who-decides:prior-run:'.length)
+        const oldEnvelope = await this.bridgeEnvelope(priorId)
+        const oldOps = await this.runs.getOutboxOps(priorId)
+        if (oldOps.length !== 1 || oldOps[0].status !== 'confirmed' || !oldOps[0].result_json) throw new Error('CYCLE_UNAVAILABLE')
+        const fresh = reopenedRequest(oldEnvelope, await this.bridgeReader(oldEnvelope.coordination.documentId), JSON.parse(oldOps[0].result_json), priorId)
+        if (`run-reopen-${fresh.digest}` !== run.id) throw new Error('CYCLE_CHANGED')
+      } catch { return { ok: false, error: 'REOPENED_CARD_CHANGED_OR_UNAVAILABLE' } }
+    }
     if (isBridge) {
       if (!bridgeEnv!.options.some(o => o.id === choice)) return { ok: false, error: 'INVALID_CHOICE' }
     } else {
@@ -1039,6 +1080,6 @@ export class ConsoleEngine {
 
 const engine = (() => {
   const wiring = chopinTransportFromEnv()
-  return new ConsoleEngine(undefined, wiring.dispatcher ? { bridgeDispatcher: wiring.dispatcher } : undefined, wiring.configError)
+  return new ConsoleEngine(undefined, wiring.dispatcher ? { bridgeDispatcher: wiring.dispatcher, bridgeReader: wiring.reader } : undefined, wiring.configError)
 })()
 export default engine

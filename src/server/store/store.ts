@@ -87,6 +87,10 @@ export type StoredArtifact = {
 }
 
 export interface RunStore {
+  /** Optional local cycle transition: archives only the named confirmed predecessor and
+   * creates the held successor plus its evidence in one transaction. */
+  supersedeBridgeRun?(tenantId: string, priorId: string, candidate: NewRun, artifacts: StoredArtifact[]): Promise<string>
+
   /** Ensure schema exists (idempotent). Adapter-owned migrations live here. */
   initialize(): Promise<void>
   /** Atomic check-then-act: returns the tenant's active (non-completed) run,

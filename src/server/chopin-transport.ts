@@ -492,6 +492,7 @@ export function createChopinOutboxDispatcher(config: ChopinTransportConfig): Out
 }
 
 export type BridgeTransportWiring = {
+  reader?: (documentId: string) => Promise<unknown>
   dispatcher?: OutboxDispatcher
   /** Fixed, sanitized reason the configured target is broken. Absent when
    * no target was configured at all (an intentional unset). */
@@ -522,7 +523,15 @@ export function chopinTransportFromEnv(env: NodeJS.ProcessEnv = process.env): Br
     return { configError: 'WD_CHOPIN_URL is set without a bridge token (WD_CHOPIN_TOKEN_FILE / WD_CHOPIN_TOKEN)' }
   }
   try {
-    return { dispatcher: createChopinOutboxDispatcher({ baseUrl, token, localOnly: env.WD_PROFILE === 'private-local', ...(env.WD_CHOPIN_ORIGIN ? { origin: env.WD_CHOPIN_ORIGIN } : {}) }) }
+    const config = { baseUrl, token, localOnly: env.WD_PROFILE === 'private-local', ...(env.WD_CHOPIN_ORIGIN ? { origin: env.WD_CHOPIN_ORIGIN } : {}) }
+    const dispatcher = createChopinOutboxDispatcher(config)
+    return { dispatcher, reader: async documentId => {
+      try {
+        const { http, body } = await chopinToolCall(config, 'read_coordination_snapshot', { id: documentId })
+        if (http < 200 || http >= 300 || !body || body.id !== CALL_ID || 'error' in body || !body.result || body.result.isError || !body.result.structuredContent) throw new Error()
+        return body.result.structuredContent
+      } catch { throw new Error('CHOPIN_SNAPSHOT_UNAVAILABLE') }
+    } }
   } catch (error) {
     if (error instanceof BridgeTransportConfigError) return { configError: error.message }
     throw error
