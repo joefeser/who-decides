@@ -23,7 +23,7 @@ export function reopenedRequest(envelope: unknown, snapshot: unknown, confirmed:
     || typeof previous.by !== 'string' || !previous.by.trim() || typeof previous.at !== 'string'
     || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(previous.at)
     || !Number.isFinite(Date.parse(previous.at))
-    || previous.by !== settled.by || previous.at !== settled.at || !sameChoices(previous.choices, settled.choices)) {
+    || previous.by !== settled.by || (previous.at !== settled.at && !(typeof settled.at === 'string' && Number.isFinite(Date.parse(settled.at)) && previous.at === new Date(Math.floor(Date.parse(settled.at) / 1000) * 1000).toISOString())) || !sameChoices(previous.choices, settled.choices)) {
     throw new Error('PREVIOUS_SETTLEMENT_MISMATCH')
   }
   if (!Number.isSafeInteger(card.revision) || card.revision < 0 || card.questions?.length !== 1 || card.questions[0].multiple) throw new Error('CARD_SHAPE_UNSUPPORTED')

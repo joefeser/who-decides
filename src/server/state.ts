@@ -1073,7 +1073,10 @@ export class ConsoleEngine {
       effect,
       outbox,
       artifacts,
-      ...HEADING[state],
+      ...(runKind === 'bridge' ? {
+        heading: state === 'decision_required' ? 'Decision required — waiting for you' : outbox.length > 0 && outbox.every(op => op.status === 'confirmed') ? 'Answer delivered to Chopin' : 'Decision delivery pending',
+        subheading: state === 'decision_required' ? 'A fresh human choice is required. No answer has been sent for this cycle.' : 'Decision delivery is separate from implementation execution.',
+      } : HEADING[state]),
     }
   }
 }

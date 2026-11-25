@@ -19,6 +19,10 @@ const channel = { sessionReference: 'op-session-deadbeefdeadbeef', authEventRef:
 test('same revision is a fresh cycle only with matching attributed previous settlement', () => {
   const result = reopenedRequest(env, snapshot(), confirmed, 'prior')
   assert.equal(result.envelope.coordination.revision, 0)
+  // Chopin's persisted card history projects seconds; MCP answer receipts keep milliseconds.
+  assert.doesNotThrow(() => reopenedRequest(env, snapshot(), { outcome: 'confirmed', result: { settled: { ...settled, at: '2026-11-25T15:25:50.221Z' } } }, 'prior'))
+  assert.throws(() => reopenedRequest(env, snapshot(), { outcome: 'confirmed', result: { settled: { ...settled, at: '2026-11-25T15:25:51.221Z' } } }, 'prior'), /MISMATCH/)
+
   assert.ok(result.envelope.contextRefs.includes('who-decides:prior-run:prior'))
   for (const field of ['by', 'at', 'choices'] as const) {
     const bad = structuredClone(snapshot())

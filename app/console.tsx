@@ -514,7 +514,7 @@ export default function Console() {
         <div className="space-y-4">
           <p className="animate-pulse text-sm text-sky-300" role="status">
             {state.runKind === 'bridge'
-              ? 'Decision recorded — outbound dispatch is held for the outbox. Nothing completes on wall-clock.'
+              ? (state.outbox.length > 0 && state.outbox.every(op => op.status === 'confirmed') ? 'Your answer is recorded in Chopin. This does not authorize implementation execution.' : 'Decision recorded — delivery awaits confirmation.')
               : 'Starting new invocation… claiming the decision exactly once…'}
           </p>
           {state.runKind === 'bridge' && state.outbox.length > 0 && (
@@ -690,7 +690,7 @@ export default function Console() {
             ends with the run's current state so viewers see what's pending. */}
         <ol className="space-y-1 font-mono text-xs text-slate-300">
           {state.startedAt && (
-            <li>{clockOf(state.startedAt)} · invocation A started ({invocationAId(state)})</li>
+            <li>{clockOf(state.startedAt)} · {state.runKind === 'bridge' ? 'decision request received' : `invocation A started (${invocationAId(state)})`}</li>
           )}
           {state.decision && (
             <li>{clockOf(state.decision.decidedAt)} · human decision recorded: {state.decision.choice} — “{state.decision.rationale}”</li>
