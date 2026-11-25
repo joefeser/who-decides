@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import engine from '../../../src/server/state'
 import { agentDispatcherError } from '../../../src/server/agent-dispatch-wiring'
 import { requireOperator } from '../../../src/server/auth'
+import { evidenceAccessDenied } from '../../../src/server/evidence-access'
 
-/** Watch mode: the state itself is public; `authenticated` tells the console
+/** Demo watch mode is public; private-local requires an operator session. `authenticated` tells the console
  * whether to render operator affordances (run/decide/reset/probe). */
 export async function GET(request: NextRequest) {
+  const denied = await evidenceAccessDenied(request)
+  if (denied) return denied
   const state = await engine.getState()
   // Health surface: a configured-but-failed dispatcher startup (SDK missing)
   // is visible here, not silent (review P2). Pretty-printed so a judge

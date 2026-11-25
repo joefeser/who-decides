@@ -1,4 +1,5 @@
 # dependencies
+node_modules
 node_modules/
 .pnp
 .pnp.js
@@ -45,3 +46,7 @@ agentcore/cdk/node_modules/
 agentcore/.cache/
 agentcore/.cli/
 sol-bridge-transport-review-prompt.md
+
+# Local browser QA artifacts
+.playwright-cli/
+output/playwright/

@@ -94,7 +94,7 @@ function OperatorSignIn({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
     >
       <h3 className="mb-1 text-sm font-semibold text-slate-200">Operator sign-in</h3>
       <p className="mb-3 text-xs text-slate-400">
-        Visitors watch in read-only mode. The operator passcode unlocks running the demo and deciding.
+        Sign in with the operator passcode to access this console and record decisions.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -145,6 +145,7 @@ const SCHEMA_LINKS: Record<string, string> = Object.fromEntries([
 
 export default function Console() {
   const [state, setState] = useState<ConsoleState | null>(null)
+  const [signInRequired, setSignInRequired] = useState(false)
   const [choice, setChoice] = useState<string>('')
   const [rationale, setRationale] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -163,11 +164,15 @@ export default function Console() {
   const refresh = useCallback(async () => {
     const response = await fetch('/api/state', { cache: 'no-store' })
     if (response.status === 401) {
-      // Defensive: /api/state is public; treat an unexpected 401 as watch mode.
+      // Private deployments require sign-in before returning any run evidence.
       setState(null)
+      setSignInRequired(true)
       return
     }
-    if (response.ok) setState(await response.json())
+    if (response.ok) {
+      setSignInRequired(false)
+      setState(await response.json())
+    }
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -193,6 +198,7 @@ export default function Console() {
   // state — they cannot trigger state changes themselves, and must still
   // see an operator's run start and advance.
   useEffect(() => {
+    if (signInRequired) return
     if (readOnly) {
       const timer = setInterval(() => { void refresh() }, 2000)
       return () => clearInterval(timer)
@@ -201,7 +207,7 @@ export default function Console() {
     if (!active) return
     const timer = setInterval(() => { void refresh() }, 800)
     return () => clearInterval(timer)
-  }, [readOnly, state?.state, refresh])
+  }, [readOnly, state?.state, refresh, signInRequired])
 
   useEffect(() => {
     if (state?.state === 'decision_required' && state?.authenticated) choiceRef.current?.focus()
@@ -335,6 +341,7 @@ export default function Console() {
   }
 
   if (!state) {
+    if (signInRequired) return <OperatorSignIn onSignedIn={refresh} />
     return <p className="text-slate-400" aria-live="polite">Loading console…</p>
   }
 

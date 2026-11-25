@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import engine from '../../../../src/server/state'
+import { evidenceAccessDenied } from '../../../../src/server/evidence-access'
 
 /** Watch-mode evidence surface: the persisted artifact JSON for the current
- * run, pretty-printed. Public by design — these are the receipts the demo
+ * run, pretty-printed. Public only in demo mode; private-local requires operator authentication. These are the receipts the demo
  * claims to show; a judge diffing them against the vendored schemas is the
  * intended use.
  *
@@ -12,6 +13,8 @@ import engine from '../../../../src/server/state'
  * has not persisted yet must hear RUN_CHANGED — not a false claim that the
  * evidence they saw is missing (review: ordering). Unknown names 404. */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
+  const denied = await evidenceAccessDenied(request)
+  if (denied) return denied
   const { name } = await params
   const expectedRun = request.nextUrl.searchParams.get('run')
   const artifact = await engine.getArtifact(name)

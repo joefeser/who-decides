@@ -634,3 +634,13 @@ test('round-9 probes: duplicate choices never stand in for a missing option; cap
   assert.equal(overflowOutcome.kind, 'unknown')
   if (overflowOutcome.kind === 'unknown') assert.match(overflowOutcome.detail ?? '', /too many claims/)
 })
+
+// Offline transport cannot redirect a machine credential to another host.
+test('private-local transport only accepts literal loopback receivers', async () => {
+  const { validateLocalReceiver } = await import('./chopin-transport')
+  assert.doesNotThrow(() => validateLocalReceiver('http://127.0.0.1:8788'))
+  for (const url of ['https://example.com', 'http://localhost:8788', 'http://127.0.0.1:8788/path', 'http://user:secret@127.0.0.1']) {
+    assert.throws(() => validateLocalReceiver(url))
+  }
+  assert.throws(() => validateLocalReceiver('http://127.0.0.1:8788', 'http://127.0.0.1:9999'))
+})

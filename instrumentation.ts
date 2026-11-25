@@ -3,6 +3,8 @@
  * HERE (reported via /api/state health metadata), not mid-request. */
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { validatePrivateLocalConfig } = await import('./src/server/evidence-access')
+    validatePrivateLocalConfig()
     const { initAgentDispatcher } = await import('./src/server/agent-dispatch-wiring')
     initAgentDispatcher()
   }

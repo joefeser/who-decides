@@ -296,3 +296,7 @@ for the full list, notably:
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
+
+## Private local PoC
+
+For local identities, private evidence, SQLite, and the bounded restart proof, see [Private local setup](docs/private-local-setup.md). This is separate from the public demo profile.

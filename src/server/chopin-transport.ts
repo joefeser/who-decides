@@ -31,8 +31,10 @@ import type { OutboxDispatcher, OutboxDispatchOutcome } from './outbox'
 export type ChopinTransportConfig = {
   /** Chopin's base URL, e.g. http://localhost:8788. */
   baseUrl: string
-  /** Bearer credential — the bridge caller's fine-grained token. */
+  /** Bearer credential: GitHub in hosted mode, a local machine token in private-local. */
   token: string
+  /** Restrict the receiver to a literal loopback address, with no redirects. */
+  localOnly?: boolean
   /** Origin header chopin requires; defaults to `baseUrl`. */
   origin?: string
   /** Call timeout in ms. A hung receiver resolves the op unknown. */
@@ -96,6 +98,7 @@ async function chopinToolCall(
   }
   const init = await fetchImpl(`${base}/mcp`, {
     method: 'POST',
+    redirect: 'error',
     headers: new Headers(headers),
     body: JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'initialize',
@@ -108,6 +111,7 @@ async function chopinToolCall(
   if (session) {
     await fetchImpl(`${base}/mcp`, {
       method: 'POST',
+    redirect: 'error',
       headers: { ...headers, 'mcp-session-id': session },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
       signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
@@ -115,6 +119,7 @@ async function chopinToolCall(
   }
   const call = await fetchImpl(`${base}/mcp`, {
     method: 'POST',
+    redirect: 'error',
     headers: session ? { ...headers, 'mcp-session-id': session } : headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: CALL_ID, method: 'tools/call', params: { name: tool, arguments: args } }),
     signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
@@ -439,7 +444,18 @@ export function mapChopinOutcome(
 /** The A2 dispatcher over chopin's MCP surface. Throws
  * BridgeTransportConfigError (sanitized, never token material) on an
  * unusable credential. */
+export function validateLocalReceiver(baseUrl: string, origin?: string): void {
+  let url: URL
+  try { url = new URL(baseUrl) } catch { throw new BridgeTransportConfigError('local receiver URL is invalid') }
+  if (!['127.0.0.1', '[::1]'].includes(url.hostname) || url.protocol !== 'http:'
+    || url.username || url.password || url.search || url.hash || url.pathname !== '/'
+    || (origin !== undefined && origin !== url.origin)) {
+    throw new BridgeTransportConfigError('local receiver requires an HTTP loopback IP origin without credentials or a path')
+  }
+}
+
 export function createChopinOutboxDispatcher(config: ChopinTransportConfig): OutboxDispatcher {
+  if (config.localOnly) validateLocalReceiver(config.baseUrl, config.origin)
   if (!isValidBearerToken(config.token)) {
     throw new BridgeTransportConfigError('bridge token is empty or not a valid header value')
   }
@@ -506,7 +522,7 @@ export function chopinTransportFromEnv(env: NodeJS.ProcessEnv = process.env): Br
     return { configError: 'WD_CHOPIN_URL is set without a bridge token (WD_CHOPIN_TOKEN_FILE / WD_CHOPIN_TOKEN)' }
   }
   try {
-    return { dispatcher: createChopinOutboxDispatcher({ baseUrl, token, ...(env.WD_CHOPIN_ORIGIN ? { origin: env.WD_CHOPIN_ORIGIN } : {}) }) }
+    return { dispatcher: createChopinOutboxDispatcher({ baseUrl, token, localOnly: env.WD_PROFILE === 'private-local', ...(env.WD_CHOPIN_ORIGIN ? { origin: env.WD_CHOPIN_ORIGIN } : {}) }) }
   } catch (error) {
     if (error instanceof BridgeTransportConfigError) return { configError: error.message }
     throw error

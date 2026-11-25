@@ -96,3 +96,7 @@ Discuss any broader product-policy deletion or ambiguous historical ruling with 
 
 Planning branch `codex/local-modernization-poc` starts from `origin/dev` at `81391a51d499e22fa10bea2a0a224ee8f468fd55`. Implementation and M2 acceptance are pending. The linked tracker holds the shareable plan while this document is under development.
 
+
+## Implementation checkpoint — November 24, 2026
+
+Private evidence reads, loopback-only bridge transport, and a foreground local supervisor are implemented on this branch. The automated HTTP proof passed pending-decision restart, abrupt crash after a committed answer with its reply lost, exact-payload retry, worker restart, and stopped backup/restore with OS egress denied. The proof uses a synthetic operator, not human acceptance. See [setup and proof commands](private-local-setup.md). Migration stays deferred; lost-response recovery during initial intake is still a follow-up.
