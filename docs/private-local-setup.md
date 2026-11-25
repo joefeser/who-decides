@@ -82,4 +82,6 @@ Offline authoring validates document syntax and explicit visuals. It skips the h
 
 ## Human check before migration work
 
+Follow the [human walkthrough](private-local-human-walkthrough.md) for a repeatable synthetic request and read-only status check. See [recorded validation](private-local-validation.md) for the automated results and limits.
+
 Start the local supervisor, sign in to both apps, inspect a synthetic request and its state/reason, choose an answer, stop/restart, and confirm the same decision is shown. Record the human result separately. No migration flow, private employer scan, PR merge, or deployment is authorized by the proof itself.
