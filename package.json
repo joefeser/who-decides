@@ -25,7 +25,7 @@
     "test:agentcore-live": "tsx --test src/server/agentcore-live.test.ts",
     "test:artifacts": "tsx --test src/artifacts/test.ts",
     "test:auth": "tsx --test src/server/auth.test.ts",
-    "test:bridge": "tsx --test src/server/bridge.test.ts src/bridge/route.test.ts",
+    "test:bridge": "tsx --test src/server/bridge.test.ts src/bridge/route.test.ts src/server/bridge-probe.test.ts",
     "test:bridge-record": "tsx --test src/server/bridge-record.test.ts",
     "test:console": "tsx --test src/server/test.ts",
     "test:console-pg": "tsx --test src/server/test-pg.ts",

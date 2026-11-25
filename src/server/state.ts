@@ -333,6 +333,38 @@ export class ConsoleEngine {
     return this.dispatchBridgeOps(runId, this.bridgeDispatcher, options)
   }
 
+  /** Duplicate-resume PROBE for a bridge run — the bridge flavor of
+   * attemptDuplicateReplay (console gate-proof): re-runs resumeBridgeOps
+   * and records ON the run's receipts whether the second attempt
+   * re-executed anything. The outbox never re-hits the wire for a
+   * confirmed op — it returns the persisted original result marked
+   * replayed — so a held gate reads REJECTED re-execution with every
+   * outcome replayed, and any fresh confirm is a recorded invariant
+   * breach. Typed-refuses when any op is unresolved: a resume that would
+   * actually dispatch is RECOVERY, not proof. Attempted-by is the real
+   * operator session reference, not a fabricated imposter. */
+  async probeBridgeDuplicateResume(runId: string, attemptedBy: string): Promise<{ attemptedBy: string, result: string, detail: string }> {
+    const row = await this.runs.getRunRow(runId)
+    if (!row || row.run_kind !== 'bridge') throw new Error('PROBE_NOT_A_BRIDGE_RUN')
+    const current = await this.outbox.ops(runId)
+    if (current.length === 0 || current.some(op => op.status !== 'confirmed')) {
+      throw new Error('PROBE_OPS_UNRESOLVED')
+    }
+    const result = await this.resumeBridgeOps(runId)
+    if (!result.ok || !result.outcomes || result.outcomes.length === 0) {
+      throw new Error(result.error ?? 'PROBE_RESUME_FAILED')
+    }
+    const breach = result.outcomes.filter(o => o.status === 'confirmed' && !o.replayed)
+    const statuses = [...new Set(result.outcomes.map(o => o.status))]
+    const probe = breach.length > 0
+      ? { attemptedBy, result: 'EXECUTED-AGAIN — INVARIANT BROKEN', detail: `re-executed: ${breach.map(o => o.opKey).join(', ')}` }
+      : statuses.every(s => s === 'confirmed')
+        ? { attemptedBy, result: 'REJECTED re-execution (replayed original settle)', detail: `every confirmed op (${result.outcomes.length}) returned its persisted original result; the wire was never re-hit; no second effect` }
+        : { attemptedBy, result: `INCOMPLETE (${statuses.join('/')})`, detail: 'the duplicate attempt did not settle cleanly — recovery needed, probe inconclusive' }
+    await this.runs.persistReplayProbe(runId, JSON.stringify(probe))
+    return probe
+  }
+
   /** Writes the non-HACP bridge record (A3) for every CONFIRMED op that
    * does not have one yet — idempotent by artifact name (first-writer-wins)
    * and repeat-safe with dispatch. The record digests the EXACT persisted

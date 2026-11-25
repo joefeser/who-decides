@@ -267,6 +267,29 @@ export default function Console() {
     }
   }
 
+  /** Bridge duplicate-resume probe (P3): the same gate-proof as the native
+   * panel, attributed to the real operator session via the resume route's
+   * probe flag. The result is persisted on the run and rendered from
+   * /api/state — never client-side narrative. */
+  async function attemptDuplicateBridgeResume() {
+    if (!state) return
+    setReplaying(true)
+    try {
+      const response = await fetch('/api/bridge/resume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ runId: state.runId, probe: true }),
+      })
+      if (!response.ok) setError((await response.json()).error ?? 'PROBE_FAILED')
+      await refresh()
+    } catch {
+      setError('NETWORK_ERROR: probe not recorded — check the server and retry')
+    } finally {
+      setReplaying(false)
+    }
+  }
+
   async function resetConsole() {
     const response = await fetch('/api/state', { method: 'DELETE' }).catch(() => null)
     if (!response?.ok) { setError(response ? (await response.json()).error : 'RESET_NETWORK_ERROR'); return }
@@ -488,6 +511,30 @@ export default function Console() {
                 </li>
               ))}
             </ul>
+          )}
+          {state.runKind === 'bridge' && state.outbox.length > 0
+            && state.outbox.every(op => op.status === 'confirmed')
+            && (state.replayProbe || !readOnly) && (
+            <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">Prove the gate: attempt a duplicate resume</h3>
+              <p className="mb-3 text-xs text-slate-400">
+                A second resume must not execute the answer twice — it must return the original settle, with no second effect.
+              </p>
+              {!readOnly && (
+                <button
+                  onClick={attemptDuplicateBridgeResume}
+                  disabled={replaying}
+                  className="rounded-lg border border-slate-600 px-4 py-2 text-sm hover:border-slate-400 disabled:opacity-40"
+                >
+                  {replaying ? 'Attempting…' : 'Attempt duplicate resume'}
+                </button>
+              )}
+              {state.replayProbe && (
+                <p className={`mt-3 rounded-lg px-3 py-2 font-mono text-xs ${state.replayProbe.result.startsWith('REJECTED') ? 'bg-emerald-950/60 text-emerald-300' : 'bg-red-950/80 text-red-200'}`} role="alert">
+                  {state.replayProbe.result} — {state.replayProbe.detail}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}
