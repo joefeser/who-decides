@@ -6,7 +6,7 @@ human-mediated `main`, `master`, or `release/**` boundary.
 
 ## Environment and current CLI requirement
 
-- CLI baseline (updated 2026-09-21): stable ACK `>=0.5.2 <0.6.0`; the lane requires the exact
+- CLI baseline (updated 2026-09-21): stable ACK `>=0.5.12 <0.6.0`; the lane requires the exact
   onboarding, batching, freshness, and release-provenance capabilities it uses.
 - After the v0.2 policy PR is merged and `dev` is created from that exact
   approved `main`, normal feature PRs pass `--base dev`.
